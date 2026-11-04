@@ -1,0 +1,379 @@
+/* =============================================================================
+   Nuera Dev — design tokens for Tailwind CSS v4
+   -----------------------------------------------------------------------------
+   Source of truth: Figma file nlvRWAtD1x2fKf8gVgcM0g
+     · page "Design System" (1:834) — sections 01 Couleurs → 08 Logos
+     · variables actually bound in "NUERA DEV — WEB APP" (199:3) and "Nuera OS" (57:3)
+   Rule from the DS intro: « Les variables Figma portent le nom CSS en code syntax :
+   un token ici est un token là-bas. » → the custom-property names below ARE the
+   Figma variable names (--ink, --accent, --space-4, --radius-md…) or the CSS names
+   written on the DS canvas (--text-6xl, --section-y, --ease-out, --dur-fast…).
+   Names marked (derived) are proposals for code; their values come from the canvas.
+   Full spec + provenance table: docs/figma/design-system.md §0.3
+
+   How to use (e.g. src/app/globals.css):
+       @import "tailwindcss";
+       @import "./tokens.css";        // copy of this file
+   Fonts (next/font/google) must expose: --font-outfit, --font-jetbrains-mono,
+   and optionally --font-pinyon-script (site only — not used by Nuera Dev screens).
+
+   Why four blocks:
+     :root           → raw Figma tokens (primitives + roles + layout + motion).
+     [data-tone=dark]→ the Figma "Dark" mode of the Color collection (sidebar, terminal,
+                       cover). Roles flip; primitives never change.
+     @theme inline   → Tailwind utilities that point at the ROLE variables at the element
+                       level (inline is required, otherwise --color-text would be resolved
+                       once on :root and dark scopes could not flip it).
+     @theme static   → static scales (type, radius, shadow, easing, breakpoints, containers);
+                       `static` forces every variable to be emitted so plain CSS can use
+                       var(--radius-md), var(--text-6xl), var(--ease-out)… too.
+   ============================================================================= */
+
+:root {
+  /* ---------------------------------------------------------------------------
+     COLOR · brand primitives (collection "Color"; identical in Light and Dark)
+     "Trois teintes de marque, et rien d'autre : le bleu de nuit, le blanc, le bleu.
+      Les autres valeurs en sont dérivées."
+     --------------------------------------------------------------------------- */
+  --ink: #233353;               /* Fonds sombres, texte sur clair (bleu de nuit)      */
+  --paper: #ffffff;             /* Fond du site, texte sur sombre                     */
+  --accent-on-light: #4368b1;   /* Accent sur clair                                   */
+  --accent-on-dark: #a6b9dd;    /* Accent sur sombre                                  */
+  --accent-pale: #dee5f2;       /* Aplats, fonds de badge                             */
+  --near-black: #141830;        /* Contour et ombre des boutons                       */
+  --muted-on-light: #645e78;    /* Texte secondaire sur clair                         */
+  --muted-on-dark: #ffffff9e;   /* white 62 % — texte secondaire sur sombre           */
+  --border-on-light: #d9dade;   /* Bordures sur clair                                 */
+  --border-on-dark: #ffffff24;  /* white 14 % — bordures sur sombre                   */
+  --hairline-on-dark: #ffffff1a;/* white 10 % — « filet » sur sombre                  */
+  --surface-raised-dark: #ffffff0d; /* white 5 % — « carte » sur sombre               */
+  --btn-edge: #141830;          /* socle + contour + texte des boutons (= near-black) */
+
+  /* ---------------------------------------------------------------------------
+     COLOR · "App · statuts" (Nuera OS collection, reused by Nuera Dev).
+     Figma names have no "--" code syntax; kept identical in kebab-case.
+     --------------------------------------------------------------------------- */
+  --success: #2f6f4f;
+  --success-pale: #e4f1ea;
+  --success-on-dark: #5fc48b;
+  --warn: #8a6516;
+  --warn-pale: #fbf1dc;
+  --warn-on-dark: #f2c14e;
+  --danger: #b4451f;
+  --danger-pale: #f8e6de;
+  /* --danger-on-dark does NOT exist (canvas gap #2): terminal errors use --danger-pale. */
+  --en-cours: #e0a10f;          /* "en cours" (running) dot / progress                */
+  --chatgpt: #10a37f;           /* Badge ChatGPT only — never used for Claude          */
+  --chatgpt-pale: #e3f5ef;
+
+  /* ---------------------------------------------------------------------------
+     COLOR · roles — Light mode (default, « SUR LE PAPIER (PAR DÉFAUT) »)
+     Components only ever use roles: text, accent, muted, border, bg, surface(-raised).
+     --------------------------------------------------------------------------- */
+  --bg: var(--paper);                   /* #ffffff */
+  --text: var(--ink);                   /* #233353 */
+  --accent: var(--accent-on-light);     /* #4368b1 */
+  --muted: var(--muted-on-light);       /* #645e78 */
+  --border: var(--border-on-light);     /* #d9dade */
+  --surface: var(--paper);              /* #ffffff (Light) — never bound in Nuera Dev   */
+  --surface-raised: var(--paper);       /* #ffffff (Light)                              */
+
+  /* ---------------------------------------------------------------------------
+     SPACING — base 4 px (Tailwind's default --spacing 0.25rem gives the same steps:
+     p-1 = --space-1 … p-32 = --space-32)
+     --------------------------------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* ---------------------------------------------------------------------------
+     LAYOUT (fluid values interpolate linearly from 390 px to 1440 px viewport)
+     --------------------------------------------------------------------------- */
+  --section-y: clamp(5.5rem, 4.0143rem + 6.0952vw, 9.5rem);  /* 88 → 152 px            */
+  --gutter: clamp(1.25rem, 0.7857rem + 1.9048vw, 2.5rem);     /* 20 → 40 px             */
+  --wrap-w: 1200px;             /* Largeur de contenu standard                        */
+  --wrap-narrow-w: 760px;       /* Colonne de lecture                                 */
+  --wrap-wide-w: 1320px;        /* Surfaces seulement, jamais du texte                */
+  --wrap-vast-w: 1560px;        /* Grilles de trois cartes riches                     */
+  --tap-min: 44px;              /* Cible tactile minimale (WCAG 2.5.5)                */
+  --header-capsule-h: 64px;     /* Capsule du header accostée (site)                  */
+  --header-row-h: 138px;        /* (derived) « Ligne du logo : 138 px » (site header row) */
+
+  /* (derived) Nuera Dev shell sizes observed in 199:3 — not DS variables */
+  --app-sidebar-w: 248px;       /* Dev · Barre latérale                               */
+  --app-sidebar-collapsed-w: 72px; /* Dev · Barre latérale repliée (Workspace)        */
+  --app-statusbar-h: 47px;      /* Dev · Barre d'état (phone mock → safe-area-inset-top) */
+  --app-tabbar-h: 91px;         /* Dev · Barre d'onglets incl. home indicator          */
+  --app-home-indicator-h: 34px; /* Dev · Indicateur d'accueil (→ safe-area-inset-bottom) */
+
+  /* ---------------------------------------------------------------------------
+     MOTION — « Une seule famille de courbes. »
+     Durations live here; the four --ease-* curves live in `@theme static` below
+     (so Tailwind's ease-out / ease-in-out utilities use them). Tailwind has no duration
+     namespace: write duration-(--dur-fast) or transition: … var(--dur-fast) var(--ease-out).
+     --------------------------------------------------------------------------- */
+  --dur-instant: 60ms;          /* Retour au clic                                     */
+  --dur-fast: 180ms;            /* Survols                                            */
+  --dur-base: 350ms;            /* Transitions d'état                                 */
+  --dur-reveal: 750ms;          /* Révélations au scroll (600 à 900)                  */
+  --dur-slow: 900ms;            /* Remplissage de la capsule du header                */
+
+  /* ---------------------------------------------------------------------------
+     BUTTON (derived from DS "Button" 7:117) — face lift above the near-black socle, in em of 15 px
+     --------------------------------------------------------------------------- */
+  --btn-lift-rest: 0.22em;      /* 3.3 px  (Figma rounds to 3)                        */
+  --btn-lift-hover: 0.38em;     /* 5.7 px  (Figma rounds to 6)                        */
+  --btn-lift-pressed: 0.04em;   /* 0.6 px  (Figma rounds to 1)                        */
+  --btn-border-w: 1.5px;
+  --btn-burst-overflow: 26px;   /* « ses rayons débordent de 26 px »                  */
+
+  /* ---------------------------------------------------------------------------
+     FOCUS (derived) — « l'anneau de focus fait 2 px, décalé de 3 px »
+     (colour not specified in Figma: --accent is the recommended role, flips on dark)
+     --------------------------------------------------------------------------- */
+  --focus-ring-w: 2px;
+  --focus-ring-offset: 3px;
+
+  /* ---------------------------------------------------------------------------
+     PAPER GRAIN (derived, site only) — « bruit fractal statique, opacité 0.22 ».
+     Not drawn in any Nuera Dev screen (app bg is flat #ffffff).
+     --------------------------------------------------------------------------- */
+  --paper-grain-opacity: 0.22;
+
+  color-scheme: light;          /* native controls/scrollbars match the light app */
+}
+
+/* -----------------------------------------------------------------------------
+   Dark mode of the Color collection = « DANS UNE SECTION TONE="DARK" ».
+   Apply data-tone="dark" (or .tone-dark) on: terminal / command-output zones (fill =
+   --bg → ink), the Nuera Dev sidebar and dark toasts (their fill is --near-black, set it
+   explicitly), the cover… Everything inside flips by itself.
+   ----------------------------------------------------------------------------- */
+[data-tone="dark"],
+.tone-dark {
+  --bg: var(--ink);                     /* #233353 */
+  --text: var(--paper);                 /* #ffffff */
+  --accent: var(--accent-on-dark);      /* #a6b9dd */
+  --muted: var(--muted-on-dark);        /* #ffffff9e (62 %) */
+  --border: var(--border-on-dark);      /* #ffffff24 (14 %) */
+  --surface-raised: var(--surface-raised-dark); /* #ffffff0d (5 %) */
+  /* --surface (Dark) — value not captured: never bound in Nuera Dev. */
+  /* --btn-edge stays #141830 in both modes. */
+  color-scheme: dark;           /* dark native scrollbars in terminal / sidebar panes */
+}
+
+/* Lets authors write `tone-dark:…` when a style must differ only inside dark scopes. */
+@custom-variant tone-dark (&:where([data-tone="dark"], [data-tone="dark"] *, .tone-dark, .tone-dark *));
+
+/* -----------------------------------------------------------------------------
+   Tailwind utilities bound to ROLE / primitive variables (inline = resolved per element)
+   ----------------------------------------------------------------------------- */
+@theme inline {
+  /* roles → bg-bg, text-text, text-muted, text-accent, border-border, bg-surface-raised… */
+  --color-bg: var(--bg);
+  --color-text: var(--text);
+  --color-accent: var(--accent);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+
+  /* primitives (only for the rare places the DS itself names them: buttons, logo, swatches) */
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-accent-on-light: var(--accent-on-light);
+  --color-accent-on-dark: var(--accent-on-dark);
+  --color-accent-pale: var(--accent-pale);
+  --color-near-black: var(--near-black);
+  --color-muted-on-light: var(--muted-on-light);
+  --color-muted-on-dark: var(--muted-on-dark);
+  --color-border-on-light: var(--border-on-light);
+  --color-border-on-dark: var(--border-on-dark);
+  --color-hairline-on-dark: var(--hairline-on-dark);
+  --color-surface-raised-dark: var(--surface-raised-dark);
+  --color-btn-edge: var(--btn-edge);
+
+  /* statuses */
+  --color-success: var(--success);
+  --color-success-pale: var(--success-pale);
+  --color-success-on-dark: var(--success-on-dark);
+  --color-warn: var(--warn);
+  --color-warn-pale: var(--warn-pale);
+  --color-warn-on-dark: var(--warn-on-dark);
+  --color-danger: var(--danger);
+  --color-danger-pale: var(--danger-pale);
+  --color-en-cours: var(--en-cours);
+  --color-chatgpt: var(--chatgpt);
+  --color-chatgpt-pale: var(--chatgpt-pale);
+
+  /* font families (next/font variables, with local fallbacks)
+     Gesty Ratio (display, weight 400) is NOT available: Figma and all mockups use
+     Outfit Bold instead → --font-display = Outfit until the licence is settled. */
+  /* (var() fallbacks matter: an undefined var without fallback would void the whole list) */
+  --font-sans: var(--font-outfit, "Outfit"), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-outfit, "Outfit"), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-script: var(--font-pinyon-script, "Pinyon Script"), cursive;
+}
+
+@theme static {
+  /* Uncomment to forbid Tailwind's default palette (DS rule « Aucune valeur en dur »):
+     --color-*: initial; */
+
+  /* spacing base = 4 px (Tailwind default, restated) */
+  --spacing: 0.25rem;
+
+  /* ---------------------------------------------------------------------------
+     TYPE · DS scale ("Type" collection has 2 modes: phone 390 / desktop 1440;
+     Figma text styles are the desktop sizes). Fluid between 390 and 1440 px.
+     Display styles: Outfit 700 in Figma (stand-in for Gesty Ratio 400).
+     --------------------------------------------------------------------------- */
+  --text-6xl: clamp(2.375rem, 0.8429rem + 6.2857vw, 6.5rem);   /* Display/Hero 38 → 104 */
+  --text-6xl--line-height: 1.06;
+  --text-6xl--letter-spacing: -0.04em;
+  --text-6xl--font-weight: 700;
+
+  --text-5xl: clamp(2.75rem, 1.9143rem + 3.4286vw, 5rem);      /* Display/H1 44 → 80 */
+  --text-5xl--line-height: 1.06;
+  --text-5xl--letter-spacing: -0.03em;
+  --text-5xl--font-weight: 700;
+
+  --text-4xl: clamp(2.25rem, 1.7857rem + 1.9048vw, 3.5rem);    /* Display/H2 36 → 56 */
+  --text-4xl--line-height: 1.06;
+  --text-4xl--letter-spacing: -0.03em;
+  --text-4xl--font-weight: 700;
+
+  --text-3xl: clamp(1.875rem, 1.55rem + 1.3333vw, 2.75rem);    /* Display/H3 30 → 44 */
+  --text-3xl--line-height: 1.06;
+  --text-3xl--letter-spacing: -0.02em;
+  --text-3xl--font-weight: 700;
+
+  --text-2xl: clamp(1.5rem, 1.3143rem + 0.7619vw, 2rem);       /* Display/H4 24 → 32 */
+  --text-2xl--line-height: 1.06;
+  --text-2xl--letter-spacing: -0.02em;
+  --text-2xl--font-weight: 700;
+
+  --text-xl: clamp(1.25rem, 1.1571rem + 0.381vw, 1.5rem);      /* Text/XL 20 → 24 */
+  --text-xl--line-height: 1.25;
+  --text-xl--letter-spacing: 0em;
+
+  --text-lg: clamp(1.0625rem, 0.9929rem + 0.2857vw, 1.25rem);  /* Text/Lead 17 → 20 */
+  --text-lg--line-height: 1.25;
+  --text-lg--letter-spacing: 0em;
+
+  --text-base: 1rem;                                            /* Text/Body 16 */
+  --text-base--line-height: 1.6;
+  --text-base--letter-spacing: 0em;
+
+  --text-ui: 0.9375rem;                                         /* Text/UI 15 / 700 */
+  --text-ui--line-height: 1.25;
+  --text-ui--font-weight: 700;
+
+  --text-sm: 0.875rem;                                          /* Text/Label 14 */
+  --text-sm--line-height: 1.25;
+  --text-sm--letter-spacing: 0em;
+
+  --text-xs: 0.75rem;                                           /* Text/Caption 12 (Mono/Eyebrow uses it too) */
+  --text-xs--line-height: 1.6;
+  --text-xs--letter-spacing: 0em;
+
+  --text-script: 3.9375rem;   /* (derived) Script/Accent H2 = Pinyon Script 63 px (= H2 56 × 1.125) */
+  --text-script--line-height: 1.06;
+  --text-script--letter-spacing: 0.015em;
+  --text-script--font-weight: 400;
+
+  /* ---------------------------------------------------------------------------
+     TYPE · (derived) Nuera Dev app ramp (hand-set in the mockups — canvas note: « Nuera Dev
+     suit la même échelle (28, 22, 18, 16, 14, 13, 12, 11) ». Line-height "normal"
+     = Figma "auto". Weights = most frequent use observed in 199:3, override freely.
+     --------------------------------------------------------------------------- */
+  --text-app-28: 1.75rem;     /* page title, desktop — Outfit 600 */
+  --text-app-28--line-height: normal;
+  --text-app-28--font-weight: 600;
+  --text-app-26: 1.625rem;    /* page title, phone — Outfit 600 */
+  --text-app-26--line-height: normal;
+  --text-app-26--font-weight: 600;
+  --text-app-22: 1.375rem;    /* dialog / drawer title — Outfit 600 */
+  --text-app-22--line-height: normal;
+  --text-app-22--font-weight: 600;
+  --text-app-20: 1.25rem;     /* occasional block title — Outfit 600 */
+  --text-app-20--line-height: normal;
+  --text-app-18: 1.125rem;    /* card / tile title — Outfit 600 (or 500) */
+  --text-app-18--line-height: normal;
+  --text-app-16: 1rem;        /* row / item title — Outfit 600 */
+  --text-app-16--line-height: normal;
+  --text-app-15: 0.9375rem;   /* emphasised UI text — Outfit 600 */
+  --text-app-15--line-height: normal;
+  --text-app-14: 0.875rem;    /* UI labels, nav, compact buttons (500) · body (400, lh 20px) */
+  --text-app-14--line-height: normal;
+  --text-app-13: 0.8125rem;   /* secondary text (400, lh 18px) · repo/branch names in mono 500 */
+  --text-app-13--line-height: normal;
+  --text-app-12: 0.75rem;     /* badges (Outfit 500) · paths, branches (mono 400) */
+  --text-app-12--line-height: normal;
+  --text-app-11: 0.6875rem;   /* meta: times, sizes, CPU/RAM (mono 400) · column headers (mono, caps, 0.08em) */
+  --text-app-11--line-height: normal;
+  --text-app-10: 0.625rem;    /* counter bubble on tab bar — Outfit 600 */
+  --text-app-10--line-height: normal;
+
+  /* (derived) letter-spacing — values from DS-02 rules and app exports */
+  --tracking-hero: -0.04em;     /* Display/Hero */
+  --tracking-display: -0.03em;  /* Display/H1, H2 */
+  --tracking-title: -0.02em;    /* Display/H3, H4 */
+  --tracking-script: 0.015em;   /* Pinyon Script — ALWAYS, never the display tracking */
+  --tracking-eyebrow: 0.2em;    /* Mono/Eyebrow, caps */
+  --tracking-label: 0.08em;     /* Nuera Dev mono labels & DEV badge (0.88px @11, 0.96px @12) */
+
+  /* (derived) line-height — « 1.06 pour le titrage, 1.25 pour les sous-titres, 1.6 pour le corps » */
+  --leading-display: 1.06;      /* titrage */
+  --leading-subtitle: 1.25;     /* sous-titres, UI */
+  --leading-body: 1.6;          /* corps */
+
+  /* ---------------------------------------------------------------------------
+     RADIUS (overrides Tailwind's rounded-sm/md/lg/xl/full)
+     --------------------------------------------------------------------------- */
+  --radius-sm: 8px;             /* Champs, petits badges */
+  --radius-md: 12px;            /* Boutons */
+  --radius-lg: 20px;            /* Cartes, capsule du header */
+  --radius-xl: 28px;            /* Grands blocs */
+  --radius-full: 999px;         /* Pilules */
+
+  /* ---------------------------------------------------------------------------
+     SHADOW (Figma effect styles Shadow/Soft, Shadow/Float; near-black #141830)
+     --------------------------------------------------------------------------- */
+  --shadow-soft: 0 14px 34px -22px rgb(20 24 48 / 0.28);   /* #14183047 — décolle une carte du papier */
+  --shadow-float: 0 24px 50px -18px rgb(20 24 48 / 0.55);  /* #1418308C — ce qui flotte au-dessus de la page */
+
+  /* ---------------------------------------------------------------------------
+     EASING (overrides Tailwind's ease-out / ease-in-out on purpose)
+     --------------------------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);      /* Entrées : la signature du site */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);   /* Aller-retours */
+  --ease-emphasis: cubic-bezier(0.32, 0.72, 0, 1); /* Morphings d'interface */
+  --ease-steady: cubic-bezier(0.4, 0, 0.2, 1);     /* Progressions régulières */
+  --default-transition-duration: 180ms;            /* = --dur-fast */
+  --default-transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1); /* = --ease-out */
+
+  /* ---------------------------------------------------------------------------
+     BREAKPOINTS / CONTAINERS (derived names; values from DS-03 and DS-07)
+     Phone designed at 390 px, held down to 320 px; tablet fixes below 1024 px;
+     mobile navigation takes over below 900 px; desktop frames are 1440 px.
+     --------------------------------------------------------------------------- */
+  --breakpoint-nav: 56.25rem;   /* 900 px — `nav:` = desktop navigation from here up */
+  --breakpoint-lg: 64rem;       /* 1024 px — Tailwind default, restated (tablet threshold) */
+  --breakpoint-desk: 90rem;     /* 1440 px — reference desktop frame */
+  --container-wrap: 75rem;      /* 1200 px  → max-w-wrap   */
+  --container-narrow: 47.5rem;  /* 760 px   → max-w-narrow */
+  --container-wide: 82.5rem;    /* 1320 px  → max-w-wide   */
+  --container-vast: 97.5rem;    /* 1560 px  → max-w-vast   */
+}

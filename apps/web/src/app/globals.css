@@ -1,0 +1,53 @@
+@import 'tailwindcss';
+@import '../styles/tokens.css';
+
+/* Theme preference « Sombre » (Paramètres · Préférences) flips the role tokens app-wide,
+   exactly like a tone="dark" section of the design system. */
+:root[data-theme='dark'] {
+  --bg: var(--ink);
+  --text: var(--paper);
+  --accent: var(--accent-on-dark);
+  --muted: var(--muted-on-dark);
+  --border: var(--border-on-dark);
+  --surface-raised: var(--surface-raised-dark);
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    background-color: var(--bg);
+    color: var(--text);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    min-height: 100dvh;
+    font-family: var(--font-sans);
+    font-size: var(--text-app-14);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  :focus-visible {
+    outline: var(--focus-ring-w) solid var(--accent);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  ::selection {
+    background-color: var(--accent-pale);
+    color: var(--ink);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

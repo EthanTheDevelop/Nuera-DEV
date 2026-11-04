@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds
+.next/
+.next-*/
+out/
+dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data (embedded Postgres, runner data, clones, worktrees, logs)
+.data/
+.data-*.log
+.local/
+*.log
+logs/
+
+# Tests
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# Figma references extracted locally (screenshots, raw design context, assets)
+.design-refs/
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local state for this repo
+.claude/settings.local.json
+.claude/worktrees/

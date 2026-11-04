@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Honoured by pnpm >= 10.5 (pnpm 9 runs every lifecycle script anyway).
+# The embedded-postgres install scripts live in the platform packages.
+onlyBuiltDependencies:
+  - "@embedded-postgres/linux-x64"
+  - "@embedded-postgres/windows-x64"
+  - esbuild
+  - sharp
