@@ -1,0 +1,24 @@
+# Optional local PostgreSQL with Docker (alternative to `pnpm db:local`, which needs no Docker).
+#   docker compose -f deploy/docker-compose.dev.yml up -d
+#   DATABASE_URL=postgres://nuera:nuera@127.0.0.1:54329/nuera_dev
+name: nuera-dev-local
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: nuera
+      POSTGRES_PASSWORD: nuera
+      POSTGRES_DB: nuera_dev
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - nuera-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nuera -d nuera_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  nuera-pg:

@@ -1,0 +1,85 @@
+# Nuera Dev — Docker Compose pour Coolify (déploiement sur VPS-3).
+# - Seul le service `web` reçoit un domaine (dev.nuera.studio) dans Coolify.
+# - `runner` n'expose aucun port public : il n'est joignable que par `web` sur le réseau interne.
+# - PostgreSQL est une ressource Coolify distincte (non exposée) : renseigner DATABASE_URL.
+# Voir docs/DEPLOY.md pour la procédure complète.
+
+name: nuera-dev
+
+x-common-env: &common-env
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL requis}
+  RUNNER_TOKEN: ${RUNNER_TOKEN:?RUNNER_TOKEN requis}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+      target: migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL requis}
+    restart: "no"
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+      target: runtime
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      APP_URL: ${APP_URL:-https://dev.nuera.studio}
+      RUNNER_URL: http://runner:4100
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET requis}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY requis}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - nuera-internal
+
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/docker/runner.Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      # Public URL (links, notifications) and internal URL for runner → web callbacks (/api/internal/*).
+      APP_URL: ${APP_URL:-https://dev.nuera.studio}
+      NUERA_WEB_INTERNAL_URL: http://web:3000
+      NUERA_SESSION_BACKEND: tmux
+    volumes:
+      - nuera-projects:/srv/dev
+      - nuera-runner-data:/data
+      - nuera-claude-home:/home/nuera
+    # Limits of the whole execution environment (sessions, builds, tests).
+    deploy:
+      resources:
+        limits:
+          cpus: "${RUNNER_CPUS:-6}"
+          memory: ${RUNNER_MEMORY:-12g}
+    pids_limit: 4096
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      - nuera-internal
+
+volumes:
+  nuera-projects:
+  nuera-runner-data:
+  nuera-claude-home:
+
+networks:
+  nuera-internal:
+    driver: bridge
