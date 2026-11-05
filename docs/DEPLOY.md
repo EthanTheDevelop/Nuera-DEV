@@ -224,3 +224,23 @@ et journal des migrations rétablis, services de nouveau *healthy*.
 | Sauvegarde/restauration | oui (`pg_dump`/`pg_restore` 17) | sauvegardes planifiées Coolify + essai de restauration |
 
 La production n'a **pas** été testée.
+
+## Déploiement réel — NUERA-PERSO-01 (5 novembre 2026)
+
+Mis en place par l'API de Coolify, sur le modèle de Nuera OS (NUERA-PROD-01 : app + PostgreSQL dédié non exposé) :
+
+- Projet Coolify **« Nuera Studio - Nuera Dev »**, environnement `production`, serveur **NUERA-PERSO-01**.
+- Base **`nuera-dev-postgres`** : `postgres:17-alpine`, non publique, base et utilisateur `nuera_dev`, sauvegarde
+  quotidienne à 3 h UTC (14 conservées, locales — pas de S3).
+- App **`nuera-dev`** : source « Github Ethan », dépôt `EthanTheDevelop/Nuera-DEV`, branche `main`, build pack
+  Docker Compose, **dossier de base `/deploy`** et fichier `/docker-compose.yml` (le contexte `..` des services est
+  résolu depuis le dossier de base), option **« Connect to predefined network »** activée (sinon `migrate` ne joint
+  pas la base, placée sur le réseau de Coolify).
+- Domaine du service `web` : https://nuera-dev.perso.nuera.studio (domaine automatique de PERSO). Pour
+  `dev.nuera.studio` : créer l'enregistrement A vers `159.173.129.249`, ajouter le domaine au service `web`, mettre
+  `APP_URL` à jour puis redéployer.
+- Variables (dans Coolify, jamais dans le dépôt) : `DATABASE_URL`, `RUNNER_TOKEN`, `BETTER_AUTH_SECRET`,
+  `APP_ENCRYPTION_KEY`, `SETUP_TOKEN`, `VAPID_*`, `APP_URL`, `TRUSTED_IP_HEADER=x-real-ip`, `RUNNER_CPUS=4`,
+  `RUNNER_MEMORY=6g` (PERSO a 6 cœurs / 11,4 Go et héberge d'autres sites).
+- Vérifié après déploiement : statut `running:healthy`, `/api/health` → `{"status":"ok","db":true}`,
+  `/configuration` → 200.
