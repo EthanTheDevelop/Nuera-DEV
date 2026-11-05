@@ -39,7 +39,7 @@ export function ActiveSessions({ items, actions, disabledReason }: ActiveSession
 
   if (items.length === 0) {
     return (
-      <section aria-labelledby="sessions-en-cours" className="flex min-w-0 flex-col gap-3 nav:gap-4">
+      <section aria-labelledby="sessions-en-cours" className="flex min-w-0 flex-col gap-3 nav:gap-6">
         <SectionLabel as="h2" id="sessions-en-cours">
           {label}
         </SectionLabel>
@@ -55,7 +55,7 @@ export function ActiveSessions({ items, actions, disabledReason }: ActiveSession
   }
 
   return (
-    <section aria-labelledby="sessions-en-cours" className="flex min-w-0 flex-col gap-3 nav:gap-4">
+    <section aria-labelledby="sessions-en-cours" className="flex min-w-0 flex-col gap-3 nav:gap-6">
       <SectionLabel as="h2" id="sessions-en-cours">
         {label}
       </SectionLabel>

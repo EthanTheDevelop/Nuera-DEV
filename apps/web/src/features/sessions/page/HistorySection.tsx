@@ -139,7 +139,7 @@ export function HistorySection({ filters, history, projects, actions }: HistoryS
   const periodOptions = HISTORY_PERIODS.map((value) => ({ value, label: HISTORY_PERIOD_LABELS[value] }));
 
   return (
-    <section aria-labelledby="sessions-historique" className="flex min-w-0 flex-col gap-3 nav:gap-4">
+    <section aria-labelledby="sessions-historique" className="flex min-w-0 flex-col gap-3 nav:gap-6">
       <div className="flex min-h-11 items-center gap-3 nav:min-h-0">
         <SectionLabel as="h2" id="sessions-historique" className="flex-1">
           Historique

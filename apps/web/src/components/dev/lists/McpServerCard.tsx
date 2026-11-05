@@ -35,7 +35,7 @@ export function McpServerCard({ name, icon, description, status, projectCount, a
       className={cn('gap-3', failing && 'border border-danger', className)}
     >
       <div className="flex min-w-0 items-center gap-2.5">
-        <Pastille icon={icon} size={32} />
+        <Pastille icon={icon} size={32} iconSize={20} />
         <h3 className="m-0 min-w-0 flex-1 truncate font-sans text-app-16 font-semibold text-text">{name}</h3>
       </div>
       {description ? <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">{description}</p> : null}

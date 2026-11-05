@@ -126,7 +126,7 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
   return (
     <Card variant="tile" padding="xl" as="section" aria-labelledby="github-title" className="gap-4 border-[1.5px] border-accent">
       <div className="flex min-w-0 items-center gap-4">
-        <Pastille icon="github" size={48} />
+        <Pastille icon="github" size={48} iconSize={20} />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <h2 id="github-title" className="m-0 font-sans text-app-18 font-semibold text-text">
             GitHub · import et synchronisation des dépôts
