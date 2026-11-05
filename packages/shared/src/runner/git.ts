@@ -4,6 +4,7 @@ import {
   GitExtraHeaderSchema,
   GitIdentitySchema,
   IsoDateSchema,
+  QueryBooleanSchema,
   RelativePathSchema,
   RepoFullNameSchema,
   SyncStateSchema,
@@ -260,10 +261,35 @@ export const WorktreeDtoSchema = z.object({
   ahead: z.number().int().nullable(),
   behind: z.number().int().nullable(),
   liveSessionId: UuidSchema.nullable(),
+  /**
+   * Disk space of the folder (like `du -s`, `.git` included for the primary clone), only when asked
+   * (`?sizes=1`). null = not measured: unreadable, or too large to walk within the runner's budget.
+   */
+  sizeBytes: z.number().int().nonnegative().nullable().optional(),
 });
 export type WorktreeDto = z.infer<typeof WorktreeDtoSchema>;
 
+export const WorktreesQuerySchema = z.object({
+  /** Measure each folder's disk space (cached by the runner). */
+  sizes: QueryBooleanSchema.optional(),
+});
+
 export const WorktreesResponseSchema = z.object({ worktrees: z.array(WorktreeDtoSchema) });
+
+/**
+ * Removal of a project's primary clone and of its worktrees (T8 « Supprimer aussi le clone de
+ * VPS-3 »). Refused while a session or a command runs, or when work exists only on the server
+ * (uncommitted files, commits pushed nowhere): nothing is deleted then.
+ */
+export const RemoveCloneResultSchema = z.object({
+  operationId: UuidSchema.nullable(),
+  removed: z.boolean(),
+  /** Space freed (measured before the removal), null when it could not be measured. */
+  freedBytes: z.number().int().nonnegative().nullable(),
+  /** Worktree folders removed with the clone. */
+  worktrees: z.number().int().nonnegative(),
+});
+export type RemoveCloneResult = z.infer<typeof RemoveCloneResultSchema>;
 
 export const CreateWorktreeRequestSchema = z.object({
   name: WorktreeNameSchema.optional(),
@@ -304,6 +330,11 @@ export const ChangedFileSchema = z.object({
   insertions: z.number().int(),
   deletions: z.number().int(),
   binary: z.boolean(),
+  /**
+   * `false`: the lines of this untracked file were not counted (file too large, unreadable, or the
+   * read budget of a huge untracked tree was spent) — `insertions` is then 0, not a measure.
+   */
+  linesCounted: z.boolean().optional(),
 });
 export type ChangedFile = z.infer<typeof ChangedFileSchema>;
 

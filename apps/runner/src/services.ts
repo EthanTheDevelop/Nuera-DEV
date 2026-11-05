@@ -17,6 +17,7 @@ import { buildChildEnv } from './safety/env';
 import { execCommand, succeeded } from './safety/exec';
 import { PathGuard } from './safety/paths';
 import { PtyBackend, TmuxBackend, type SessionBackend } from './sessions/backend';
+import { DiskUsage } from './system/disk-usage';
 import { SessionEventStore } from './sessions/event-store';
 import { SessionManager } from './sessions/manager';
 import { diskUsage, MetricsCollector } from './system/metrics';
@@ -66,7 +67,7 @@ export async function chooseBackend(config: RunnerConfig, terminals: TerminalMan
   }
   if (tmux) {
     logger.info({ tmux }, 'sessions Claude : backend tmux');
-    return new TmuxBackend(terminals, config.dataDir);
+    return new TmuxBackend(terminals, config.dataDir, config.tmuxSocket ?? 'nuera');
   }
   logger.info('sessions Claude : backend PTY direct (tmux absent)');
   return new PtyBackend(terminals);
@@ -83,6 +84,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
   const hookPort = { value: config.hookPort };
 
   let sessionsRef: SessionManager | null = null;
+  let runsRef: RunManager | null = null;
   const git = new GitService({
     db,
     git: gitCli,
@@ -90,6 +92,8 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     ops,
     logger,
     liveSessionForWorktree: (id) => sessionsRef?.liveSessionForWorktree(id) ?? null,
+    liveRunsForWorktree: (id) => runsRef?.liveCountForWorktree(id) ?? 0,
+    diskUsage: new DiskUsage(),
   });
   const clone = new CloneService({ db, git: gitCli, paths, ops, logger });
   const files = new FileService({ paths, git: gitCli, gitService: git });
@@ -116,6 +120,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
   });
   sessionsRef = sessions;
   const runs = new RunManager({ db, bus, git, terminals, logger });
+  runsRef = runs;
 
   let maxSessions = 4;
   const refreshMax = async () => {

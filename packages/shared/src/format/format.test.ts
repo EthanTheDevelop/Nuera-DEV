@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatLongDate,
   formatPercent,
+  formatShortDay,
   formatRelative,
   formatUsage,
   initials,
@@ -37,6 +38,10 @@ describe('format (fr-FR, Europe/Paris)', () => {
 
   it('formats sizes and percentages with regular spaces', () => {
     expect(formatPercent(23)).toBe('23 %');
+    expect(formatPercent(99.95, 2)).toBe('99,95 %');
+    expect(formatPercent(99.5, 2)).toBe('99,5 %');
+    expect(formatPercent(100, 2)).toBe('100 %');
+    expect(formatPercent(12.345, 1)).toBe('12,3 %');
     expect(formatUsage(5.1 * 1024 ** 3, 16 * 1024 ** 3)).toBe('5,1 / 16 Go');
     expect(formatUsage(61 * 1024 ** 3, 160 * 1024 ** 3)).toBe('61 / 160 Go');
     expect(formatBytes(2.4 * 1024 ** 3)).toBe('2,4 Go');
@@ -46,5 +51,14 @@ describe('format (fr-FR, Europe/Paris)', () => {
     expect(shortSha('a3f9c12e45b')).toBe('a3f9c12');
     expect(initials('Nezar')).toBe('NZ');
     expect(initials('Ethan Ngo')).toBe('EN');
+  });
+});
+
+describe('formatShortDay', () => {
+  it('prints the phone header date « Mer. 4 nov. »', () => {
+    expect(formatShortDay(new Date('2026-11-04T10:00:00+01:00'))).toBe('Mer. 4 nov.');
+  });
+  it('uses the Paris day near midnight', () => {
+    expect(formatShortDay('2026-11-04T23:30:00Z')).toBe('Jeu. 5 nov.');
   });
 });

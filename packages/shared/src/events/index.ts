@@ -28,6 +28,8 @@ export const SessionStatusEventSchema = z.object({
   sessionId: UuidSchema,
   projectId: UuidSchema,
   status: SessionStatusSchema,
+  /** Nuera's title (« Renommer » updates it in other tabs); absent from older runners. */
+  title: z.string().optional(),
   live: z.boolean(),
   currentActivity: z.string().nullable(),
   lastInstruction: z.string().nullable(),

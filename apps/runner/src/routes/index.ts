@@ -50,7 +50,8 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
   defineRoute(app, 'repoLog', async ({ params, query }) => s.git.log(params.projectId, query));
 
   // --- Worktrees ------------------------------------------------------------------------------
-  defineRoute(app, 'listWorktrees', async ({ params }) => s.git.listWorktrees(params.projectId));
+  defineRoute(app, 'listWorktrees', async ({ params, query }) => s.git.listWorktrees(params.projectId, { sizes: query.sizes ?? false }));
+  defineRoute(app, 'removeClone', async ({ params }) => s.git.removeClone(params.projectId));
   defineRoute(app, 'createWorktree', async ({ params, body }) => s.git.worktreeDto(await s.git.createWorktree(params.projectId, body)));
   defineRoute(app, 'removeWorktree', async ({ params, query }) => s.git.removeWorktree(params.worktreeId, { force: query.force, deleteBranch: query.deleteBranch }));
   defineRoute(app, 'worktreeStatus', async ({ params }) => s.git.worktreeStatus(params.worktreeId));
@@ -156,6 +157,7 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
   defineRoute(app, 'resumeSession', async ({ params, body }) => s.sessions.resume(params.sessionId, body.launch));
   defineRoute(app, 'sendInstruction', async ({ params, body }) => s.sessions.sendInstruction(params.sessionId, body.text));
   defineRoute(app, 'interruptSession', async ({ params }) => s.sessions.interrupt(params.sessionId));
+  defineRoute(app, 'announceSession', async ({ params }) => s.sessions.announce(params.sessionId));
   defineRoute(app, 'stopSession', async ({ params, body }) => s.sessions.stop(params.sessionId, body));
   defineRoute(app, 'sessionEvents', async ({ params, query }) => {
     await s.sessions.dto(params.sessionId);

@@ -8,7 +8,8 @@
     "./runner": "./src/runner/index.ts",
     "./format": "./src/format/index.ts",
     "./paths": "./src/paths/index.ts",
-    "./events": "./src/events/index.ts"
+    "./events": "./src/events/index.ts",
+    "./env": "./src/env/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

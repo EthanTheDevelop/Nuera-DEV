@@ -113,6 +113,9 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
     // The permission notification lands on the request's card (« Répondre » of Sessions too).
     const permissionNotice = await waitFor(() => notified.find((e) => e.type === 'notification.created' && e.data.kind === 'permission_request') ?? null, { timeoutMs: 30_000, label: 'permission notification' });
     expect(permissionNotice.data).toMatchObject({ href: `/workspace/${sessionId}#demande-${waiting.pendingPermission!.id}`, sessionId });
+    // S5 copy: « <titre> attend votre accord » / « <cible> · <projet> · touchez pour répondre ».
+    expect(permissionNotice.data).toMatchObject({ title: 'Module CRM · pipeline attend votre accord' });
+    expect((permissionNotice.data as { body: string | null }).body).toMatch(/^.+ · app · touchez pour répondre$/);
     offNotified();
 
     const decision = await inject('POST', `/v1/permissions/${waiting.pendingPermission!.id}/decision`, { behavior: 'allow', always: true });
@@ -126,6 +129,9 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
       return s.status === 'waiting_input' && s.lastInstruction ? s : null;
     }, { timeoutMs: 420_000, intervalMs: 500, label: 'end of turn' });
     expect(done.planTotal).toBe(3);
+    // The conversation id is kept in the database (not only in launch.json).
+    const [stored] = await env.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(eq(sessions.id, sessionId));
+    expect(stored!.claudeSessionId).toBe(sessionId);
     expect(done.cliStatus).toMatchObject({ model: { displayName: 'Fake Opus' }, contextWindow: { usedPercentage: 23 } });
 
     const items = await events();

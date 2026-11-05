@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -17,7 +17,8 @@ import { lineDiffCounts, planFromTodoWrite, toolOutcome, toolTarget } from '../s
 import { alwaysLabelFrom, permissionTitle, resolvedLabel } from '../src/sessions/permission-text';
 import { sanitizeStatusLine } from '../src/sessions/statusline';
 import { extractAssistantTexts } from '../src/sessions/transcript';
-import { sanitizeInstruction } from '../src/sessions/manager';
+import { permissionNotificationCopy, sanitizeInstruction } from '../src/sessions/manager';
+import { walkDiskUsage } from '../src/system/disk-usage';
 import { buildMcpConfig, buildSettings, HOOK_EVENTS } from '../src/sessions/runtime-files';
 import { parseAuthStatus, parseMcpGet, userScopeMcpConfig } from '../src/claude/cli';
 import { tmuxSessionName } from '../src/sessions/backend';
@@ -431,5 +432,45 @@ describe('event bus', () => {
     bus.publish('heartbeat', {}, { channels: [GLOBAL] });
     bus.publish('heartbeat', {}, { channels: [GLOBAL] });
     expect(bus.replay(GLOBAL, 1001)).toBeNull();
+  });
+});
+
+describe('disk usage walk (du-like, bounded)', () => {
+  it('sums the folder without following links, counts hard links once, and gives up past its budget', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'nuera-du-'));
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'nuera-du-out-'));
+    try {
+      mkdirSync(path.join(root, 'a', 'b'), { recursive: true });
+      writeFileSync(path.join(root, 'a', 'one.bin'), Buffer.alloc(64 * 1024, 1));
+      writeFileSync(path.join(root, 'a', 'b', 'two.bin'), Buffer.alloc(32 * 1024, 2));
+      const base = await walkDiskUsage(root);
+      expect(base).toBeGreaterThanOrEqual(96 * 1024);
+      // A big file behind a symbolic link (here outside the root) is not walked; a hard link adds nothing.
+      writeFileSync(path.join(outside, 'big.bin'), Buffer.alloc(4 * 1024 * 1024, 3));
+      symlinkSync(outside, path.join(root, 'link'));
+      linkSync(path.join(root, 'a', 'one.bin'), path.join(root, 'hard.bin'));
+      const after = await walkDiskUsage(root);
+      expect(after).not.toBeNull();
+      expect(after! - base!).toBeLessThan(64 * 1024);
+      expect(await walkDiskUsage(root, { entries: 2, ms: 10_000 })).toBeNull();
+      expect(await walkDiskUsage(path.join(root, 'absent'))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('permission notification copy (Figma S5)', () => {
+  it('names the session, the target and the project', () => {
+    expect(permissionNotificationCopy({ sessionTitle: 'Tests e2e du devis', projectName: 'Nuera OS', target: 'npm run test -- e2e', requestTitle: 'Exécuter une commande' })).toEqual({
+      title: 'Tests e2e du devis attend votre accord',
+      body: 'npm run test -- e2e · Nuera OS · touchez pour répondre',
+    });
+    const fallback = permissionNotificationCopy({ sessionTitle: 'Export', projectName: null, target: '  ', requestTitle: 'Utiliser un outil MCP' });
+    expect(fallback.body).toBe('Utiliser un outil MCP · touchez pour répondre');
+    const long = permissionNotificationCopy({ sessionTitle: 'S', projectName: 'P', target: `rm -rf ${'x'.repeat(400)}\nsuite`, requestTitle: 'x' });
+    expect(long.body.length).toBeLessThan(220);
+    expect(long.body).toContain('… · P · touchez pour répondre');
   });
 });

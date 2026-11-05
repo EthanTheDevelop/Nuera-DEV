@@ -69,6 +69,15 @@ export function formatLongDate(value: DateInput): string {
   );
 }
 
+/** « Mer. 4 nov. » — phone header date (M01 « Mer. 4 nov. · tout est disponible »). */
+export function formatShortDay(value: DateInput): string {
+  const parts = new Intl.DateTimeFormat(LOCALE, { timeZone: TIME_ZONE, weekday: 'short', day: 'numeric', month: 'short' }).formatToParts(
+    toDate(value),
+  );
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${capitalize(get('weekday'))} ${get('day')} ${get('month')}`.replace(/\s+/g, ' ').trim();
+}
+
 /** « lun. 2 nov. 21:05 » — used in history tables. */
 export function formatDateTimeShort(value: DateInput, now: DateInput = new Date()): string {
   const d = toDate(value);
@@ -120,16 +129,23 @@ export function formatDuration(ms: number): string {
   return `${h} h ${String(m).padStart(2, '0')}`;
 }
 
-const number1 = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 1, minimumFractionDigits: 0 });
-const number0 = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 0 });
+const numberFormats = new Map<number, Intl.NumberFormat>();
+function numberFormat(fractionDigits: number): Intl.NumberFormat {
+  const digits = Math.min(Math.max(Math.trunc(fractionDigits), 0), 3);
+  let format = numberFormats.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+    numberFormats.set(digits, format);
+  }
+  return format;
+}
 
 /** Plain French number with regular spaces (Figma uses regular spaces, not U+202F). */
 export function formatNumber(value: number, fractionDigits = 0): string {
-  const f = fractionDigits === 0 ? number0 : number1;
-  return f.format(value).replace(/[  ]/g, ' ');
+  return numberFormat(fractionDigits).format(value).replace(/[  ]/g, ' ');
 }
 
-/** « 23 % » */
+/** « 23 % », « 99,95 % » (`fractionDigits` = at most that many decimals, 0–3). */
 export function formatPercent(value: number, fractionDigits = 0): string {
   return `${formatNumber(value, fractionDigits)} %`;
 }

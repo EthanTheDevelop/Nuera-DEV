@@ -61,6 +61,12 @@ export class RunManager {
     return this.live.size;
   }
 
+  liveCountForWorktree(worktreeId: string): number {
+    let count = 0;
+    for (const live of this.live.values()) if (live.row.worktreeId === worktreeId) count += 1;
+    return count;
+  }
+
   private dto(row: RunRow, tests: TestReport | null): RunDto {
     return {
       id: row.id,
