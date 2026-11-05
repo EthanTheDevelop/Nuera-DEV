@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigserial,
   boolean,
@@ -46,6 +47,11 @@ export const sessions = pgTable(
     remoteControl: boolean('remote_control').notNull().default(false),
     remoteControlUrl: text('remote_control_url'),
     transcriptPath: text('transcript_path'),
+    /**
+     * Current Claude conversation id when it differs from `id` (after /clear the CLI starts a new
+     * conversation); null means the same as `id`. Used by `claude --resume`.
+     */
+    claudeSessionId: text('claude_session_id'),
     /** sha256 of the per-session hook token (the clear token only lives in the runner). */
     hookTokenHash: text('hook_token_hash'),
     lastInstruction: text('last_instruction'),
@@ -102,6 +108,8 @@ export const sessionEvents = pgTable(
     uniqueIndex('session_events_session_position_idx').on(t.sessionId, t.position),
     uniqueIndex('session_events_session_key_idx').on(t.sessionId, t.key),
     index('session_events_session_version_idx').on(t.sessionId, t.version),
+    // « Dernier appel » of each MCP server (Intégrations) scans tool events only.
+    index('session_events_tool_idx').on(t.updatedAt).where(sql`${t.kind} = 'tool'`),
   ],
 );
 

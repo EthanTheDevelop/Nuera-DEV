@@ -13,6 +13,7 @@ import type {
   IntegrationKind,
   IntegrationStatus,
   McpAuthKind,
+  McpServerConfig,
   McpStatus,
   McpTransport,
 } from './types';
@@ -64,6 +65,8 @@ export const mcpServers = pgTable('mcp_servers', {
   secretsEncrypted: text('secrets_encrypted'),
   /** Names of headers/env keys (no values) so the UI can show what is configured. */
   secretKeys: jsonb('secret_keys').$type<string[]>().notNull().default([]),
+  /** Non-secret settings: preset id, static headers, tools Claude must not call. */
+  config: jsonb('config').$type<McpServerConfig>().notNull().default({}),
   /** Free text shown in the drawer: perimeter ("développement uniquement"), granted permissions. */
   scopeNote: text('scope_note'),
   permissionsNote: text('permissions_note'),

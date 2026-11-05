@@ -13,6 +13,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type {
   CommandKind,
+  CommandRunDetails,
   CommandRunStatus,
   ProjectCommands,
   ProjectOptions,
@@ -145,6 +146,8 @@ export const commandRuns = pgTable(
     summary: text('summary'),
     /** Last ~64 KiB of output, kept for the UI after the process ends. */
     outputTail: text('output_tail'),
+    /** Per-test results and failures (« Résultats des tests »), when the output could be parsed. */
+    details: jsonb('details').$type<CommandRunDetails>(),
     startedAt: ts('started_at').defaultNow().notNull(),
     finishedAt: ts('finished_at'),
   },

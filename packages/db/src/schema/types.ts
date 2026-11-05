@@ -110,6 +110,33 @@ export type IntegrationStatus = 'pending' | 'connected' | 'expiring' | 'expired'
 
 export type McpTransport = 'http' | 'sse' | 'stdio';
 export type McpAuthKind = 'none' | 'bearer' | 'header' | 'env' | 'oauth';
+
+/** Non-secret settings of an MCP server (secrets stay in `secretsEncrypted`). */
+export interface McpServerConfig {
+  /** Built-in preset the server was created from ("figma", "github", "coolify", "playwright"…). */
+  presetId?: string;
+  /** Static, non-secret HTTP headers sent with every request. */
+  headers?: Record<string, string>;
+  /** Tool names Claude Code must not call on this server (added to the session deny rules). */
+  denyTools?: string[];
+}
+
+/** Structured result of a run, stored when the process ends (test report parsed from the output). */
+export interface CommandRunDetails {
+  report?: {
+    counts: {
+      passed: number;
+      failed: number;
+      skipped: number;
+      running: number;
+      total: number;
+      durationMs: number | null;
+      framework: 'vitest' | 'jest' | 'playwright' | 'node' | 'unknown';
+    };
+    tests: Array<{ name: string; status: 'passed' | 'failed' | 'running' | 'skipped'; durationMs: number | null; location: string | null }>;
+    failures: Array<{ name: string; location: string | null; excerpt: string }>;
+  };
+}
 export type McpStatus = 'connected' | 'needs_auth' | 'expired' | 'error' | 'disabled' | 'unknown';
 
 export type NotificationKind =
@@ -121,6 +148,7 @@ export type NotificationKind =
   | 'operation_succeeded'
   | 'integration_expiring'
   | 'integration_expired'
+  | 'integration_error'
   | 'claude_disconnected'
   | 'server'
   | 'security';

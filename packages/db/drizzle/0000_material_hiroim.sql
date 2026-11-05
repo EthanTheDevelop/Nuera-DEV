@@ -44,7 +44,10 @@ CREATE TABLE "two_factor" (
 	"id" text PRIMARY KEY NOT NULL,
 	"secret" text NOT NULL,
 	"backup_codes" text NOT NULL,
-	"user_id" text NOT NULL
+	"user_id" text NOT NULL,
+	"verified" boolean DEFAULT true,
+	"failed_verification_count" integer DEFAULT 0,
+	"locked_until" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "user" (
@@ -80,6 +83,7 @@ CREATE TABLE "command_runs" (
 	"port" integer,
 	"summary" text,
 	"output_tail" text,
+	"details" jsonb,
 	"started_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"finished_at" timestamp with time zone
 );
@@ -207,6 +211,7 @@ CREATE TABLE "sessions" (
 	"remote_control" boolean DEFAULT false NOT NULL,
 	"remote_control_url" text,
 	"transcript_path" text,
+	"claude_session_id" text,
 	"hook_token_hash" text,
 	"last_instruction" text,
 	"current_activity" text,
@@ -255,6 +260,7 @@ CREATE TABLE "mcp_servers" (
 	"auth_kind" text DEFAULT 'none' NOT NULL,
 	"secrets_encrypted" text,
 	"secret_keys" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"config" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"scope_note" text,
 	"permissions_note" text,
 	"is_enabled" boolean DEFAULT true NOT NULL,
@@ -399,8 +405,11 @@ ALTER TABLE "operations" ADD CONSTRAINT "operations_actor_user_id_user_id_fk" FO
 ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "account_user_id_idx" ON "account" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "passkey_user_id_idx" ON "passkey" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "passkey_credential_id_idx" ON "passkey" USING btree ("credential_id");--> statement-breakpoint
 CREATE INDEX "session_user_id_idx" ON "session" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "two_factor_secret_idx" ON "two_factor" USING btree ("secret");--> statement-breakpoint
 CREATE INDEX "two_factor_user_id_idx" ON "two_factor" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "user_single_owner_idx" ON "user" USING btree ((true));--> statement-breakpoint
 CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("identifier");--> statement-breakpoint
 CREATE INDEX "command_runs_project_kind_idx" ON "command_runs" USING btree ("project_id","kind","started_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "project_env_vars_project_key_idx" ON "project_env_vars" USING btree ("project_id","key");--> statement-breakpoint
@@ -413,6 +422,7 @@ CREATE INDEX "permission_requests_session_status_idx" ON "permission_requests" U
 CREATE UNIQUE INDEX "session_events_session_position_idx" ON "session_events" USING btree ("session_id","position");--> statement-breakpoint
 CREATE UNIQUE INDEX "session_events_session_key_idx" ON "session_events" USING btree ("session_id","key");--> statement-breakpoint
 CREATE INDEX "session_events_session_version_idx" ON "session_events" USING btree ("session_id","version");--> statement-breakpoint
+CREATE INDEX "session_events_tool_idx" ON "session_events" USING btree ("updated_at") WHERE "session_events"."kind" = 'tool';--> statement-breakpoint
 CREATE INDEX "sessions_project_idx" ON "sessions" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "sessions_status_idx" ON "sessions" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "sessions_created_at_idx" ON "sessions" USING btree ("created_at");--> statement-breakpoint

@@ -1,5 +1,5 @@
 {
-  "id": "da860650-5ac6-44c2-ba8e-bb4b39d57155",
+  "id": "af22b668-1cbd-4e7d-b9c0-28257b2e2105",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -213,6 +213,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "passkey_credential_id_idx": {
+          "name": "passkey_credential_id_idx",
+          "columns": [
+            {
+              "expression": "credential_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -364,9 +379,44 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "verified": {
+          "name": "verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false,
+          "default": true
+        },
+        "failed_verification_count": {
+          "name": "failed_verification_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "default": 0
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
+        "two_factor_secret_idx": {
+          "name": "two_factor_secret_idx",
+          "columns": [
+            {
+              "expression": "secret",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "two_factor_user_id_idx": {
           "name": "two_factor_user_id_idx",
           "columns": [
@@ -461,7 +511,23 @@
           "default": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "user_single_owner_idx": {
+          "name": "user_single_owner_idx",
+          "columns": [
+            {
+              "expression": "(true)",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
@@ -613,6 +679,12 @@
         "output_tail": {
           "name": "output_tail",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -1605,6 +1677,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "session_events_tool_idx": {
+          "name": "session_events_tool_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_events\".\"kind\" = 'tool'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1716,6 +1804,12 @@
         },
         "transcript_path": {
           "name": "transcript_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claude_session_id": {
+          "name": "claude_session_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -2097,6 +2191,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "config": {
+          "name": "config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "scope_note": {
           "name": "scope_note",
