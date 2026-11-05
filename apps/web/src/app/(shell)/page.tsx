@@ -1,32 +1,36 @@
 import type { Metadata } from 'next';
-import { PageHeader } from '@/components/shell/PageHeader';
-import { ShellAvailability } from '@/components/shell/ShellAvailability';
-import { requireUser } from '@/server/auth/session';
-import { getShellData } from '@/server/shell/get-shell-data';
+import { Suspense } from 'react';
+import { HomeLoadError } from '@/features/home/HomeLoadError';
+import { HomeSkeleton } from '@/features/home/HomeSkeleton';
+import { HomeView } from '@/features/home/HomeView';
+import { requireUser, type CurrentUser } from '@/server/auth/session';
+import { getHomeData, type HomeData } from '@/server/home';
 
 export const metadata: Metadata = { title: 'Accueil' };
+export const dynamic = 'force-dynamic';
+
+async function HomeContent({ user }: { user: CurrentUser }) {
+  let data: HomeData;
+  try {
+    data = await getHomeData(user);
+  } catch (error) {
+    console.error('[accueil]', error);
+    return <HomeLoadError />;
+  }
+  return <HomeView data={data} />;
+}
 
 /**
- * Accueil — temporary minimal version: the real greeting, the long date and the live availability
- * sentence (D01 « Bonjour Nezar » / « Mercredi 4 novembre 2026 · VPS-3 et Claude Code sont disponibles »;
- * M01 « Mer. 4 nov. · tout est disponible »). The Home lot replaces this file with D01 / M01.
+ * Accueil — D01 (desktop) / M01 (phone): server and Claude Code tiles, quick resume, live sessions,
+ * recent projects, latest Git activity, integrations. T1 skeletons while the data arrives (a
+ * Suspense boundary of this page only: the other sections keep their own loading states);
+ * every tile degrades on its own; T5 / T6 are rendered by the shell.
  */
 export default async function HomePage() {
   const user = await requireUser();
-  const shell = await getShellData(user);
   return (
-    <PageHeader
-      title={`Bonjour ${shell.user.firstName}`}
-      subtitle={
-        <>
-          <span className="hidden nav:inline">
-            <ShellAvailability variant="long" />
-          </span>
-          <span className="nav:hidden">
-            <ShellAvailability variant="short" />
-          </span>
-        </>
-      }
-    />
+    <Suspense fallback={<HomeSkeleton />}>
+      <HomeContent user={user} />
+    </Suspense>
   );
 }

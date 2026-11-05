@@ -83,14 +83,16 @@ export function CommandRegistryProvider({ children }: { children: ReactNode }) {
 
 /** Adds a static group to the palette while the calling component is mounted. Memoise `group`. */
 export function useRegisterCommands(group: CommandGroupDef | null): void {
-  const registry = useContext(RegistryContext);
-  useEffect(() => (registry && group ? registry.registerGroup(group) : undefined), [registry, group]);
+  // Depends on the stable register function, not on the registry value (which changes with every
+  // registration: depending on it would unregister / register again in a loop).
+  const registerGroup = useContext(RegistryContext)?.registerGroup;
+  useEffect(() => (registerGroup && group ? registerGroup(group) : undefined), [registerGroup, group]);
 }
 
 /** Adds an async search provider while mounted. Memoise `provider`. */
 export function useRegisterSearchProvider(provider: CommandSearchProvider | null): void {
-  const registry = useContext(RegistryContext);
-  useEffect(() => (registry && provider ? registry.registerProvider(provider) : undefined), [registry, provider]);
+  const registerProvider = useContext(RegistryContext)?.registerProvider;
+  useEffect(() => (registerProvider && provider ? registerProvider(provider) : undefined), [registerProvider, provider]);
 }
 
 type ProviderResult = { status: 'loading' } | { status: 'done'; items: readonly CommandItem[] } | { status: 'error' };

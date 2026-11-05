@@ -1,0 +1,77 @@
+/**
+ * Test-only helpers of the sessions lot: one PostgreSQL database per test file
+ * (`nuera_sessions_<suffix>`) on the local cluster of `pnpm db:local`, created and migrated on
+ * demand, wiped between tests. Never points at nuera_dev: the name is always derived here.
+ *
+ *   NUERA_TEST_PG_ADMIN_URL   admin URL (default postgres://nuera:nuera@127.0.0.1:54329/postgres)
+ */
+import { randomBytes } from 'node:crypto';
+import { createDb } from '@nuera/db';
+import { runMigrations } from '@nuera/db/migrate';
+import { user } from '@nuera/db/schema';
+import { sql } from 'drizzle-orm';
+
+const ADMIN_URL = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
+
+export const TEST_USER_ID = 'test-owner';
+
+function databaseUrl(name: string): string {
+  const url = new URL(ADMIN_URL);
+  url.pathname = `/${name}`;
+  return url.toString();
+}
+
+async function admin<T>(fn: (db: ReturnType<typeof createDb>) => Promise<T>): Promise<T> {
+  const db = createDb(ADMIN_URL, { max: 1, applicationName: 'nuera-sessions-tests' });
+  try {
+    return await fn(db);
+  } finally {
+    await db.$client.end({ timeout: 5 });
+  }
+}
+
+async function recreate(name: string): Promise<void> {
+  await admin(async (db) => {
+    await db.execute(sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${name} and pid <> pg_backend_pid()`);
+    await db.execute(sql.raw(`drop database if exists "${name}"`));
+    await db.execute(sql.raw(`create database "${name}"`));
+  });
+}
+
+export async function prepareSessionsTestDatabase(suffix: string): Promise<string> {
+  if (!/^[a-z0-9_]{1,30}$/.test(suffix)) throw new Error('suffixe de base invalide');
+  const name = `nuera_sessions_${suffix}`;
+  const url = databaseUrl(name);
+  const exists = await admin(async (db) => (await db.execute(sql`select 1 as found from pg_database where datname = ${name}`)).length > 0);
+  if (!exists) await recreate(name);
+  try {
+    await runMigrations(url);
+  } catch {
+    await recreate(name);
+    await runMigrations(url);
+  }
+  process.env.DATABASE_URL = url;
+  delete (globalThis as { __nueraWebDb?: unknown }).__nueraWebDb;
+  delete (globalThis as { __nueraSettings?: unknown }).__nueraSettings;
+  process.env.APP_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+  delete process.env.APP_ENCRYPTION_KEY_ID;
+  delete process.env.APP_ENCRYPTION_PREVIOUS_KEYS;
+  return url;
+}
+
+export async function resetSessionTables(): Promise<void> {
+  const { db } = await import('@/server/db');
+  await db.execute(
+    sql.raw(
+      'truncate table audit_log, permission_requests, session_events, sessions, worktrees, project_env_vars, project_mcp_servers, mcp_servers, projects, app_settings, "user" restart identity cascade',
+    ),
+  );
+  delete (globalThis as { __nueraSettings?: unknown }).__nueraSettings;
+  await db.insert(user).values({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test', twoFactorEnabled: true });
+}
+
+export async function closeSessionsTestDb(): Promise<void> {
+  const holder = globalThis as { __nueraWebDb?: { $client?: { end: (options?: { timeout?: number }) => Promise<void> } } };
+  await holder.__nueraWebDb?.$client?.end({ timeout: 5 }).catch(() => undefined);
+  delete holder.__nueraWebDb;
+}

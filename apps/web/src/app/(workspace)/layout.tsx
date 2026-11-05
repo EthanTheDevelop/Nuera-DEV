@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { AppShell } from '@/components/shell/AppShell';
+import { GlobalSearch } from '@/features/search/GlobalSearch';
 import { requireUser } from '@/server/auth/session';
 import { getShellData } from '@/server/shell/get-shell-data';
 
@@ -14,6 +15,7 @@ export default async function WorkspaceLayout({ children }: { children: ReactNod
   const shell = await getShellData(user);
   return (
     <AppShell data={shell} variant="rail">
+      <GlobalSearch />
       {children}
     </AppShell>
   );
