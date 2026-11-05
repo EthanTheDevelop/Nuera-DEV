@@ -1,6 +1,7 @@
 #!/bin/sh
 # Restauration d'une sauvegarde produite par backup-db.sh.
 #   DATABASE_URL=postgres://… ./deploy/scripts/restore-db.sh backups/nuera-dev-20261105T020000Z.dump
+#   (pg_restore ≥ 17, celui de l'image postgres:17-bookworm par exemple)
 # ATTENTION : remplace le contenu de la base cible. Arrêter `web` et `runner` avant de restaurer.
 set -eu
 
@@ -8,8 +9,12 @@ set -eu
 FILE="${1:?Chemin du fichier .dump requis}"
 [ -f "${FILE}" ] || { echo "Fichier introuvable : ${FILE}" >&2; exit 1; }
 
-printf 'Restaurer %s dans la base cible ? Toutes les données actuelles seront remplacées. Tapez RESTAURER : ' "${FILE}"
-read -r answer
+# Non interactif (script, cron de test) : RESTORE_CONFIRM=RESTAURER.
+answer="${RESTORE_CONFIRM:-}"
+if [ -z "${answer}" ]; then
+  printf 'Restaurer %s dans la base cible ? Toutes les données actuelles seront remplacées. Tapez RESTAURER : ' "${FILE}"
+  read -r answer
+fi
 [ "${answer}" = "RESTAURER" ] || { echo "Annulé."; exit 1; }
 
 pg_restore --clean --if-exists --no-owner --no-privileges --single-transaction --dbname="${DATABASE_URL}" "${FILE}"

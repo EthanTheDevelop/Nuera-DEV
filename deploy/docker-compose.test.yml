@@ -1,0 +1,48 @@
+# Nuera Dev — essai LOCAL du compose de production (jamais utilisé par Coolify).
+# Ajoute PostgreSQL dans le compose, publie web sur 127.0.0.1:${NUERA_TEST_WEB_PORT:-3510} et monte en lecture seule un
+# dossier de dépôts nus locaux comme « GitHub » du runner (clone sans Internet). Voir docs/DEPLOY.md §10.
+#   node deploy/scripts/test-env.mjs                     # écrit deploy/.env.test (git-ignoré)
+#   docker compose -p nuera-deploy-test --env-file deploy/.env.test \
+#     -f deploy/docker-compose.yml -f deploy/docker-compose.test.yml up -d --wait
+#   docker compose -p nuera-deploy-test … down -v       # supprime conteneurs ET volumes de l'essai
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: nuera
+      POSTGRES_PASSWORD: ${NUERA_TEST_PG_PASSWORD:?NUERA_TEST_PG_PASSWORD requis}
+      POSTGRES_DB: nuera
+    volumes:
+      - nuera-test-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nuera -d nuera"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks:
+      - nuera-internal
+
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    ports:
+      - "127.0.0.1:${NUERA_TEST_WEB_PORT:-3510}:3000"
+
+  runner:
+    environment:
+      # Local bare repositories (`<owner>/<repo>.git`) instead of https://github.com/.
+      NUERA_GIT_REMOTE_BASE: file:///srv/remotes/
+      # Optional: corporate TLS proxy root of the test machine, for the official CLI installer only.
+      CURL_CA_BUNDLE: ${NUERA_TEST_CA_IN_CONTAINER:-/etc/ssl/certs/ca-certificates.crt}
+      SSL_CERT_FILE: ${NUERA_TEST_CA_IN_CONTAINER:-/etc/ssl/certs/ca-certificates.crt}
+      NODE_EXTRA_CA_CERTS: ${NUERA_TEST_CA_IN_CONTAINER:-/etc/ssl/certs/ca-certificates.crt}
+    volumes:
+      - ${NUERA_TEST_REMOTES:?NUERA_TEST_REMOTES requis}:/srv/remotes:ro
+      - ${NUERA_TEST_CA_FILE:-/dev/null}:/etc/nuera-test-ca.crt:ro
+
+volumes:
+  nuera-test-pg:
