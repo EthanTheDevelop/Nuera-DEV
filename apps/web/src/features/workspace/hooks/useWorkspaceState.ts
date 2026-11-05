@@ -14,6 +14,7 @@ import {
   maxVersion,
   orderedItems,
   reconcilePending,
+  statusNeedsSnapshot,
   upsertItems,
   type PendingInstruction,
   type ThreadMap,
@@ -150,7 +151,7 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
     dispatch({ type: 'changes', changes: data.changes, branch: data.branch });
     if (data.pullRequest) dispatch({ type: 'pullRequest', pullRequest: data.pullRequest });
     if (data.permission) dispatch({ type: 'permission', permission: data.permission });
-    dispatch({ type: 'session', patch: { title: data.session.title } });
+    dispatch({ type: 'session', patch: { title: data.session.title, resumable: data.session.resumable } });
   }, [data]);
 
   const changesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -225,6 +226,8 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
           if (event.data.sessionId !== sessionId) return;
           dispatch({ type: 'status', event: event.data });
           if (event.data.status !== 'running') refreshChanges();
+          // The CLI is gone: the snapshot says whether « Reprendre la session » is possible.
+          if (statusNeedsSnapshot(event.data)) router.refresh();
           break;
         case 'session.permission':
           dispatch({ type: 'permission', permission: event.data.permission });
@@ -243,6 +246,13 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
   );
 
   const stream = useSessionStream(sessionId, onEvent);
+
+  // Events written between the server render (snapshot) and the stream's opening are not replayed
+  // by the runner (no Last-Event-ID on a fresh EventSource): catch up from the last known version
+  // each time the stream opens.
+  useEffect(() => {
+    if (stream === 'open') void reloadThread(versionRef.current);
+  }, [stream, reloadThread]);
 
   // W7 recovery: when the browser gets its link back, catch up from the last version.
   const reconnecting = live?.connection === 'reconnecting';
