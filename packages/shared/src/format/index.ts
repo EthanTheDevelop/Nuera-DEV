@@ -73,7 +73,7 @@ export function formatLongDate(value: DateInput): string {
 export function formatDateTimeShort(value: DateInput, now: DateInput = new Date()): string {
   const d = toDate(value);
   const diff = dayDiff(d, toDate(now));
-  if (diff === 0) return `aujourd’hui ${formatTime(d)}`;
+  if (diff === 0) return `aujourd'hui ${formatTime(d)}`;
   if (diff === 1) return `hier ${formatTime(d)}`;
   if (diff > 1 && diff < 7) {
     const wd = new Intl.DateTimeFormat(LOCALE, { timeZone: TIME_ZONE, weekday: 'short' }).format(d);
