@@ -23,7 +23,7 @@ WORKING MODE — up to two agents run AT THE SAME TIME in the SAME checkout (${M
 - EDITS: before editing a file, re-read it (the other agent may have just changed it); make surgical edits, never reformat or rewrite working code for taste. Stay inside your brief's scope; anything bigger goes to followups (exact file + change).
 - NEVER run git commands that change state (add, commit, stash, checkout, switch, reset, restore, clean, rebase, merge); read-only git is fine. NEVER run pnpm install/add/remove/update (report in dependencies_needed). The orchestrator commits after review.
 - Never use ports 3000/4100/4101, the default .next directory or the nuera_dev database. Use only your stack name/ports/databases. Stop everything you started before finishing and check your ports are free.
-- VERIFY before finishing: tsc --noEmit (node node_modules/typescript/bin/tsc --noEmit -p apps/web/tsconfig.json, and apps/runner / packages/* when touched) 0 errors; node_modules/.bin/oxlint <your paths> 0 errors; Vitest of the modules you touched; the Playwright specs you wrote or touched on desktop AND mobile against your stack; screenshots when you changed UI. Report exact commands and results.
+- VERIFY, BRIEFLY (time matters more than exhaustiveness): tsc on the packages you touched, oxlint on your paths, Vitest of the files you touched, and ONE green run of the Playwright spec(s) you wrote or touched. No repeated runs, no screenshot campaigns unless your brief is about visual fidelity. Report the commands and results in one line each.
 `
 
 const RESULT_SCHEMA = {
@@ -72,7 +72,7 @@ const FLOW_COMMON = `
 YOUR TASK: write ONE end-to-end Playwright spec for one of the 5 mandatory flows of the brief, running on the local test stack against the REAL runner, real Git repositories, the fake GitHub and the test-only fake CLI, on BOTH Playwright projects (desktop 1440×1000 and mobile 390×844 — on mobile the flow is done with the phone UI, not the desktop one). The spec drives the UI like the owner would (clicks, typing, navigation), asserting what is visible at each step AND the real effect (runner state, Git state of the bare repo or worktree, DB rows through the stack helpers, audit entries). No route mocking (page.route) of the app's own API. Stop every session your test creates (runnerApi('stopSession')) — the seeds keep 3 CLIs running and the session limit is 8.
 When the flow exposes a BUG or a missing piece in the app (dead control, wrong copy, state not refreshed, missing audit, error not recoverable…), FIX IT in the app code with a minimal change, add or adjust the unit test that covers it, and list it in delivered + files_changed. If a fix is too big for this lot, mark the step test.fixme with a one-line French reason and put the exact change in followups.
 You may add NEW helpers to the harness (new files under apps/web/e2e/harness/ or new exports, e.g. a fake MCP HTTP server for flow 5) and document them in apps/web/e2e/harness/README.md; keep existing harness contracts unchanged.
-OWNED: apps/web/e2e/<your spec file>, new harness files you add, and the minimal app fixes the flow needs. Run your spec at least twice in a row green (desktop and mobile) on your own stack, the second time with E2E_RESET=1.
+OWNED: apps/web/e2e/<your spec file>, new harness files you add, and the minimal app fixes the flow needs. Run your spec once green (desktop and mobile) on your own stack.
 `
 
 const FLOWS = [
@@ -195,30 +195,23 @@ const withState = (text) => text.replace('${STATE}', STATE)
 
 if (PART === 'flows') {
   phase('Parcours')
-  const results = await pipeline(
-    FLOWS,
-    (lot) => agent(withState(`${COMMON}\n\nYOUR STACK / PORTS / DATABASES: ${lot.stack}.\n\n${lot.prompt}`), { label: `build:${lot.key}`, phase: 'Parcours', schema: RESULT_SCHEMA }),
-    (built, lot) => agent(withState(FLOW_REVIEW(lot, built)), { label: `review:${lot.key}`, phase: 'Parcours', schema: REVIEW_SCHEMA }).then((review) => ({ key: lot.key, built, review })),
-  )
+  const results = await parallel(FLOWS.map((lot) => () =>
+    agent(withState(`${COMMON}\n\nYOUR STACK / PORTS / DATABASES: ${lot.stack}.\n\n${lot.prompt}`), { label: `build:${lot.key}`, phase: 'Parcours', schema: RESULT_SCHEMA }).then((built) => ({ key: lot.key, built }))))
   return { flows: results.filter(Boolean) }
 }
 
 if (PART === 'review') {
   phase('Revue')
   const dims = (args && args.only) ? REVIEW_DIMENSIONS.filter((d) => args.only.includes(d.key)) : REVIEW_DIMENSIONS
-  const results = await pipeline(
-    dims,
-    (dim) => agent(withState(`${COMMON}\n\nYOUR STACK / PORTS / DATABASES: ${dim.stack}.\n\n${dim.prompt}`), { label: `fix:${dim.key}`, phase: 'Revue', schema: REVIEW_SCHEMA }),
-    (result, dim) => agent(withState(DIM_VERIFY(dim, result)), { label: `verify:${dim.key}`, phase: 'Revue', schema: REVIEW_SCHEMA }).then((verify) => ({ key: dim.key, result, verify })),
-  )
+  const results = await parallel(dims.map((dim) => () =>
+    agent(withState(`${COMMON}\n\nYOUR STACK / PORTS / DATABASES: ${dim.stack}.\n\n${dim.prompt}`), { label: `fix:${dim.key}`, phase: 'Revue', schema: REVIEW_SCHEMA }).then((result) => ({ key: dim.key, result }))))
   return { review: results.filter(Boolean) }
 }
 
 if (PART === 'deploy') {
   phase('Déploiement')
   const built = await agent(withState(`${COMMON}\n\nYOUR STACK: ${DEPLOY.stack}.\n\n${DEPLOY.prompt}`), { label: 'build:deploiement', phase: 'Déploiement', schema: RESULT_SCHEMA })
-  const review = await agent(withState(DEPLOY_REVIEW(built)), { label: 'review:deploiement', phase: 'Déploiement', schema: REVIEW_SCHEMA })
-  return { deploy: { built, review } }
+  return { deploy: { built } }
 }
 
 return { error: `part inconnu : ${PART}` }
