@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useActionState, useEffect, useState } from 'react';
 import { authClient, passkeyErrorMessage, passkeysSupported } from '@/lib/auth-client';
 import { SubmitButton } from '../_components/submit-button';
@@ -16,6 +17,7 @@ export function SignInForm({ next }: { next: string }) {
 
   useEffect(() => {
     if (!passkeysSupported()) return;
+    // eslint-disable-next-line react/set-state-in-effect -- browser capability detected after mount, so SSR and hydration render the same
     setCanUsePasskey(true);
     // Conditional UI: the browser offers saved passkeys in the e-mail field's autofill.
     let cancelled = false;
@@ -48,9 +50,9 @@ export function SignInForm({ next }: { next: string }) {
       {state.status === 'error' && state.message ? (
         <FormAlert tone="error" title={state.message}>
           {state.setupIncomplete ? (
-            <a href="/configuration" className="font-medium text-accent underline underline-offset-4">
+            <Link href="/configuration" className="font-medium text-accent underline underline-offset-4">
               Reprendre la configuration
-            </a>
+            </Link>
           ) : null}
         </FormAlert>
       ) : null}

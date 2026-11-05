@@ -112,7 +112,8 @@ export const fieldShellClasses = (invalid: boolean, size: 'md' | 'lg', disabled?
   cn(
     'flex w-full min-w-0 items-center gap-2 rounded-md border bg-bg px-3 font-sans text-app-14 text-text',
     'transition-[border-color,box-shadow] duration-(--dur-fast) ease-out',
-    size === 'md' ? 'h-10' : 'h-11',
+    // `md` is 40 px from the `nav` breakpoint up and 44 px on the phone (touch target, 202:503).
+    size === 'md' ? 'h-11 nav:h-10' : 'h-11',
     invalid
       ? 'border-danger shadow-[inset_0_0_0_0.5px_var(--danger)]'
       : 'border-border focus-within:border-accent focus-within:shadow-[inset_0_0_0_0.5px_var(--accent)]',
@@ -123,7 +124,7 @@ const inputClasses =
   'h-full min-w-0 flex-1 bg-transparent font-sans text-app-14 text-text placeholder:text-muted outline-none disabled:cursor-not-allowed';
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'size'> {
-  /** `md` = 40 px (desktop), `lg` = 44 px (phone). */
+  /** `md` = 40 px on desktop (44 px below the `nav` breakpoint), `lg` = 44 px everywhere. */
   size?: 'md' | 'lg';
   /** Leading 16 px icon in `--muted` (search, folder, git-branch, key…). */
   leadingIcon?: IconName;
@@ -181,7 +182,7 @@ export function Textarea({ invalid, mono, shellClassName, className, disabled, r
     <div
       className={cn(
         fieldShellClasses(control.invalid, 'md', disabled),
-        'h-auto items-stretch px-3 py-2.5',
+        'h-auto items-stretch px-3 py-2.5 nav:h-auto',
         shellClassName,
       )}
     >

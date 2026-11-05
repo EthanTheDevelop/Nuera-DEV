@@ -39,6 +39,11 @@ import {
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const DIFF_OUTPUT_CAP = 4 * 1024 * 1024;
 const UNTRACKED_READ_CAP = 2 * 1024 * 1024;
+/**
+ * `changes()` counts the lines of untracked files within a budget: a huge untracked tree (build
+ * output, vendored dependencies not ignored) must not be read file by file at every refresh.
+ */
+export const UNTRACKED_COUNT_BUDGET = { files: 400, bytes: 16 * 1024 * 1024, ms: 2_500 };
 
 /** `:(literal)path` so that paths never act as glob magic. */
 const literal = (p: string) => `:(literal)${p}`;
@@ -71,6 +76,9 @@ function countLines(text: string): number {
 }
 
 export class GitService {
+  /** Line-count budget of `changes()` for untracked files (tests lower it). */
+  untrackedBudget = { ...UNTRACKED_COUNT_BUDGET };
+
   constructor(private readonly deps: GitServiceDeps) {}
 
   private get git() {
@@ -677,11 +685,11 @@ export class GitService {
     return { ref: head ? 'HEAD' : EMPTY_TREE, label: (await this.currentBranch(cwd)) ?? 'HEAD' };
   }
 
-  private async readUntracked(cwd: string, relativePath: string): Promise<{ binary: boolean; content: string | null; size: number }> {
+  private async readUntracked(cwd: string, relativePath: string, maxBytes = UNTRACKED_READ_CAP): Promise<{ binary: boolean; content: string | null; size: number }> {
     const abs = await this.deps.paths.resolveInWorktree(cwd, relativePath);
     const info = await stat(abs);
     if (!info.isFile()) return { binary: false, content: null, size: info.size };
-    if (info.size > UNTRACKED_READ_CAP) return { binary: false, content: null, size: info.size };
+    if (info.size > Math.min(UNTRACKED_READ_CAP, maxBytes)) return { binary: false, content: null, size: info.size };
     const buffer = await readFile(abs);
     if (isBinaryBuffer(buffer)) return { binary: true, content: null, size: info.size };
     return { binary: false, content: buffer.toString('utf8'), size: info.size };
@@ -732,18 +740,35 @@ export class GitService {
         seen.add(s.path);
       }
     }
+    const budget = { files: this.untrackedBudget.files, bytes: this.untrackedBudget.bytes, until: Date.now() + this.untrackedBudget.ms };
     for (const s of status.files) {
       if (s.kind !== 'untracked' || seen.has(s.path)) continue;
       let insertions = 0;
       let binary = false;
-      try {
-        const u = await this.readUntracked(cwd, s.path);
-        binary = u.binary;
-        insertions = u.content ? countLines(u.content) : 0;
-      } catch {
-        // unreadable: counts stay at 0
+      let linesCounted = false;
+      if (budget.files > 0 && budget.bytes > 0 && Date.now() < budget.until) {
+        budget.files -= 1;
+        try {
+          const u = await this.readUntracked(cwd, s.path, budget.bytes);
+          linesCounted = u.content !== null || u.binary;
+          if (linesCounted) budget.bytes -= u.size;
+          binary = u.binary;
+          insertions = u.content ? countLines(u.content) : 0;
+        } catch {
+          // unreadable: not counted
+        }
       }
-      files.push({ path: s.path, oldPath: null, status: 'A', staged: false, unstaged: true, insertions, deletions: 0, binary });
+      files.push({
+        path: s.path,
+        oldPath: null,
+        status: 'A',
+        staged: false,
+        unstaged: true,
+        insertions,
+        deletions: 0,
+        binary,
+        ...(linesCounted ? {} : { linesCounted: false }),
+      });
     }
     files.sort((a, b) => a.path.localeCompare(b.path));
     return {
@@ -934,7 +959,7 @@ export class GitService {
         const result = await this.git.run(args, { cwd, network: true, extraHeader: input.extraHeader, allowFailure: true, timeoutMs: 120_000 });
         const refs = parsePushPorcelain(result.stdout);
         const ref = refs.find((r) => r.to === `refs/heads/${remoteBranch}`);
-        op.appendLog(result.stderr.split(/\r?\n/).filter((l) => l.trim() && !/^To /.test(l)));
+        op.appendLog(result.stderr.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('To ')));
         if (ref?.flag === '!' || (result.exitCode !== 0 && /rejected|non-fast-forward|fetch first/i.test(result.stdout + result.stderr))) {
           throw new RunnerError('CONFLICT', `GitHub a refusé le push : ${remoteBranch} a avancé sur origin. Mettez la branche à jour d'abord.`, {
             reason: 'PUSH_REJECTED',

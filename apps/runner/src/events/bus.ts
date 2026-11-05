@@ -59,6 +59,7 @@ export class EventBus {
     for (const channel of options.channels) {
       const set = this.listeners.get(channel);
       if (!set) continue;
+      // eslint-disable-next-line unicorn/no-useless-spread -- snapshot: a listener may unsubscribe while we iterate
       for (const listener of [...set]) {
         try {
           listener(event);

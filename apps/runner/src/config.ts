@@ -26,6 +26,8 @@ export interface RunnerConfig {
   projectsRoot: string;
   dataDir: string;
   sessionBackend: SessionBackendSetting;
+  /** tmux socket (`tmux -L <name>`) of the Claude sessions; `nuera` by default (tests use their own). */
+  tmuxSocket?: string;
   /** Official CLI (`claude` on PATH by default). A .mjs/.js path is run with node (tests only). */
   claudeBin: string | null;
   logLevel: string;
@@ -55,6 +57,10 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => (v === 'tmux' || v === 'pty' ? v : 'auto') as SessionBackendSetting),
   NUERA_CLAUDE_BIN: z.string().optional(),
+  NUERA_TMUX_SOCKET: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/, 'NUERA_TMUX_SOCKET : lettres, chiffres, « - » et « _ » seulement.')
+    .optional(),
   LOG_LEVEL: z.string().default('info'),
   NUERA_GIT_REMOTE_BASE: z.string().default('https://github.com/'),
   NUERA_SCHEDULER: z.string().optional(),
@@ -109,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     projectsRoot: resolveFromRoot(e.NUERA_PROJECTS_ROOT),
     dataDir: resolveFromRoot(e.NUERA_DATA_DIR),
     sessionBackend: e.NUERA_SESSION_BACKEND,
+    tmuxSocket: e.NUERA_TMUX_SOCKET ?? 'nuera',
     claudeBin: e.NUERA_CLAUDE_BIN?.trim() ? e.NUERA_CLAUDE_BIN.trim() : null,
     logLevel: e.LOG_LEVEL,
     gitRemoteBase: remoteBase,

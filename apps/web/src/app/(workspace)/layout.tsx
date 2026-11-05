@@ -14,8 +14,7 @@ export default async function WorkspaceLayout({ children }: { children: ReactNod
   const user = await requireUser();
   const shell = await getShellData(user);
   return (
-    <AppShell data={shell} variant="rail">
-      <GlobalSearch />
+    <AppShell data={shell} variant="rail" globals={<GlobalSearch />}>
       {children}
     </AppShell>
   );

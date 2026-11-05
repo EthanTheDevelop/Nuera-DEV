@@ -1,5 +1,6 @@
 import 'server-only';
 import { projectEnvVars } from '@nuera/db/schema';
+import { isDeniedProjectEnvName } from '@nuera/shared/env';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
@@ -17,34 +18,14 @@ import type { EnvVarView } from './types';
  *   replace it (docs/ARCHITECTURE.md §9).
  * - A non-secret value is shown in clear (« NEXT_PUBLIC_SITE_URL https://… ») and can be edited.
  * - Names the runner refuses for project commands (credentials of Claude, code injection, runner
- *   identity) are refused here too, with the same list (apps/runner/src/safety/env.ts).
+ *   identity) are refused here too, with the same list (`@nuera/shared/env`).
  */
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
-const PROTECTED_EXACT = new Set([
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_CUSTOM_HEADERS',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CONFIG_DIR',
-  'RUNNER_TOKEN',
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'PATH',
-  'Path',
-  'HOME',
-  'USERPROFILE',
-]);
-
+/** Same list as the runner's project commands (`@nuera/shared/env`). */
 export function isProtectedEnvName(name: string): boolean {
-  const upper = name.toUpperCase();
-  return PROTECTED_EXACT.has(name) || PROTECTED_EXACT.has(upper) || upper.startsWith('NUERA_') || upper.startsWith('GIT_CONFIG');
+  return isDeniedProjectEnvName(name);
 }
 
 export const envVarNameSchema = z

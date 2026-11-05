@@ -22,6 +22,7 @@ export function ReposDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     setState({ kind: 'loading' });
     integrationsApi
       .githubRepos(controller.signal)
@@ -31,6 +32,7 @@ export function ReposDialog({ open, onOpenChange }: { open: boolean; onOpenChang
         setState({ kind: 'error', error: toApiError(error) });
       });
     return () => controller.abort();
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- attempt reloads the list on « Réessayer »
   }, [open, attempt]);
 
   const description =

@@ -478,6 +478,7 @@ export const OPERATION_KIND_LABELS: Record<string, string> = {
   branch_create: 'Création de branche',
   worktree_create: 'Création de worktree',
   worktree_remove: 'Suppression de worktree',
+  clone_remove: 'Suppression du clone',
   pr_create: 'Pull request',
   install: 'Installation',
   archive: 'Archivage',

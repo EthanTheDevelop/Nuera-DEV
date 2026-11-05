@@ -36,8 +36,10 @@ export function SessionTerminal({ variant = 'desktop', className }: { variant?: 
 
   useEffect(() => {
     const controller = new AbortController();
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     void read(controller.signal);
     return () => controller.abort();
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- liveKey is the trigger: re-read on each live event
   }, [read, liveKey]);
 
   const legend = (

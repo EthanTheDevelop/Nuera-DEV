@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ShellData } from '@/components/shell/types';
-import { initialLiveState, liveEventsReducer, liveStreamUrl, safeNotificationHref, type LiveState } from './useLiveEvents';
+import { createRefreshGate, initialLiveState, liveEventsReducer, liveStreamUrl, safeNotificationHref, type LiveState } from './useLiveEvents';
 
 const shell: ShellData = {
   user: { name: 'Owner Test', firstName: 'Owner', twoFactorEnabled: true },
@@ -165,5 +165,51 @@ describe('live stream helpers', () => {
     expect(safeNotificationHref('javascript:alert(1)')).toBeNull();
     expect(safeNotificationHref('/\\example.test')).toBeNull();
     expect(safeNotificationHref(null)).toBeNull();
+  });
+});
+
+describe('createRefreshGate (layout refresh under an intercepted route)', () => {
+  const manual = () => {
+    const tasks: Array<() => void> = [];
+    let runs = 0;
+    const gate = createRefreshGate(() => (runs += 1), (task) => tasks.push(task));
+    const flush = () => tasks.splice(0).forEach((task) => task());
+    return { gate, flush, runs: () => runs };
+  };
+
+  it('coalesces a burst of requests into one refresh', () => {
+    const { gate, flush, runs } = manual();
+    gate.request();
+    gate.request();
+    flush();
+    expect(runs()).toBe(1);
+  });
+
+  it('holds the refresh while deferred and runs it once on the last release', () => {
+    const { gate, flush, runs } = manual();
+    const releaseModal = gate.defer();
+    const releaseDrawer = gate.defer();
+    gate.request();
+    flush();
+    expect(runs()).toBe(0);
+    releaseModal();
+    releaseModal(); // idempotent
+    flush();
+    expect(runs()).toBe(0);
+    releaseDrawer();
+    flush();
+    expect(runs()).toBe(1);
+  });
+
+  it('does nothing on release when no refresh was asked; force ignores the deferral', () => {
+    const { gate, flush, runs } = manual();
+    const release = gate.defer();
+    release();
+    flush();
+    expect(runs()).toBe(0);
+    gate.defer();
+    gate.request(true);
+    flush();
+    expect(runs()).toBe(1);
   });
 });

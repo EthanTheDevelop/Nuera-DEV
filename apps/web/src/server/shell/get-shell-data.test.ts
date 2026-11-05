@@ -18,6 +18,7 @@ vi.mock('@/server/db', () => {
       where: () => c,
       orderBy: () => c,
       limit: () => promise,
+      // eslint-disable-next-line unicorn/no-thenable -- mimics Drizzle's thenable query builder
       then: promise.then.bind(promise),
     };
     return c;

@@ -160,7 +160,7 @@ export function TerminalView({
   const canPaste = useCanReadClipboard();
   const effectiveFontSize = fontSize ?? (isDesktop ? DESKTOP_FONT_SIZE : PHONE_FONT_SIZE);
   const showKeyBar = !readOnly && (keyBar === true || (keyBar === 'auto' && (!isDesktop || coarsePointer)));
-  const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+  const serverName = useOptionalShellData()?.server.name ?? 'le serveur';
 
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -458,6 +458,7 @@ export function TerminalView({
         }
       }
     };
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- reloadKey forces a reconnection
   }, [terminalId, stream, input, resize, readOnly, reloadKey]);
 
   // Font size follows the layout (desktop 13 / phone 11) without recreating the terminal.

@@ -3,6 +3,7 @@ import type { Branch, WorktreeDto } from '@nuera/shared/runner';
 import { isValidBranchName } from '@nuera/shared/paths';
 import { z } from 'zod';
 import { AppError } from '@/server/errors';
+import { listProtectedBranches } from '@/server/github';
 import { RunnerError, runner } from '@/server/runner/client';
 import { audit } from '@/server/security/audit';
 import { withSyncCopy } from './errors';
@@ -68,8 +69,10 @@ export function shapeBranches(defaultBranch: string, branches: Branch[]): Branch
 }
 
 export async function listProjectBranches(projectId: string): Promise<BranchesView> {
-  await requireReadyProject(projectId);
-  const result = await runner.listBranches({ params: { projectId } });
+  const project = await requireReadyProject(projectId);
+  // « Protégée » = the default branch and the branches protected on GitHub (same list as the push).
+  const protectedNames = await listProtectedBranches(project.githubFullName, project.defaultBranch);
+  const result = await runner.listBranches({ params: { projectId }, query: { protected: protectedNames.join(',') } });
   return shapeBranches(result.defaultBranch, result.branches);
 }
 

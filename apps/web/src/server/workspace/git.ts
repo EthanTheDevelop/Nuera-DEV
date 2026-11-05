@@ -13,7 +13,7 @@ import type {
 import type { CurrentUser } from '@/server/auth/session';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { createPullRequest, getGitAuthForRepo } from '@/server/github';
+import { createPullRequest, getGitAuthForRepo, listProtectedBranches } from '@/server/github';
 import { runner } from '@/server/runner/client';
 import { audit } from '@/server/security/audit';
 import { assertSessionOfWorktree, githubHtmlUrl, requireWorktreeContext } from './access';
@@ -119,13 +119,19 @@ export async function pushBranch(
       untouched: "Rien n'a été envoyé sur GitHub.",
     });
   }
+  const protectedBranches = await listProtectedBranches(project.githubFullName, project.defaultBranch, { maxAgeMs: 0 });
+  if (worktree.branch && protectedBranches.includes(worktree.branch)) {
+    throw new AppError('CONFLICT', `${worktree.branch} est protégée sur GitHub : elle évolue par pull request, jamais par un push direct.`, {
+      untouched: "Rien n'a été envoyé sur GitHub.",
+    });
+  }
   const { extraHeader } = await getGitAuthForRepo(project.githubFullName, 'write');
   const result = await runner.push({
     params: { worktreeId },
     body: {
       extraHeader,
       setUpstream: true,
-      protectedBranches: [project.defaultBranch],
+      protectedBranches,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       actorUserId: actor.id,
     },

@@ -125,6 +125,35 @@ describe('Coolify checks', () => {
   });
 });
 
+describe('Coolify token refused → Coolify MCP server « expiré »', () => {
+  it('marks the MCP server expired so D04 / D07 agree, and « à tester » again after a reconnection', async () => {
+    const { checkCoolify, reconnectCoolify } = await import('./index');
+    const { db } = await import('@/server/db');
+    const { getProjectMcpTools, getMcpServer, setProjectMcpServer } = await import('@/server/mcp/registry');
+    const [project] = await db
+      .insert(projects)
+      .values({ slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
+      .returning();
+    await setProjectMcpServer({ projectId: project!.id, serverIdOrName: 'coolify', enabled: true });
+    await reconnectCoolify({ baseUrl: fake.url, token: SCOPED });
+    expect((await getMcpServer('coolify')).status).not.toBe('expired');
+
+    fake.tokens[0]!.revoked = true;
+    expect((await checkCoolify({ trigger: 'schedule' })).status).toBe('expired');
+    const server = await getMcpServer('coolify');
+    expect(server).toMatchObject({ status: 'expired', displayStatus: 'expired', lastError: 'Coolify refuse le jeton.' });
+    const tools = await getProjectMcpTools(project!.id);
+    expect(tools.find((tool) => tool.name === 'coolify')).toMatchObject({ status: 'expired', needsReconnect: true });
+    // Only the Coolify notification, not a second one for its MCP server.
+    const rows = await db.select().from(notifications);
+    expect(rows.filter((row) => row.title.includes('Coolify'))).toHaveLength(1);
+
+    fake.tokens[0]!.revoked = false;
+    await reconnectCoolify({ token: SCOPED });
+    expect((await getMcpServer('coolify')).status).toBe('unknown');
+  });
+});
+
 describe('Coolify token and Claude (P4)', () => {
   it('keeps a token away from Claude until the MCP tool list proves it cannot write', async () => {
     const { reconnectCoolify } = await import('./index');

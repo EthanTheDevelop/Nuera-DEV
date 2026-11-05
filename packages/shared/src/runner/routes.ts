@@ -34,8 +34,10 @@ import {
   PullResultSchema,
   PushRequestSchema,
   PushResultSchema,
+  RemoveCloneResultSchema,
   RemoveWorktreeQuerySchema,
   RemoveWorktreeResultSchema,
+  WorktreesQuerySchema,
   StageResultSchema,
   StatusQuerySchema,
   SyncStatusSchema,
@@ -170,7 +172,16 @@ export const RUNNER_ROUTES = {
   repoLog: { method: 'GET', path: '/v1/repos/:projectId/log', params: ProjectRefSchema, query: LogQuerySchema, response: LogResponseSchema },
 
   // --- Worktrees --------------------------------------------------------------------------
-  listWorktrees: { method: 'GET', path: '/v1/repos/:projectId/worktrees', params: ProjectRefSchema, response: WorktreesResponseSchema, timeoutMs: 30_000 },
+  listWorktrees: {
+    method: 'GET',
+    path: '/v1/repos/:projectId/worktrees',
+    params: ProjectRefSchema,
+    query: WorktreesQuerySchema,
+    response: WorktreesResponseSchema,
+    timeoutMs: 30_000,
+  },
+  /** Deletes the primary clone and the project's worktrees from the disk (the project row stays). */
+  removeClone: { method: 'DELETE', path: '/v1/repos/:projectId/clone', params: ProjectRefSchema, response: RemoveCloneResultSchema, timeoutMs: 120_000 },
   createWorktree: {
     method: 'POST',
     path: '/v1/repos/:projectId/worktrees',
@@ -301,6 +312,8 @@ export const RUNNER_ROUTES = {
     timeoutMs: 60_000,
   },
   interruptSession: { method: 'POST', path: '/v1/sessions/:sessionId/interrupt', params: SessionParamsSchema, response: SessionDtoSchema },
+  /** Re-publishes `session.status` from the stored row after a web-side change (archive, rename). */
+  announceSession: { method: 'POST', path: '/v1/sessions/:sessionId/announce', params: SessionParamsSchema, response: SessionDtoSchema },
   stopSession: {
     method: 'POST',
     path: '/v1/sessions/:sessionId/stop',

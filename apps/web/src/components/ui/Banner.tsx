@@ -53,7 +53,9 @@ export function Banner({ tone = 'info', title, children, icon, action, dense = f
       )}
     >
       <Icon name={icon ?? spec.glyph} size={18} className={cn('self-start nav:self-center', spec.icon)} />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      {/* Phone: the text takes the whole line beside the icon (100 % − icon 18 − gap 12), so the actions wrap
+          under it instead of squeezing it to zero width; break-words for long paths or branches. */}
+      <div className="flex min-w-0 flex-1 basis-[calc(100%-30px)] flex-col gap-0.5 break-words nav:basis-0">
         <p className="m-0 font-sans text-app-14 font-semibold text-text">{title}</p>
         {children ? <div className="font-sans text-app-13 text-muted">{children}</div> : null}
       </div>

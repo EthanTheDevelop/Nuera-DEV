@@ -97,6 +97,7 @@ function TerminalSession({
       window.removeEventListener('pagehide', onPageHide);
       if (life.terminalId) releaseTerminal(life.terminalId);
     };
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- attempt re-creates the terminal on « Réessayer »
   }, [attempt]);
 
   const retry = () => {

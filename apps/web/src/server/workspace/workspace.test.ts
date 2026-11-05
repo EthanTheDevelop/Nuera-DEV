@@ -274,6 +274,10 @@ describe('Git (W5)', () => {
     expect(githubMock.getGitAuthForRepo).toHaveBeenCalledWith('atelier-test/devis-express', 'write');
     expect(runnerMock.push.mock.calls[0]![0].body).toMatchObject({ protectedBranches: ['main'], setUpstream: true });
     expect(result.url).toBe('https://github.com/atelier-test/devis-express/tree/feature/export-csv');
+    const [entry] = await (await db()).select().from(auditLog).where(eq(auditLog.action, 'git.push'));
+    expect(entry).toMatchObject({ actorUserId: TEST_USER_ID, targetType: 'project' });
+    expect(entry?.summary).toBe('push de feature/export-csv vers origin/feature/export-csv · Devis Express');
+    expect(JSON.stringify(entry)).not.toMatch(/AUTHORIZATION|basic /i);
 
     await resetWorkspaceTables();
     const main = await fixture({ branch: 'main' });

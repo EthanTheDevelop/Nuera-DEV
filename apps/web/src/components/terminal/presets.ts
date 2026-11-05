@@ -33,7 +33,7 @@ const withExit = (launch: TerminalLaunch, onExit: PresetOptions['onExit']): Term
 
 /** « Se reconnecter dans un terminal » (Paramètres · Claude Code, T6): `claude auth login`. */
 export function claudeLoginTerminal(options: PresetOptions = {}): TerminalLaunch {
-  const server = options.serverName ?? 'VPS-3';
+  const server = options.serverName ?? 'le serveur';
   return withExit(
     {
       title: 'Connexion à Claude Code',
@@ -48,7 +48,7 @@ export function claudeLoginTerminal(options: PresetOptions = {}): TerminalLaunch
 
 /** « Ouvrir /status » (Paramètres · Utilisation et limites): the CLI itself, the owner types /status. */
 export function claudeStatusTerminal(options: PresetOptions = {}): TerminalLaunch {
-  const server = options.serverName ?? 'VPS-3';
+  const server = options.serverName ?? 'le serveur';
   return withExit(
     {
       title: 'Claude Code · /status',
@@ -63,7 +63,7 @@ export function claudeStatusTerminal(options: PresetOptions = {}): TerminalLaunc
 
 /** Intégrations « Reconnecter » an OAuth MCP server: `claude mcp login <name> --no-browser`. */
 export function mcpLoginTerminal(server: { name: string; label: string }, options: PresetOptions = {}): TerminalLaunch {
-  const host = options.serverName ?? 'VPS-3';
+  const host = options.serverName ?? 'le serveur';
   return withExit(
     {
       title: `Connexion MCP · ${server.label}`,
@@ -78,7 +78,7 @@ export function mcpLoginTerminal(server: { name: string; label: string }, option
 
 /** A shell (bash/zsh, PowerShell on a Windows dev machine) in an active worktree. */
 export function shellTerminal(worktree: { id: string; name: string }, options: PresetOptions = {}): TerminalLaunch {
-  const server = options.serverName ?? 'VPS-3';
+  const server = options.serverName ?? 'le serveur';
   return withExit(
     {
       title: `Terminal · ${worktree.name}`,

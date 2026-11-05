@@ -328,6 +328,19 @@ describe('listSessions / getCapacity', () => {
     expect(await getCapacity()).toEqual({ active: 2, max: 4, source: 'runner' });
   });
 
+  it('offers « Reprendre » for a finished session, like the runner (worktree and journal present)', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/a');
+    const done = await createSessionRow(project.id, wt.id, { status: 'finished', title: 'Galerie photos', transcriptPath: '/g.jsonl', startedAt: new Date(), endedAt: new Date() });
+    runnerMock.getSession.mockImplementation(async ({ params }) => dto({ id: params.sessionId, projectId: project.id, status: 'finished', resumable: true }));
+    const { listSessions } = await import('./index');
+    const history = await listSessions({ status: 'history' });
+    expect(history.items.find((i) => i.id === done.id)).toMatchObject({ status: 'finished', resumable: true, resumeBlockedReason: null });
+    // The « reprise » filters stay about interrupted conversations.
+    expect((await listSessions({ status: 'history', filter: 'reprise-possible' })).items).toHaveLength(0);
+    expect((await listSessions({ status: 'history', filter: 'terminees' })).items.map((i) => i.id)).toEqual([done.id]);
+  });
+
   it('falls back to the database when the runner does not answer', async () => {
     const project = await createProject();
     const wt = await createWorktree(project.id, 'a', 'feature/a');

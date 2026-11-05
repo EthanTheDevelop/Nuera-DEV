@@ -70,6 +70,7 @@ export function FileExplorer({ variant = 'desktop' }: { variant?: 'desktop' | 'p
   );
 
   useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     void loadDir('');
     return () => fileAbort.current?.abort();
   }, [loadDir]);
@@ -80,6 +81,7 @@ export function FileExplorer({ variant = 'desktop' }: { variant?: 'desktop' | 'p
     if (autoPicked.current || root?.status !== 'ready') return;
     autoPicked.current = true;
     const claudeMd = root.entries.find((e) => e.kind === 'file' && e.name === 'CLAUDE.md');
+    // eslint-disable-next-line react/set-state-in-effect -- opens CLAUDE.md once the root listing has arrived (fetch)
     if (claudeMd && variant === 'desktop') void openFile(claudeMd.path);
   }, [openFile, root, variant]);
 
@@ -174,7 +176,7 @@ export function FileExplorer({ variant = 'desktop' }: { variant?: 'desktop' | 'p
       <nav aria-label="Arborescence du worktree" className={cn('min-h-0 overflow-y-auto', file ? 'max-h-[45%] shrink-0' : 'flex-1')}>
         <ul className="m-0 list-none p-0">
           <li>
-            <button type="button" className={cn(ROW, 'pl-2 hover:bg-hover')} aria-expanded={rootOpen} onClick={() => toggle('')}>
+            <button type="button" className={cn(ROW, 'pl-2 hover:bg-hover', variant === 'phone' && 'min-h-11')} aria-expanded={rootOpen} onClick={() => toggle('')}>
               <Icon name={rootOpen ? 'chevron-down' : 'chevron'} size={12} className="shrink-0 text-muted" />
               <Icon name="projets" size={15} className="shrink-0 text-accent" />
               <span className="min-w-0 flex-1 truncate font-mono text-app-12 text-text">{ws.data.project.repoName}</span>

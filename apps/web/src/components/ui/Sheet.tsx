@@ -3,6 +3,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Dialog as RadixDialog, VisuallyHidden } from 'radix-ui';
 import { cn } from '@/lib/cn';
+import { useReturnFocus } from './return-focus';
 
 /**
  * Phone bottom sheet (S4 `Feuille · Sessions de Nuera OS`): bg surface, top corners radius 28, Shadow/Float,
@@ -30,6 +31,7 @@ const DISMISS_VELOCITY = 0.6; // px per ms
 
 export function SheetContent({ title, hideTitle, meta, description, className, children }: SheetContentProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useReturnFocus();
   const drag = useRef<{ y: number; t: number; pointer: number } | null>(null);
   const [offset, setOffset] = useState(0);
 
@@ -60,6 +62,7 @@ export function SheetContent({ title, hideTitle, meta, description, className, c
     <RadixDialog.Portal>
       <RadixDialog.Overlay className="nu-scrim fixed inset-0 z-50 bg-scrim" />
       <RadixDialog.Content
+        {...returnFocus}
         {...(description ? {} : { 'aria-describedby': undefined })}
         style={offset ? { transform: `translateY(${offset}px)`, transition: 'none' } : undefined}
         className={cn(

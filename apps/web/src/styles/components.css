@@ -295,3 +295,19 @@
     animation-iteration-count: infinite !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Centred windows sit in the middle of the content region (D03, W5), not of the viewport: right of
+   the 248 px sidebar, or of the 72 px Workspace rail, from `nav` up. The Voile still covers everything.
+   --------------------------------------------------------------------------- */
+:root {
+  --overlay-start: 0px;
+}
+@media (width >= 56.25rem) {
+  :root:has([data-shell='sidebar']) {
+    --overlay-start: var(--app-sidebar-w);
+  }
+  :root:has([data-shell='rail']) {
+    --overlay-start: var(--app-sidebar-collapsed-w);
+  }
+}

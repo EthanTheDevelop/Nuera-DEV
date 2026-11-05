@@ -166,8 +166,8 @@ export function getAuth(): Auth {
 /** Better Auth instance (lazy). `auth.api.*` for server calls, `auth.handler` for /api/auth/*. */
 export const auth: Auth = new Proxy({} as Auth, {
   get(_target, property) {
-    const instance = getAuth();
-    return Reflect.get(instance, property, instance);
+    const current = getAuth();
+    return Reflect.get(current, property, current);
   },
 });
 

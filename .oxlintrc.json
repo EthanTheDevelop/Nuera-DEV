@@ -36,6 +36,8 @@
     "react/no-unescaped-entities": "off",
     "react/rules-of-hooks": "error",
     "react/exhaustive-deps": "warn",
+    "promise/always-return": ["warn", { "ignoreLastCallback": true }],
+    "react/no-unstable-nested-components": ["warn", { "allowAsProps": true }],
     "no-unused-vars": [
       "warn",
       {

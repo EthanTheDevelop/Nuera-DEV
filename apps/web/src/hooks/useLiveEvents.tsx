@@ -9,6 +9,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type ReactNode,
 } from 'react';
 import {
@@ -100,6 +101,50 @@ export interface LiveEventsApi extends LiveState {
   subscribe: <T extends RunnerEventType>(type: T | '*', handler: LiveEventHandler<T>) => () => void;
   /** Optimistic local update after a « marquer comme lu » server action. */
   markNotificationsRead: (ids: readonly string[] | 'all') => void;
+  /**
+   * Holds back the layout refreshes (`stream.reset`, runner back) while an intercepted route is shown
+   * over its page (Projets « nouveau » modal, Intégrations MCP drawer): a `router.refresh()` there would
+   * re-render the route as a full page. Returns the release; a refresh asked meanwhile runs on release.
+   */
+  deferRefresh: () => () => void;
+}
+
+/**
+ * Coalesces refresh requests (one `run` per burst, on the next task) and holds them while at least
+ * one deferral is active; the last release runs the refresh that was held. `force` ignores the
+ * deferrals (session over: the layout must redirect to /connexion anyway).
+ */
+export function createRefreshGate(run: () => void, schedule: (task: () => void) => void = (task) => void setTimeout(task, 0)) {
+  let queued = false;
+  let pending = false;
+  let deferrals = 0;
+  const request = (force = false) => {
+    if (queued) return;
+    queued = true;
+    schedule(() => {
+      queued = false;
+      if (deferrals > 0 && !force) {
+        pending = true;
+        return;
+      }
+      pending = false;
+      run();
+    });
+  };
+  const defer = () => {
+    deferrals += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      deferrals -= 1;
+      if (deferrals === 0 && pending) {
+        pending = false;
+        request();
+      }
+    };
+  };
+  return { request, defer };
 }
 
 export type LiveAction =
@@ -242,18 +287,15 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
   const lastEventIdRef = useRef<string | null>(null);
   const runnerRef = useRef<ServerAvailability>(initial.server.availability);
   const connectRef = useRef<() => void>(() => undefined);
-  const refreshQueued = useRef(false);
   const snapshotAt = useRef(initial.generatedAt);
-
-  /** One router.refresh() for a burst of triggers (runner back + stream.reset arrive together). */
-  const refreshSnapshot = useCallback(() => {
-    if (refreshQueued.current) return;
-    refreshQueued.current = true;
-    setTimeout(() => {
-      refreshQueued.current = false;
-      router.refresh();
-    }, 0);
+  const routerRef = useRef(router);
+  useEffect(() => {
+    routerRef.current = router;
   }, [router]);
+  // One router.refresh() for a burst of triggers (runner back + stream.reset arrive together), held
+  // while an intercepted route is shown (deferRefresh).
+  const [gate] = useState(() => createRefreshGate(() => routerRef.current.refresh()));
+  const refreshSnapshot = useCallback((force?: boolean) => gate.request(force === true), [gate]);
 
   // A newer layout snapshot (router.refresh, T5 retry) resynchronises what the stream did not carry.
   useEffect(() => {
@@ -272,7 +314,7 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
     const controller = new AbortController();
     try {
       const response = await fetch(url, { cache: 'no-store', headers: { accept: 'text/event-stream' }, signal: controller.signal });
-      if (response.status === 401 || response.status === 403) refreshSnapshot();
+      if (response.status === 401 || response.status === 403) refreshSnapshot(true);
     } catch {
       // unreachable: the countdown goes on
     } finally {
@@ -401,11 +443,11 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
     // A new EventSource does not resend Last-Event-ID by itself: resume explicitly (runner replay).
     const es = new EventSource(liveStreamUrl(url, lastEventIdRef.current));
     source.current = es;
-    es.onopen = () => {
+    es.addEventListener('open', () => {
       lastMessageRef.current = Date.now();
       dispatch({ type: 'open' });
-    };
-    es.onmessage = (message: MessageEvent<string>) => {
+    });
+    es.addEventListener('message', (message: MessageEvent<string>) => {
       const event = parseRunnerEvent(message.data);
       lastMessageRef.current = Date.now();
       if (message.lastEventId) lastEventIdRef.current = message.lastEventId;
@@ -414,8 +456,8 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
         dispatch({ type: 'signal', at: lastMessageRef.current });
       }
       if (event) handle(event);
-    };
-    es.onerror = () => {
+    });
+    es.addEventListener('error', () => {
       // We drive reconnection ourselves (to know « nouvel essai dans N s » and offer « Réessayer »).
       es.close();
       if (source.current !== es) return;
@@ -424,7 +466,7 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
       // Several failures in a row while the browser is online: the web session may have expired (probed at
       // every failure from the 3rd on — at most once per back-off step, ≤ 1 per 30 s in the long run).
       if (!erroredRef.current && attemptRef.current >= 3 && navigator.onLine !== false) void probeSession();
-    };
+    });
   }, [handle, probeSession, scheduleReconnect, url]);
 
   useEffect(() => {
@@ -485,8 +527,8 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
   const markNotificationsRead = useCallback((ids: readonly string[] | 'all') => dispatch({ type: 'read', ids }), []);
 
   const value = useMemo<LiveEventsApi>(
-    () => ({ ...state, retryNow, subscribe, markNotificationsRead }),
-    [state, retryNow, subscribe, markNotificationsRead],
+    () => ({ ...state, retryNow, subscribe, markNotificationsRead, deferRefresh: gate.defer }),
+    [state, retryNow, subscribe, markNotificationsRead, gate],
   );
 
   return <LiveEventsContext.Provider value={value}>{children}</LiveEventsContext.Provider>;
@@ -515,4 +557,10 @@ export function useLiveEvent<T extends RunnerEventType>(type: T | '*', handler: 
     latest.current = handler;
   });
   useEffect(() => subscribe<T>(type, (event) => latest.current(event)), [subscribe, type]);
+}
+
+/** While `active` (an intercepted route is shown over the page), the shell's layout refreshes wait. */
+export function useDeferLiveRefresh(active: boolean): void {
+  const defer = useOptionalLiveEvents()?.deferRefresh;
+  useEffect(() => (active && defer ? defer() : undefined), [active, defer]);
 }

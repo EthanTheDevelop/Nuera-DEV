@@ -25,6 +25,7 @@ export interface SegmentedControlProps<V extends string = string> {
  * Single-choice segmented control — D05 `Barre de vue` « Conversation / Terminal brut »:
  * bg surface, 1 px border, radius 12, padding 3, gap 2; item padding 5 × 10, radius 8, 14 px icon + Outfit 13;
  * active = accent-pale / accent SemiBold, inactive = muted Medium. Radix ToggleGroup (radio semantics).
+ * Below the `nav` breakpoint items are 10 px taller (44 px control: phone dialogs, touch target).
  * For tab panels with role="tabpanel" use `Tabs` + `TabsList variant="segmented"` instead.
  */
 export function SegmentedControl<V extends string = string>({
@@ -50,7 +51,7 @@ export function SegmentedControl<V extends string = string>({
           value={item.value}
           disabled={item.disabled}
           className={cn(
-            'nu-hit inline-flex items-center gap-1.5 rounded-sm px-2.5 py-[5px] font-sans text-app-13 font-medium whitespace-nowrap text-muted',
+            'nu-hit inline-flex items-center gap-1.5 rounded-sm px-2.5 py-2.5 font-sans nav:py-[5px] text-app-13 font-medium whitespace-nowrap text-muted',
             'transition-colors duration-(--dur-fast) ease-out hover:text-text disabled:cursor-not-allowed disabled:opacity-40',
             'data-[state=on]:bg-accent-pale data-[state=on]:font-semibold data-[state=on]:text-accent',
           )}

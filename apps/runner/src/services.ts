@@ -66,7 +66,7 @@ export async function chooseBackend(config: RunnerConfig, terminals: TerminalMan
   }
   if (tmux) {
     logger.info({ tmux }, 'sessions Claude : backend tmux');
-    return new TmuxBackend(terminals, config.dataDir);
+    return new TmuxBackend(terminals, config.dataDir, config.tmuxSocket ?? 'nuera');
   }
   logger.info('sessions Claude : backend PTY direct (tmux absent)');
   return new PtyBackend(terminals);

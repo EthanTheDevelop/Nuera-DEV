@@ -1,6 +1,6 @@
 import 'server-only';
-import { projects } from '@nuera/db/schema';
-import { eq, isNull } from 'drizzle-orm';
+import { mcpServers, projects } from '@nuera/db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
@@ -233,7 +233,7 @@ export async function validateCoolifyToken(input: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<CoolifyValidation> {
-  const client = createCoolifyClient({ baseUrl: input.baseUrl, token: input.token, ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
+  const coolify = createCoolifyClient({ baseUrl: input.baseUrl, token: input.token, ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
   const steps: CheckStep[] = [];
   const result: CoolifyValidation = {
     ok: false,
@@ -254,7 +254,7 @@ export async function validateCoolifyToken(input: {
 
   // 1. Liveness (no token)
   try {
-    const health = await client.health();
+    const health = await coolify.health();
     steps.push({ name: 'GET /api/health', ok: true, ms: health.ms, httpStatus: health.status, providerMessage: health.data.slice(0, 40) });
   } catch (error) {
     steps.push(stepFromCoolifyError('GET /api/health', error));
@@ -264,7 +264,7 @@ export async function validateCoolifyToken(input: {
 
   // 2. Token + `read` ability
   try {
-    const version = await client.version();
+    const version = await coolify.version();
     steps.push({ name: 'GET /api/v1/version', ok: true, ms: version.ms, httpStatus: version.status, providerMessage: version.data.slice(0, 40) });
     result.version = version.data.slice(0, 40) || null;
     result.abilities = ['read'];
@@ -282,7 +282,7 @@ export async function validateCoolifyToken(input: {
 
   // 3. Scope: whole team (200) or selected environments (403 scoped, Coolify ≥ 4.6)
   try {
-    const team = await client.team();
+    const team = await coolify.team();
     steps.push({ name: 'GET /api/v1/team', ok: true, ms: team.ms, httpStatus: team.status });
     result.scope = 'team';
     result.teamName = team.data.name;
@@ -293,11 +293,11 @@ export async function validateCoolifyToken(input: {
 
   // 4. Visible environments → refuse production unless explicitly accepted
   try {
-    const list = await client.projects();
+    const list = await coolify.projects();
     steps.push({ name: 'GET /api/v1/projects', ok: true, ms: list.ms, httpStatus: list.status });
     for (const project of list.data.slice(0, 30)) {
       try {
-        const envs = await client.environments(project.uuid);
+        const envs = await coolify.environments(project.uuid);
         for (const env of envs.data) {
           result.visibleEnvironments.push({ project: project.name ?? project.uuid, environment: env.name });
         }
@@ -312,7 +312,7 @@ export async function validateCoolifyToken(input: {
 
   // 5. MCP tools/list → abilities (tools are filtered by the token's abilities)
   const mcp = await probeMcpServer({
-    url: `${client.baseUrl}/mcp`,
+    url: `${coolify.baseUrl}/mcp`,
     headers: { Authorization: `Bearer ${input.token}` },
     ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
   });
@@ -417,6 +417,11 @@ export async function reconnectCoolify(
   const status = expiryStatus(declaredExpiresAt, now) ?? 'connected';
   const previous = (stored?.row.status as DbStatus | undefined) ?? 'connected';
   await upsertCoolify({ config, token: data.token, status, checkedAt: now });
+  // The Coolify MCP server was marked « expiré » for the previous token: it is « à tester » again.
+  await db
+    .update(mcpServers)
+    .set({ status: 'unknown', lastError: null })
+    .where(and(eq(mcpServers.name, COOLIFY_MCP_SERVER), eq(mcpServers.status, 'expired')));
   await audit({
     action: stored ? 'integration.coolify.reconnected' : 'integration.coolify.connected',
     summary: `${stored ? 'Coolify reconnecté' : 'Coolify connecté'} (${tokenFingerprint(prefix) ?? 'jeton'}, ${validation.scope === 'scoped' ? 'environnements choisis' : validation.scope === 'team' ? `équipe ${validation.teamName ?? ''}`.trim() : 'périmètre inconnu'})`,
@@ -450,6 +455,9 @@ function expiryStatus(declaredExpiresAt: string | null, now: Date): DbStatus | n
 // Periodic check: health → version → declared expiry
 // ---------------------------------------------------------------------------------------------
 
+/** Name of the Coolify MCP preset row in `mcp_servers` (same token). */
+const COOLIFY_MCP_SERVER = 'coolify';
+
 const lastManual = globalThis as unknown as { __nueraCoolifyLastManualCheck?: number };
 
 export async function checkCoolify(
@@ -479,12 +487,12 @@ export async function checkCoolify(
     reason = 'Jeton Coolify illisible : vérifiez APP_ENCRYPTION_KEY.';
   }
   if (token) {
-    const client = createCoolifyClient({ baseUrl: stored.config.baseUrl, token, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
+    const coolify = createCoolifyClient({ baseUrl: stored.config.baseUrl, token, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
     try {
-      const health = await client.health();
+      const health = await coolify.health();
       steps.push({ name: 'GET /api/health', ok: true, ms: health.ms, httpStatus: health.status });
       try {
-        const version = await client.version();
+        const version = await coolify.version();
         steps.push({ name: 'GET /api/v1/version', ok: true, ms: version.ms, httpStatus: version.status, providerMessage: version.data.slice(0, 40) });
       } catch (error) {
         steps.push(stepFromCoolifyError('GET /api/v1/version', error));
@@ -540,6 +548,15 @@ export async function checkCoolify(
       lastError: failed ? (reason ?? null) : null,
     },
   );
+  if (status === 'expired') {
+    // The token is refused (or past its date): the Coolify MCP server uses that same token, so D04,
+    // D07 and getProjectMcpTools show it « expiré » too, without waiting for its own MCP test. No
+    // second notification: the Coolify one covers it (integrations overview merges the alerts).
+    await db
+      .update(mcpServers)
+      .set({ status: 'expired', lastError: reason ?? null, lastCheckedAt: startedAt })
+      .where(eq(mcpServers.name, COOLIFY_MCP_SERVER));
+  }
   await applyHealthTransition({
     target: 'coolify',
     label: 'Coolify',
@@ -583,9 +600,7 @@ async function client(options: { fetchImpl?: typeof fetch } = {}) {
 function toAppError(error: unknown, context: string): AppError {
   if (error instanceof AppError) return error;
   if (error instanceof CoolifyError) {
-    return new AppError(error.isCredentialError ? 'UPSTREAM' : error.isTransient ? 'UPSTREAM' : 'FORBIDDEN', `${error.message} (${context})`, {
-      ...(error.providerMessage ? { raw: error.providerMessage } : {}),
-    });
+    return new AppError(error.isCredentialError ? 'UPSTREAM' : error.isTransient ? 'UPSTREAM' : 'FORBIDDEN', `${error.message} (${context})`, error.providerMessage ? { raw: error.providerMessage } : {});
   }
   return new AppError('UPSTREAM', `Réponse inattendue de Coolify (${context}).`);
 }

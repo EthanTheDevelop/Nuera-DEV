@@ -22,6 +22,7 @@ export function ArchiveProjectDialog({ open, onOpenChange, project, onArchived }
 
   useEffect(() => {
     if (!open || !project) return;
+    // eslint-disable-next-line react/set-state-in-effect -- reset on opening, before the async load the effect starts
     setPreview(null);
     setError(null);
     let cancelled = false;
@@ -53,6 +54,7 @@ export function ArchiveProjectDialog({ open, onOpenChange, project, onArchived }
       text: `${plural(preview.liveSessions, 'session est active', 'sessions sont actives')} : arrêtez-${preview.liveSessions >= 2 ? 'les' : 'la'} avant d'archiver.`,
     });
   }
+  const blockedReason = blocked ? "Archiver reste indisponible tant qu'une session du projet est active." : undefined;
 
   return (
     <ConfirmDialog
@@ -64,6 +66,7 @@ export function ArchiveProjectDialog({ open, onOpenChange, project, onArchived }
       consequences={consequences}
       confirmLabel="Archiver"
       error={error ?? undefined}
+      confirmDisabled={blockedReason}
       onConfirm={async () => {
         if (blocked) {
           setError("Arrêtez d'abord les sessions actives : le projet n'a pas été archivé.");

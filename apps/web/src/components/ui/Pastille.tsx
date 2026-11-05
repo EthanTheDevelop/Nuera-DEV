@@ -25,11 +25,13 @@ export interface PastilleProps {
   size?: PastilleSize;
   tone?: PastilleTone;
   shape?: 'square' | 'circle';
+  /** Icon size override: D07 « GitHub » head = Pastille 48 with a 20 px icon (T5/T6 keep 24). */
+  iconSize?: number;
   className?: string;
 }
 
 /** Icon pill (« Pastille »): tinted square or circle with the matching strong-colour icon. Decorative. */
-export function Pastille({ icon, size = 28, tone = 'accent', shape = 'square', className }: PastilleProps) {
+export function Pastille({ icon, size = 28, tone = 'accent', shape = 'square', iconSize, className }: PastilleProps) {
   const spec = boxes[size];
   return (
     <span
@@ -42,7 +44,7 @@ export function Pastille({ icon, size = 28, tone = 'accent', shape = 'square', c
         className,
       )}
     >
-      <Icon name={icon} size={spec.icon} />
+      <Icon name={icon} size={iconSize ?? spec.icon} />
     </span>
   );
 }

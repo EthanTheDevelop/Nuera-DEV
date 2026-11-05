@@ -129,7 +129,7 @@ export const getShellData = cache(async (user: CurrentUser): Promise<ShellData> 
     server: {
       name: settings.serverName,
       location: settings.serverLocation ?? null,
-      statusUrl: statusUrl && /^https:\/\//.test(statusUrl) ? statusUrl : null,
+      statusUrl: statusUrl?.startsWith('https://') ? statusUrl : null,
       availability,
       metrics,
       lastContactAt,

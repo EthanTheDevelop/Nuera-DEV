@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { Dialog as RadixDialog } from 'radix-ui';
 import { cn } from '@/lib/cn';
+import { useReturnFocus } from './return-focus';
 import type { IconName } from '@/components/icons';
 import { IconButton } from './IconButton';
 import { Pastille } from './Pastille';
@@ -30,10 +31,12 @@ export interface DrawerContentProps {
 }
 
 export function DrawerContent({ title, description, icon, status, footer, className, children }: DrawerContentProps) {
+  const returnFocus = useReturnFocus();
   return (
     <RadixDialog.Portal>
       <RadixDialog.Overlay className="nu-scrim fixed inset-0 z-50 bg-scrim" />
       <RadixDialog.Content
+        {...returnFocus}
         {...(description ? {} : { 'aria-describedby': undefined })}
         className={cn(
           'nu-drawer fixed inset-y-0 right-0 z-50 flex h-dvh w-full flex-col bg-bg text-text shadow-float outline-none',

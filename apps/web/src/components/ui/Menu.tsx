@@ -59,7 +59,7 @@ export interface DropdownMenuItemProps extends Omit<ComponentProps<typeof RadixM
 }
 
 const itemClasses = cn(
-  'relative flex min-h-9 cursor-pointer items-center gap-2.5 rounded-sm px-2.5 py-2 font-sans text-app-14 text-text outline-none select-none',
+  'relative flex min-h-11 nav:min-h-9 cursor-pointer items-center gap-2.5 rounded-sm px-2.5 py-2 font-sans text-app-14 text-text outline-none select-none',
   'data-[highlighted]:bg-accent-pale data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40',
 );
 

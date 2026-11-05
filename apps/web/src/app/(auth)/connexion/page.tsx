@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { safeRedirectPath } from '@/server/auth/policy';
@@ -26,9 +27,9 @@ export default async function ConnexionPage({ searchParams }: { searchParams: Se
       {setup.kind === 'owner_without_2fa' ? (
         <FormAlert tone="info" title="Configuration inachevée">
           La double authentification n'est pas encore activée.{' '}
-          <a href="/configuration" className="font-medium text-accent underline underline-offset-4">
+          <Link href="/configuration" className="font-medium text-accent underline underline-offset-4">
             Reprendre la configuration
-          </a>
+          </Link>
         </FormAlert>
       ) : null}
       <SignInForm next={next} />

@@ -18,6 +18,8 @@ export const POST = apiRoute({
   params: z.object({ id: z.string().regex(TERMINAL_ID_PATTERN) }),
   body: TerminalInputRequestSchema,
   maxBodyBytes: 128 * 1024,
+  // Keystrokes (one request per ~10 ms batch while typing): no window, the terminal must exist.
+  rateLimit: false,
   handler: async ({ params, body }) => {
     await runner.terminalInput({ params: { terminalId: params.id }, body });
     return undefined;

@@ -104,6 +104,7 @@ function CloneLog({ log, liveLine }: { log: string; liveLine: string | null }) {
   useEffect(() => {
     const el = ref.current;
     if (el) el.scrollTop = el.scrollHeight;
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- text is the trigger: follow new output
   }, [text]);
   return (
     <div

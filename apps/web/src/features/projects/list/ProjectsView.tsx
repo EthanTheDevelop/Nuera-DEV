@@ -25,7 +25,7 @@ import {
   toast,
 } from '@/components/ui';
 import { NewSessionDialog } from '@/features/sessions';
-import { useLiveEvent } from '@/hooks/useLiveEvents';
+import { useDeferLiveRefresh, useLiveEvent } from '@/hooks/useLiveEvents';
 import { cn } from '@/lib/cn';
 import type { ProjectFilter, ProjectListItem, ProjectListResult, ProjectSort } from '@/server/projects/types';
 import { failureOf, projectsApi } from '../api';
@@ -65,6 +65,7 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
   const pathname = usePathname();
   const deferred = useRef(false);
   const onList = pathname === '/projets';
+  useDeferLiveRefresh(!onList); // same for the shell's refreshes (stream.reset, runner back)
   const refresh = () => {
     if (onList) throttledRefresh();
     else deferred.current = true;
@@ -88,12 +89,14 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
   const [branchTarget, setBranchTarget] = useState<ProjectListItem | null>(null);
   const [sessionTarget, setSessionTarget] = useState<ProjectListItem | null>(null);
 
-  // Server data wins after each refresh: drop the optimistic overrides it now reflects.
-  useEffect(() => {
-    setFavorites({});
-  }, [data]);
-
-  useEffect(() => setSearch(query.q), [query.q]);
+  // Server data wins after each refresh: drop the optimistic overrides it now reflects; the search field
+  // follows the URL (back / forward). Adjusted during render, no extra effect pass.
+  const [seen, setSeen] = useState({ data, q: query.q });
+  if (seen.data !== data || seen.q !== query.q) {
+    setSeen({ data, q: query.q });
+    if (seen.data !== data) setFavorites({});
+    if (seen.q !== query.q) setSearch(query.q);
+  }
 
   const navigate = (update: Partial<{ q: string; filtre: string; tri: string }>) => {
     const params = new URLSearchParams();

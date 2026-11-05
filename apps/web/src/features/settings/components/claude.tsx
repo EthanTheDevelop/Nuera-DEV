@@ -77,7 +77,7 @@ export function ClaudeTile({ className }: { className?: string }) {
         />
       </SettingsRows>
 
-      <div className="flex flex-col gap-1 pt-1">
+      <div className="flex flex-col gap-1">
         <CompactButton
           variant={claude && claude.state !== 'connected' ? 'principal' : 'discret'}
           icon={claude && claude.state !== 'connected' ? 'terminal' : 'refresh'}

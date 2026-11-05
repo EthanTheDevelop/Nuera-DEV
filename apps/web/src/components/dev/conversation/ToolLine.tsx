@@ -112,7 +112,8 @@ export function ToolLine({
           aria-expanded={expanded}
           aria-controls={detailId}
           onClick={toggle}
-          className={cn(rowClass, 'text-left transition-colors duration-(--dur-fast) hover:bg-hover')}
+          // 34 px row, 44 px hit area (thread rows are 8 px apart on the phone).
+          className={cn(rowClass, 'nu-hit text-left transition-colors duration-(--dur-fast) hover:bg-hover')}
         >
           {row}
         </button>

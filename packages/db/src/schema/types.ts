@@ -74,6 +74,7 @@ export type OperationKind =
   | 'checkout'
   | 'worktree_create'
   | 'worktree_remove'
+  | 'clone_remove'
   | 'install'
   | 'pr_create'
   | 'archive'

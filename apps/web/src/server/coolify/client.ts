@@ -229,8 +229,8 @@ export function createCoolifyClient(options: CoolifyClientOptions) {
     applications: () => parsed('/api/v1/applications', z.array(coolifyApplicationSchema)),
     application: (uuid: string) => parsed(`/api/v1/applications/${encodeURIComponent(uuid)}`, coolifyApplicationSchema),
     /** `GET /api/v1/deployments/applications/{uuid}` → `{ count, deployments }` (the spec is wrong, research §3.2). */
-    async deploymentsForApplication(uuid: string, options: { skip?: number; take?: number } = {}) {
-      const query = new URLSearchParams({ skip: String(options.skip ?? 0), take: String(Math.min(options.take ?? 10, 50)) });
+    async deploymentsForApplication(uuid: string, page: { skip?: number; take?: number } = {}) {
+      const query = new URLSearchParams({ skip: String(page.skip ?? 0), take: String(Math.min(page.take ?? 10, 50)) });
       const call = await get(`/api/v1/deployments/applications/${encodeURIComponent(uuid)}?${query}`);
       const asObject = z.object({ count: z.number().optional(), deployments: z.array(coolifyDeploymentSchema) }).safeParse(call.data);
       if (asObject.success) return { ...call, data: { count: asObject.data.count ?? asObject.data.deployments.length, deployments: asObject.data.deployments } };

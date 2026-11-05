@@ -77,15 +77,15 @@ describe('assertRateLimit', () => {
     const rule = { limit: 2, windowMs: 60_000 };
     assertRateLimit('test-scope', '203.0.113.7', rule);
     assertRateLimit('test-scope', '203.0.113.7', rule);
+    let thrown: unknown;
     try {
       assertRateLimit('test-scope', '203.0.113.7', rule);
-      expect.unreachable('should have thrown');
     } catch (error) {
-      expect(error).toBeInstanceOf(AppError);
-      expect((error as AppError).code).toBe('RATE_LIMITED');
-      expect((error as AppError).status).toBe(429);
-      expect((error as AppError).retryAfterSeconds).toBeGreaterThan(0);
+      thrown = error;
     }
+    expect(thrown).toBeInstanceOf(AppError);
+    expect(thrown).toMatchObject({ code: 'RATE_LIMITED', status: 429 });
+    expect((thrown as AppError).retryAfterSeconds).toBeGreaterThan(0);
     // Another client is not affected.
     expect(() => assertRateLimit('test-scope', '198.51.100.1', rule)).not.toThrow();
   });

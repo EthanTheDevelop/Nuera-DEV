@@ -211,6 +211,7 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line react/set-state-in-effect -- reset on opening, before the async load the effect starts
     setError(null);
     void loadStaleWorktreesAction().then((result) => {
       if (cancelled) return;
@@ -330,6 +331,7 @@ export function LogsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange
     });
   }, []);
   useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     if (open) load();
   }, [open, load]);
 

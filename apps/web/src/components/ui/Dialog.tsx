@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { Dialog as RadixDialog } from 'radix-ui';
 import { cn } from '@/lib/cn';
+import { useReturnFocus } from './return-focus';
 import { IconButton } from './IconButton';
 
 /**
@@ -37,7 +38,7 @@ export interface DialogContentProps {
   children?: ReactNode;
 }
 
-const widths = { sm: 'nav:w-[min(var(--dialog-confirm-w),calc(100vw-32px))]', md: 'nav:w-[min(var(--dialog-w),calc(100vw-32px))]', lg: 'nav:w-[min(680px,calc(100vw-32px))]' } as const;
+const widths = { sm: 'nav:w-[min(var(--dialog-confirm-w),calc(100vw_-_var(--overlay-start)_-_32px))]', md: 'nav:w-[min(var(--dialog-w),calc(100vw_-_var(--overlay-start)_-_32px))]', lg: 'nav:w-[min(680px,calc(100vw_-_var(--overlay-start)_-_32px))]' } as const;
 
 export function DialogContent({
   title,
@@ -53,6 +54,7 @@ export function DialogContent({
   bodyClassName,
   children,
 }: DialogContentProps) {
+  const returnFocus = useReturnFocus();
   const block = (event: Event) => {
     if (!dismissible) event.preventDefault();
   };
@@ -61,6 +63,7 @@ export function DialogContent({
       <RadixDialog.Overlay className="nu-scrim fixed inset-0 z-50 bg-scrim" />
       <RadixDialog.Content
         role={role}
+        {...returnFocus}
         onEscapeKeyDown={block}
         onPointerDownOutside={block}
         onInteractOutside={block}
@@ -70,7 +73,7 @@ export function DialogContent({
           // phone: docked sheet
           'inset-x-0 bottom-0 max-h-[92dvh] w-full rounded-t-xl pb-[env(safe-area-inset-bottom)]',
           // desktop: centred window
-          'nav:inset-x-auto nav:bottom-auto nav:top-1/2 nav:left-1/2 nav:max-h-[calc(100dvh-48px)] nav:-translate-x-1/2 nav:-translate-y-1/2 nav:rounded-xl nav:pb-0',
+          'nav:inset-x-auto nav:bottom-auto nav:top-1/2 nav:left-[calc(50%_+_var(--overlay-start)/2)] nav:max-h-[calc(100dvh-48px)] nav:-translate-x-1/2 nav:-translate-y-1/2 nav:rounded-xl nav:pb-0',
           widths[size],
           className,
         )}

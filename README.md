@@ -204,8 +204,8 @@ Hérités de la phase 2 :
   `command_runs.details` (résultats par test, aujourd'hui en mémoire seulement) ; politique au démarrage pour les
   sessions tmux `nuera-*` orphelines ; `GitService.changes()` lit tous les fichiers non suivis (lent sur un gros
   arbre) ; charges de hook > 1 Mio ignorées.
-- Web : écrire l'audit des décisions d'autorisation, push, suppression de worktree et écriture de CLAUDE.md (le runner
-  ne journalise pas) ; utiliser `mcp_servers.config` (en-têtes non secrets, outils refusés, préréglage) ; passer les
+- Web : ~~écrire l'audit des décisions d'autorisation, push, suppression de worktree et écriture de CLAUDE.md~~ (fait,
+  vérifié par la revue de sécurité, cf. `docs/SECURITY.md` §6) ; utiliser `mcp_servers.config` (en-têtes non secrets, outils refusés, préréglage) ; passer les
   branches protégées du projet au runner ; recharger les données sur `stream.reset` dans chaque page.
 - UI : primitive Checkbox manquante (W5 « Fichier inclus ») ; `formatShortDay` à déplacer dans `@nuera/shared/format` ;
   pourcentages à 2 décimales (« 99,95 % » en D08) ; `NotificationItem` pourrait remplacer les lignes de

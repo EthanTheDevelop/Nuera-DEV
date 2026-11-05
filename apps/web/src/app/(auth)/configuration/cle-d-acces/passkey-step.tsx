@@ -13,6 +13,7 @@ export function PasskeyStep({ suggestedName }: { suggestedName: string }) {
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
 
   useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- browser capability detected after mount, so SSR and hydration render the same
     setSupported(passkeysSupported());
   }, []);
 

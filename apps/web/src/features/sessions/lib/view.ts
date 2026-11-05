@@ -117,6 +117,7 @@ export function applyStatusEvent(
   const current = items[index]!;
   const next: SessionListItem = {
     ...current,
+    title: event.title ?? current.title,
     status: event.status,
     live: event.live,
     currentActivity: event.currentActivity,

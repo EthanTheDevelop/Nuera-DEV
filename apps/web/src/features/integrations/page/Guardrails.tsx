@@ -43,7 +43,7 @@ export function Guardrails({ guardrails }: { guardrails: IntegrationsOverview['g
     },
   ];
   return (
-    <section aria-labelledby="garde-fous" className="flex flex-col gap-4">
+    <section aria-labelledby="garde-fous" className="flex flex-col gap-4 nav:gap-6">
       <SectionLabel as="h2" id="garde-fous">
         Garde-fous
       </SectionLabel>

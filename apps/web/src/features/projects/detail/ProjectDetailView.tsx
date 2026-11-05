@@ -83,12 +83,14 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
   }>({ branch: false, archive: false, claudeMd: false, commands: false, session: false, actions: false, branches: false, env: null, run: null, worktree: null });
   const open = (patch: Partial<typeof dialogs>) => setDialogs((current) => ({ ...current, ...patch }));
 
-  // Fresh server data replaces the local copies.
-  useEffect(() => {
+  // Fresh server data replaces the local copies (adjusted during render, no extra effect pass).
+  const [seenDetail, setSeenDetail] = useState(detail);
+  if (seenDetail !== detail) {
+    setSeenDetail(detail);
     setRuns(detail.runs.latest);
     setMcp(detail.mcp);
     setFavorite(detail.project.favorite);
-  }, [detail]);
+  }
 
   useLiveEvent('run.status', (event) => {
     const run = event.data.run;
@@ -152,6 +154,7 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
     if (left < list.scrollLeft || left + active.offsetWidth > list.scrollLeft + list.clientWidth) {
       list.scrollLeft = Math.max(0, left - (list.clientWidth - active.offsetWidth) / 2);
     }
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- tab is the trigger: re-center the selected chip
   }, [tab]);
 
   // --- Actions ---------------------------------------------------------------------------------
@@ -190,6 +193,7 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
         summary: null,
         worktreeId: project.primaryWorktreeId,
         worktreeName: null,
+        // eslint-disable-next-line react/purity -- false positive: inside an async click handler, not during render
         startedAt: new Date().toISOString(),
         finishedAt: null,
         tests: null,
@@ -302,28 +306,26 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
   const tabs = projectTabs(detail.counts);
   const synced = syncedAgo(project.lastSyncedAt ?? project.lastFetchedAt, now);
 
+  // Desktop: the big header Button. Phone (M04 `Barre d'action`): `Bouton compact` Principal stretched to
+  // 44 px with icon/terminal 16 (screens-mobile.md §1.6, §2 « Primary button (mobile) »).
   const workspaceButton = (block: boolean) =>
-    liveSessionId ? (
-      <Button variant="accent" href={workspaceUrl(liveSessionId)} block={block}>
-        {block ? (
-          <span className="inline-flex items-center gap-2">
-            <Icon name="terminal" size={16} />
-            Ouvrir le Workspace
-          </span>
-        ) : (
-          'Ouvrir le Workspace'
-        )}
+    block ? (
+      liveSessionId ? (
+        <CompactButton variant="principal" size="lg" block icon="terminal" href={workspaceUrl(liveSessionId)}>
+          Ouvrir le Workspace
+        </CompactButton>
+      ) : (
+        <NewSessionButton projectId={project.id} variant="principal" size="lg" icon="terminal" disabledReason={sessionDisabled} className="w-full justify-center">
+          Ouvrir le Workspace
+        </NewSessionButton>
+      )
+    ) : liveSessionId ? (
+      <Button variant="accent" href={workspaceUrl(liveSessionId)}>
+        Ouvrir le Workspace
       </Button>
     ) : (
-      <NewSessionButton projectId={project.id} variant="accent" disabledReason={sessionDisabled} className={block ? 'w-full' : undefined}>
-        {block ? (
-          <span className="inline-flex items-center gap-2">
-            <Icon name="terminal" size={16} />
-            Ouvrir le Workspace
-          </span>
-        ) : (
-          'Ouvrir le Workspace'
-        )}
+      <NewSessionButton projectId={project.id} variant="accent" disabledReason={sessionDisabled}>
+        Ouvrir le Workspace
       </NewSessionButton>
     );
 

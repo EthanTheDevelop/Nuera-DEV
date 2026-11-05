@@ -84,6 +84,7 @@ export function useCommitFlow(preset: CommitPreset, active: boolean) {
   // Opening with another entry point (« Préparer la pull request »…) sets the switches accordingly.
   useEffect(() => {
     if (!active) return;
+    // eslint-disable-next-line react/set-state-in-effect -- switches follow the entry point each time the flow opens
     setError(null);
     setDraftState((current) => {
       const saved = drafts.get(sessionId) ?? current;

@@ -74,7 +74,7 @@ SVG statiques : `public/brand/` (`logo-nuera-dev-papier.svg`, `logo-nuera-dev-en
 | `Badge` | `tone: 'accent'\|'success'\|'warn'\|'danger'\|'neutral'` (jamais ChatGPT), `icon?` | `Badge` 57:124 |
 | `StatusDot` | `tone: 'success'\|'running'\|'warn'\|'danger'\|'neutral'\|'accent'` — décoratif, **toujours suivi d'un texte** ; bascule en *on-dark* dans un scope sombre | `Dev · Point de statut` 202:478 |
 | `Avatar` | `name` (initiales via `initials()`), `size: 24\|28\|32\|36\|40`, `labelled` | `Avatar` 57:125 |
-| `Pastille` | `icon`, `size: 28\|32\|40\|48\|56`, `tone`, `shape: 'square'\|'circle'` | pastilles d'en-tête de tuile, T2, T5/T6, T8 |
+| `Pastille` | `icon`, `size: 28\|32\|40\|48\|56`, `tone`, `shape: 'square'\|'circle'`, `iconSize` (D07 : 48 → icône 20, carte MCP 32 → 20) | pastilles d'en-tête de tuile, T2, T5/T6, T8 |
 | `SectionLabel` | `variant: 'label'` (mono 11 caps 0,08em) `\|'eyebrow'` (mono 12 0,2em accent), `tone`, `action?` (lien à droite) | « EN COURS · 2 », « SESSIONS ACTIVES · 2 », en-têtes de tableau |
 | `Kbd` | `variant: 'plain'\|'boxed'` | « ⌘K » |
 | `Spinner` | `size`, `label?` | (non dessiné) |
@@ -113,13 +113,13 @@ SVG statiques : `public/brand/` (`logo-nuera-dev-papier.svg`, `logo-nuera-dev-en
 
 | Export | Props | Figma |
 |---|---|---|
-| `Dialog`, `DialogTrigger`, `DialogContent`, `DialogClose` | `title`, `description`, `header` (stepper), `footer`, `footerNote`, `size: 'sm'` (520) `\|'md'` (640) `\|'lg'` (680), `hideClose`, `role`, `dismissible` — ancré en bas au téléphone | `Modale · Ajouter un projet` (D03, A1–A4), W5 |
+| `Dialog`, `DialogTrigger`, `DialogContent`, `DialogClose` | `title`, `description`, `header` (stepper), `footer`, `footerNote`, `size: 'sm'` (520) `\|'md'` (640) `\|'lg'` (680), `hideClose`, `role`, `dismissible` — ancré en bas au téléphone ; au bureau, centré sur la zone de contenu (à droite de la barre latérale ou du rail, `--overlay-start`), le voile couvre tout | `Modale · Ajouter un projet` (D03, A1–A4), W5 |
 | `Drawer`, `DrawerTrigger`, `DrawerContent`, `DrawerClose` | `title`, `description`, `icon` (pastille 40), `status` (Badge), `footer` — 480 px à droite, pleine largeur au téléphone | `Tiroir` D1 / D2 |
 | `Sheet`, `SheetTrigger`, `SheetContent`, `SheetClose` | `title`, `hideTitle`, `meta` (« 2 / 4 »), `description` — poignée glissable, voile, zone sûre | `Feuille · Sessions de Nuera OS` S4 |
 | `DropdownMenu`, `…Trigger`, `…Content` (`width`, défaut 248, `bottom-end` + 8), `…Item` (`icon`, `destructive`, `aside`), `…LinkItem` (`href`, `external`), `…Separator`, `…Label` | — | `Menu · Atelier Lune` D02 |
 | `Popover`, `PopoverTrigger`, `PopoverContent` (`width`), `PopoverClose`, `PopoverAnchor` | — | sélecteur W6, panneau de notifications |
 | `Tooltip` (+ `TooltipProvider`, monté par les shells) | `content`, `side`, `align` | libellés du rail (non dessiné) |
-| `ConfirmDialog` | `open`, `onOpenChange`, `tone: 'warn'\|'danger'`, `icon`, `title`, `consequences: { kind: 'kept'\|'risk', text }[]`, `children` (option, liste), `confirmLabel` (**nomme l'action**), `onConfirm` (promesse → chargement, les deux boutons désactivés ; **l'appelant ferme** après succès puis affiche le toast ; un rejet garde la fenêtre ouverte avec `error` ou, à défaut, un bandeau générique), `error`, `typedConfirmation?`, `confirmTone` | T8 (520, `alertdialog`, focus initial sur « Annuler ») |
+| `ConfirmDialog` | `open`, `onOpenChange`, `tone: 'warn'\|'danger'`, `icon`, `title`, `consequences: { kind: 'kept'\|'risk', text }[]`, `children` (option, liste), `confirmLabel` (**nomme l'action**), `onConfirm` (promesse → chargement, les deux boutons désactivés ; **l'appelant ferme** après succès puis affiche le toast ; un rejet garde la fenêtre ouverte avec `error` ou, à défaut, un bandeau générique), `error`, `typedConfirmation?`, `confirmTone`, `confirmDisabled` (raison affichée au-dessus des boutons et liée au bouton : archiver un projet aux sessions actives) | T8 (520, `alertdialog`, focus initial sur « Annuler ») |
 | `Toaster` (monté par le layout racine), `toast({ message, action?: { label, href?, external?, onClick? }, icon?, duration? })`, `dismissToast`, `useToastOffset(px)` | 6 s, pause au survol / focus, en bas à droite (bureau) ou au-dessus de la barre d'onglets / saisie (téléphone) ; **succès uniquement** | `Dev · Toast` 203:709, T3 |
 
 ### États (T1–T8)

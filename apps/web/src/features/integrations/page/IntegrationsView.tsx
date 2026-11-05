@@ -4,7 +4,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { PageHeader, useOptionalShellData } from '@/components/shell';
 import { Button, ErrorPanel } from '@/components/ui';
-import { useLiveEvent } from '@/hooks/useLiveEvents';
+import { useDeferLiveRefresh, useLiveEvent } from '@/hooks/useLiveEvents';
 import { AddMcpServerDialog } from '../add/AddMcpServerDialog';
 import { integrationsApi } from '../api';
 import { GithubSection } from '../github/GithubSection';
@@ -43,6 +43,8 @@ export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<Inte
   const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
   const [addOpen, setAddOpen] = useState(false);
   const onPage = pathname === INTEGRATIONS_PATH;
+  // The MCP drawer (intercepted route) is shown over the page: the shell's refreshes wait for it to close.
+  useDeferLiveRefresh(!onPage);
   const addParam = onPage && params.get('ajout') === '1';
   const journalParam = onPage ? params.get('journal') : null;
   const journal = isPageJournal(journalParam) ? journalParam : null;

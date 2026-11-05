@@ -26,7 +26,7 @@ export const user = pgTable(
   },
   // « Un seul propriétaire, aucun autre compte » : a unique index on a constant allows one row only,
   // whatever path tries to insert a second user (sign-up stays closed in Better Auth as well).
-  (t) => [uniqueIndex('user_single_owner_idx').on(sql`(true)`)],
+  () => [uniqueIndex('user_single_owner_idx').on(sql`(true)`)],
 );
 
 export const session = pgTable(

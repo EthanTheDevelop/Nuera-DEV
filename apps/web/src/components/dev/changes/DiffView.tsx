@@ -106,6 +106,7 @@ export function DiffView({
     if (!el) return;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- scroll again when another file is shown
   }, [activeHunk, file.path]);
 
   const toggle = (key: string) => {
@@ -147,6 +148,7 @@ export function DiffView({
           <span />
           <span />
           <span />
+          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- tap-to-wrap is a pointer convenience: the full line is already in the DOM (read by screen readers) and in title; a tab stop per diff line would bury keyboard navigation */}
           <span className={cn(codeClass(`h${h}`), 'text-accent')} title={hunk.header} onClick={() => toggle(`h${h}`)}>
             {hunk.header}
           </span>
@@ -169,6 +171,7 @@ export function DiffView({
               >
                 {line.type === 'add' ? '+' : line.type === 'del' ? MINUS : ''}
               </span>
+              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- tap-to-wrap is a pointer convenience: the full line is already in the DOM (read by screen readers) and in title; a tab stop per diff line would bury keyboard navigation */}
               <span className={codeClass(key)} title={line.text || undefined} onClick={() => toggle(key)}>
                 {line.text === '' ? '​' : line.text}
               </span>
@@ -221,6 +224,7 @@ export function DiffView({
                           <span className="sr-only">{cell.type === 'add' ? ' ajout' : ' suppression'}</span>
                         ) : null}
                       </span>
+                      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- tap-to-wrap is a pointer convenience: the full line is already in the DOM (read by screen readers) and in title; a tab stop per diff line would bury keyboard navigation */}
                       <span className={codeClass(key)} title={cell.text || undefined} onClick={() => toggle(key)}>
                         {cell.text === '' ? '​' : cell.text}
                       </span>
