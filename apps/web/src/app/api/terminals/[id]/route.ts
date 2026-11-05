@@ -1,18 +1,28 @@
 import { z } from 'zod';
 import { apiRoute } from '@/server/http';
-import { runner } from '@/server/runner/client';
+import { TERMINAL_ID_PATTERN, closeTerminal, getTerminal } from '@/server/terminals';
 
 /**
- * DELETE /api/terminals/[id] — closes a terminal (shell, login, /status). A session terminal is
- * refused (409): stop the session instead. Login terminals drop their scrollback on close.
+ * GET /api/terminals/[id] — `{ terminal: TerminalDto }` (alive, exit code, size, kind…), any kind
+ * including a session's; 404 once the terminal is closed or forgotten by the runner.
+ * DELETE /api/terminals/[id] — closes a terminal (shell, login, /status, MCP login); idempotent
+ * (204 even if it was already gone). A session terminal is refused (409): stop the session
+ * instead. Login terminals drop their scrollback on close.
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const params = z.object({ id: z.string().regex(TERMINAL_ID_PATTERN) });
+
+export const GET = apiRoute({
+  params,
+  handler: async ({ params: { id } }) => ({ terminal: await getTerminal(id) }),
+});
+
 export const DELETE = apiRoute({
-  params: z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }),
-  handler: async ({ params }) => {
-    await runner.closeTerminal({ params: { terminalId: params.id } });
+  params,
+  handler: async ({ params: { id } }) => {
+    await closeTerminal(id);
     return undefined;
   },
 });
