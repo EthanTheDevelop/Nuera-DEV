@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, devices, request as playwrightRequest, type APIRequestContext, type Browser, type BrowserContextOptions } from '@playwright/test';
 import { completeOwnerSetup, ensureBackupCodes, readOwnerState, signIn, type OwnerState } from '../fixtures/owner';
+import { chromiumLaunchOptions } from './chromium';
 import type { StackState } from './state';
 
 export const DESKTOP_VIEWPORT = { width: 1440, height: 1000 };
@@ -27,7 +28,7 @@ export function contextOptions(baseURL: string, mobile = false): BrowserContextO
 }
 
 export async function withBrowser<T>(fn: (browser: Browser) => Promise<T>): Promise<T> {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     return await fn(browser);
   } finally {

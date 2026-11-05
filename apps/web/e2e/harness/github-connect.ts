@@ -67,7 +67,7 @@ export async function connectGithubApp(request: APIRequestContext, state: StackS
   const installed = new Set((current.accounts ?? []).map((account) => account.login));
 
   if (current.mode !== 'app' || !current.app) {
-    log('  GitHub : création de l’application (manifest)…');
+    log('  GitHub : création de l\'application (manifest)…');
     const appOwner = wanted[0]!;
     const page = await request.post(`${web}/api/integrations/github/manifest`, {
       form: { organization: appOwner.type === 'Organization' ? appOwner.login : '', public: 'true' },
@@ -77,7 +77,7 @@ export async function connectGithubApp(request: APIRequestContext, state: StackS
     if (!page.ok()) throw new Error(`POST /api/integrations/github/manifest → HTTP ${page.status()} ${(await page.text()).slice(0, 300)}`);
     const form = parseManifestForm(await page.text());
     if (!form.action.startsWith(state.urls.githubWeb)) throw new Error(`Le manifest part vers ${form.action} au lieu du faux GitHub (${state.urls.githubWeb}).`);
-    const callback = location(await request.post(form.action, { form: { manifest: form.manifest }, maxRedirects: 0 }), state.urls.githubWeb, 'création de l’application');
+    const callback = location(await request.post(form.action, { form: { manifest: form.manifest }, maxRedirects: 0 }), state.urls.githubWeb, 'création de l\'application');
     const install = location(await request.get(callback, { maxRedirects: 0 }), web, 'retour de GitHub (callback)');
     if (!install.startsWith(state.urls.githubWeb)) throw new Error(`Conversion du manifest refusée : ${install}`);
     const outcome = await installOn(request, state, install, appOwner);

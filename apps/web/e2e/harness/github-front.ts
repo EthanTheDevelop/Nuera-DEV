@@ -357,7 +357,7 @@ export async function startFakeGithubFront(config: FakeGithubConfig): Promise<Fa
       return send(res, 200, page(`Installer ${persisted.manifest?.name ?? config.slug}`, `<p>Choisissez le compte où installer l'application.</p><ul>${items}</ul>`));
     }
     if (method === 'GET' && /^\/(organizations\/[^/]+\/)?settings\/installations\/\d+$/.test(url.pathname)) {
-      return send(res, 200, page('Installation de l’application', '<p>Les dépôts accessibles sont fixés par la pile de test.</p>'));
+      return send(res, 200, page('Installation de l\'application', '<p>Les dépôts accessibles sont fixés par la pile de test.</p>'));
     }
     if (method === 'GET' && (match = /^\/apps\/([^/]+)$/.exec(url.pathname))) {
       return send(res, 200, page(persisted.manifest?.name ?? match[1]!, `<p><a href="/apps/${escapeHtml(match[1]!)}/installations/new">Installer</a></p>`));

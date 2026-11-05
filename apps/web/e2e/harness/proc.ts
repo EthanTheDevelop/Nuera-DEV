@@ -43,7 +43,7 @@ export function spawnDetached(input: DetachedSpawn): number {
   try {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
-      env: input.env,
+      env: input.env as NodeJS.ProcessEnv,
       detached: true,
       windowsHide: true,
       stdio: ['ignore', fd, fd],

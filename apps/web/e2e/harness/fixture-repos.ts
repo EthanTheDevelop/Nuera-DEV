@@ -8,6 +8,7 @@
  * their stacks at the same time: the build is locked and published by an atomic rename).
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { CATALOGUE, DEVIS, GITIGNORE, LINT, NOTES, OUTILS, REPORTER, VITRINE, type FileMap } from './fixture-content';
@@ -122,7 +123,7 @@ export const FIXTURE_REPOS: readonly FixtureRepoSpec[] = [
     name: 'catalogue-produits',
     id: 610_002,
     displayName: 'Catalogue produits',
-    description: 'Catalogue des produits de l’atelier : tri, recherche et stock.',
+    description: 'Catalogue des produits de l\'atelier : tri, recherche et stock.',
     private: true,
     language: 'JavaScript',
     failingTests: true,
@@ -144,7 +145,7 @@ export const FIXTURE_REPOS: readonly FixtureRepoSpec[] = [
     name: 'site-vitrine',
     id: 610_003,
     displayName: 'Site vitrine',
-    description: 'Site vitrine de l’atelier (HTML et CSS).',
+    description: 'Site vitrine de l\'atelier (HTML et CSS).',
     private: false,
     language: 'HTML',
     failingTests: false,
@@ -220,8 +221,8 @@ export type SeededProjectKey = (typeof SEEDED_PROJECTS)[number]['key'];
 // Git plumbing (fixture building only — the code under test never runs here)
 // ---------------------------------------------------------------------------------------------
 
-function gitEnv(emptyConfig: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
+function gitEnv(emptyConfig: string, extra: Record<string, string> = {}): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith('GIT_')) env[key] = value;
   return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: emptyConfig, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...extra };
 }
@@ -230,7 +231,7 @@ function git(cwd: string, emptyConfig: string, args: string[], extra: Record<str
   return execFileSync(
     'git',
     ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'init.defaultBranch=main', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args],
-    { cwd, env: gitEnv(emptyConfig, extra), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 120_000 },
+    { cwd, env: gitEnv(emptyConfig, extra) as NodeJS.ProcessEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 120_000 },
   ).trim();
 }
 
@@ -288,13 +289,18 @@ export function buildBareRepo(spec: FixtureRepoSpec, remotes: string, tmp: strin
   }
 }
 
+/** Short hash of the fixture specs: a change of content rebuilds the cache the same day. */
+function specsHash(): string {
+  return createHash('sha256').update(JSON.stringify(FIXTURE_REPOS)).digest('hex').slice(0, 10);
+}
+
 function todayKey(now = new Date()): string {
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
 }
 
 /** Builds (or reuses) today's cache and copies it into `remotes` (replaced entirely). */
 export async function installFixtureRemotes(remotes: string, options: { log?: (line: string) => void } = {}): Promise<void> {
-  const key = `v${FIXTURES_VERSION}-${todayKey()}`;
+  const key = `v${FIXTURES_VERSION}-${todayKey()}-${specsHash()}`;
   const cache = path.join(FIXTURES_CACHE, key);
   if (!existsSync(path.join(cache, '.complete'))) {
     const building = path.join(FIXTURES_CACHE, `${key}.build-${process.pid}`);
@@ -311,7 +317,7 @@ export async function installFixtureRemotes(remotes: string, options: { log?: (l
     }
     // Older caches are useless.
     for (const entry of readdirSync(FIXTURES_CACHE)) {
-      if (entry !== key && /^v\d+-\d{8}$/.test(entry)) rmSync(path.join(FIXTURES_CACHE, entry), { recursive: true, force: true });
+      if (entry !== key && /^v\d+-\d{8}(-[0-9a-f]{10})?$/.test(entry)) rmSync(path.join(FIXTURES_CACHE, entry), { recursive: true, force: true });
     }
   }
   rmSync(remotes, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

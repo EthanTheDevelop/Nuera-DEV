@@ -64,33 +64,34 @@ function TerminalSession({
   }, [create]);
 
   useEffect(() => {
-    let cancelled = false;
-    let terminalId: string | null = null;
+    const life: { cancelled: boolean; terminalId: string | null } = { cancelled: false, terminalId: null };
     // Deferred one tick: React's development double-mount then opens a single terminal.
     const timer = setTimeout(() => {
-      createRef.current().then(
-        (result) => {
-          if (cancelled) {
-            releaseTerminal(result.terminalId);
-            return;
-          }
-          terminalId = result.terminalId;
-          setPhase({ kind: 'ready', terminalId: result.terminalId });
-        },
-        (error: unknown) => {
-          if (!cancelled) setPhase(describeFailure(error));
-        },
-      );
+      void (async () => {
+        let result: { terminalId: string };
+        try {
+          result = await createRef.current();
+        } catch (error) {
+          if (!life.cancelled) setPhase(describeFailure(error));
+          return;
+        }
+        if (life.cancelled) {
+          releaseTerminal(result.terminalId);
+          return;
+        }
+        life.terminalId = result.terminalId;
+        setPhase({ kind: 'ready', terminalId: result.terminalId });
+      })();
     }, 0);
     const onPageHide = () => {
-      if (terminalId) releaseTerminal(terminalId);
+      if (life.terminalId) releaseTerminal(life.terminalId);
     };
     window.addEventListener('pagehide', onPageHide);
     return () => {
-      cancelled = true;
+      life.cancelled = true;
       clearTimeout(timer);
       window.removeEventListener('pagehide', onPageHide);
-      if (terminalId) releaseTerminal(terminalId);
+      if (life.terminalId) releaseTerminal(life.terminalId);
     };
   }, [attempt]);
 

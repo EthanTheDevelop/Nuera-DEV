@@ -179,9 +179,9 @@ export const DEVIS = {
     '## Code',
     '',
     '- JavaScript moderne (modules ES), aucune dépendance externe.',
-    '- Montants en centimes (entiers), jamais de nombres à virgule pour l’argent.',
-    '- Une fonction par responsabilité ; les modules de `src/` restent indépendants de l’affichage.',
-    '- Messages d’erreur en français, à l’impératif (« Indiquez un libellé »).',
+    '- Montants en centimes (entiers), jamais de nombres à virgule pour l\'argent.',
+    '- Une fonction par responsabilité ; les modules de `src/` restent indépendants de l\'affichage.',
+    '- Messages d\'erreur en français, à l\'impératif (« Indiquez un libellé »).',
     '',
     '## Tests',
     '',
@@ -208,7 +208,7 @@ export const DEVIS = {
     'SMTP_MOT_DE_PASSE=',
   ),
   montants: l(
-    '/** Montants en centimes (entiers) : jamais de flottants pour l’argent. */',
+    '/** Montants en centimes (entiers) : jamais de flottants pour l\'argent. */',
     'export function enCentimes(euros) {',
     '  return Math.round(Number(euros) * 100);',
     '}',
@@ -367,7 +367,7 @@ export const DEVIS = {
     "  assert.equal(numeroDevis(2026, 7), 'DEV-2026-0007');",
     '});',
     '',
-    "test('repart à 1 au changement d’année', () => {",
+    'test("repart à 1 au changement d\'année", () => {',
     "  assert.equal(prochainNumero('DEV-2025-0412', 2026), 'DEV-2026-0001');",
     "  assert.equal(prochainNumero('DEV-2026-0041', 2026), 'DEV-2026-0042');",
     '});',
@@ -375,7 +375,7 @@ export const DEVIS = {
   relance: l(
     "import { formaterMontant } from './montants.js';",
     '',
-    '/** Texte du courriel de relance d’un devis envoyé et pas encore signé. */',
+    '/** Texte du courriel de relance d\'un devis envoyé et pas encore signé. */',
     'export function messageRelance(devis, { joursEcoules, totalTtc }) {',
     '  return [',
     '    `Bonjour ${devis.client},`,',
@@ -401,7 +401,7 @@ export const DEVIS = {
     '});',
   ),
   ancienFormat: l(
-    '# Ancien format d’import (avant 2026)',
+    '# Ancien format d\'import (avant 2026)',
     '',
     'Les devis étaient importés depuis un fichier texte à largeur fixe :',
     '',
@@ -411,7 +411,7 @@ export const DEVIS = {
     '| 13–52 | client |',
     '| 53–62 | montant HT en centimes |',
     '',
-    'Ce format n’est plus produit depuis la version 1.2. Ce document sera supprimé après la migration.',
+    'Ce format n\'est plus produit depuis la version 1.2. Ce document sera supprimé après la migration.',
   ),
   exportPdf: l(
     "import { formaterMontant } from './montants.js';",
@@ -456,13 +456,13 @@ export const DEVIS = {
 // ---------------------------------------------------------------------------------------------
 
 export const CATALOGUE = {
-  packageJson: packageJson('catalogue-produits', '0.9.2', 'Catalogue des produits de l’atelier : tri, recherche et stock.', {
+  packageJson: packageJson('catalogue-produits', '0.9.2', 'Catalogue des produits de l\'atelier : tri, recherche et stock.', {
     dev: 'node scripts/dev.js',
     build: 'node scripts/build.js',
     ...TEST_SCRIPTS,
   }),
   packageLock: packageLock('catalogue-produits', '0.9.2'),
-  readme: l('# Catalogue produits', '', 'Catalogue des produits de l’atelier : tri par prix, recherche et valeur du stock.', '', '`npm run test` pour les tests, `npm run dev` pour le serveur local.'),
+  readme: l('# Catalogue produits', '', 'Catalogue des produits de l\'atelier : tri par prix, recherche et valeur du stock.', '', '`npm run test` pour les tests, `npm run dev` pour le serveur local.'),
   claudeMd: l(
     '# Catalogue produits — consignes pour Claude',
     '',
@@ -559,9 +559,9 @@ export const CATALOGUE = {
 // ---------------------------------------------------------------------------------------------
 
 export const VITRINE = {
-  packageJson: packageJson('site-vitrine', '2.1.0', 'Site vitrine de l’atelier (HTML et CSS).', { dev: 'node scripts/dev.js', build: 'node scripts/build.js' }),
+  packageJson: packageJson('site-vitrine', '2.1.0', 'Site vitrine de l\'atelier (HTML et CSS).', { dev: 'node scripts/dev.js', build: 'node scripts/build.js' }),
   packageLock: packageLock('site-vitrine', '2.1.0'),
-  readme: l('# Site vitrine', '', 'Pages statiques de l’atelier : accueil, réalisations, contact.'),
+  readme: l('# Site vitrine', '', 'Pages statiques de l\'atelier : accueil, réalisations, contact.'),
   claudeMd: l('# Site vitrine — consignes pour Claude', '', '- HTML sémantique, CSS sans framework.', '- Textes en français, apostrophes typographiques.', '- Images optimisées (WebP, 1600 px au plus).'),
   index: l(
     '<!doctype html>',

@@ -281,7 +281,7 @@ async function interactive() {
   function lineDiff(before, after) {
     const a = before.split('\n');
     const b = after.split('\n');
-    const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+    const dp = Array.from({ length: a.length + 1 }, () => Array.from({ length: b.length + 1 }, () => 0));
     for (let i = a.length - 1; i >= 0; i -= 1) for (let j = b.length - 1; j >= 0; j -= 1) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     const lines = [];
     let i = 0;

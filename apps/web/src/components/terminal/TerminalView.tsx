@@ -181,7 +181,7 @@ export function TerminalView({
     const host = hostRef.current;
     const root = rootRef.current;
     if (!host || !root) return;
-    let cancelled = false;
+    const life = { cancelled: false };
     const cleanups: Array<() => void> = [];
 
     void (async () => {
@@ -200,20 +200,20 @@ export function TerminalView({
           import('@xterm/addon-web-links'),
         ]);
       } catch {
-        if (!cancelled) {
+        if (!life.cancelled) {
           setLoadFailed(true);
           setAnnouncement("Le terminal n'a pas pu se charger.");
         }
         return;
       }
-      if (cancelled) return;
+      if (life.cancelled) return;
       const [{ Terminal }, { FitAddon }, { Unicode11Addon }, { WebLinksAddon }] = modules;
       Terminal.strings.promptLabel = 'Saisie du terminal';
       Terminal.strings.tooMuchOutput = 'Trop de sortie à annoncer : parcourez les lignes du terminal.';
 
       const fontFamily = readMonoFontFamily(root);
       await waitForFont(fontFamily, settingsRef.current.fontSize);
-      if (cancelled) return;
+      if (life.cancelled) return;
 
       const lineHeightOf = (size: number) =>
         xtermLineHeight(lineHeightFor(size), measureCharHeight(fontFamily, size, host), window.devicePixelRatio || 1);
@@ -247,11 +247,14 @@ export function TerminalView({
 
       const clientId = terminalClientId();
       /** Last size known for the PTY (snapshot or terminal.resize). */
-      let ptySize: TerminalSize | null = null;
-      /** Another client resized the PTY: this tab shows its grid until it takes the keyboard back. */
-      let followingRemote = false;
-      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-      let previous = INITIAL_STATUS;
+      /** (ptySize) Last size known for the PTY (snapshot or terminal.resize).
+       *  (followingRemote) Another client resized the PTY: this tab shows its grid until it takes the keyboard back. */
+      const local: {
+        ptySize: TerminalSize | null;
+        followingRemote: boolean;
+        resizeTimer: ReturnType<typeof setTimeout> | null;
+        previous: typeof INITIAL_STATUS;
+      } = { ptySize: null, followingRemote: false, resizeTimer: null, previous: INITIAL_STATUS };
 
       const measure = (): TerminalSize | null => {
         if (!host.isConnected || host.clientWidth < 40 || host.clientHeight < 20) return null;
@@ -261,7 +264,7 @@ export function TerminalView({
       const batcher = new InputBatcher({
         send: (data) => postTerminalJson(input, { data }),
         onError: () => {
-          if (!cancelled) setInputIssue(true);
+          if (!life.cancelled) setInputIssue(true);
         },
       });
       cleanups.push(() => batcher.dispose());
@@ -272,58 +275,58 @@ export function TerminalView({
         onSnapshot: ({ data, cols, rows }) => {
           // A fresh copy of the screen: repaint from scratch at the PTY's size, then take our size back.
           term.reset();
-          ptySize = { cols, rows };
+          local.ptySize = { cols, rows };
           if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
           term.write(data, () => {
-            if (!cancelled && !readOnly && document.visibilityState === 'visible') fitAndClaim();
+            if (!life.cancelled && !readOnly && document.visibilityState === 'visible') fitAndClaim();
           });
         },
         onData: (data) => term.write(data),
         onResize: (size) => {
-          ptySize = size;
+          local.ptySize = size;
           if (size.cols !== term.cols || size.rows !== term.rows) {
             term.resize(size.cols, size.rows);
-            followingRemote = true;
+            local.followingRemote = true;
           }
         },
         onExit: ({ exitCode }) => settingsRef.current.onExit?.(exitCode),
         onStatus: (next) => {
-          if (cancelled) return;
-          if (next.state !== previous.state) {
-            const text = stateAnnouncement(next.state, { exitCode: next.exitCode, error: next.error, wasLive: previous.wasLive });
+          if (life.cancelled) return;
+          if (next.state !== local.previous.state) {
+            const text = stateAnnouncement(next.state, { exitCode: next.exitCode, error: next.error, wasLive: local.previous.wasLive });
             if (text) setAnnouncement(text);
-            if (next.state === 'live' && !previous.wasLive && settingsRef.current.autoFocus) term.focus();
+            if (next.state === 'live' && !local.previous.wasLive && settingsRef.current.autoFocus) term.focus();
           }
-          previous = next;
+          local.previous = next;
           setStatus(next);
         },
       });
       cleanups.push(() => connection.dispose());
 
       const reportSize = (size: TerminalSize) => {
-        if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          resizeTimer = null;
-          if (cancelled || connection.current.state !== 'live' || sameSize(size, ptySize)) return;
+        if (local.resizeTimer) clearTimeout(local.resizeTimer);
+        local.resizeTimer = setTimeout(() => {
+          local.resizeTimer = null;
+          if (life.cancelled || connection.current.state !== 'live' || sameSize(size, local.ptySize)) return;
           void postTerminalJson(resize, { cols: size.cols, rows: size.rows, clientId }).catch(() => undefined);
         }, RESIZE_DEBOUNCE_MS);
       };
       cleanups.push(() => {
-        if (resizeTimer) clearTimeout(resizeTimer);
+        if (local.resizeTimer) clearTimeout(local.resizeTimer);
       });
       /** This tab takes the size: local grid now, PTY shortly after (the last client that resizes wins). */
       function fitAndClaim() {
         if (readOnly) return;
         const size = measure();
         if (!size) return;
-        followingRemote = false;
+        local.followingRemote = false;
         if (size.cols !== term.cols || size.rows !== term.rows) term.resize(size.cols, size.rows);
         reportSize(size);
       }
 
       term.onData((data) => {
         if (readOnly || connection.current.state !== 'live') return;
-        if (followingRemote) fitAndClaim();
+        if (local.followingRemote) fitAndClaim();
         setInputIssue(false);
         batcher.push(data);
       });
@@ -351,17 +354,17 @@ export function TerminalView({
       term.textarea?.addEventListener('focus', onFocus);
       cleanups.push(() => term.textarea?.removeEventListener('focus', onFocus));
 
-      let frame = 0;
+      const raf = { frame: 0 };
       const observer = new ResizeObserver(() => {
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-          if (cancelled) return;
+        cancelAnimationFrame(raf.frame);
+        raf.frame = requestAnimationFrame(() => {
+          if (life.cancelled) return;
           if (!readOnly && connection.current.state === 'live') {
             fitAndClaim();
             return;
           }
           // Not ours to resize the PTY: keep its grid; before the first screen, just fill the panel.
-          if (!ptySize) {
+          if (!local.ptySize) {
             const size = measure();
             if (size && (size.cols !== term.cols || size.rows !== term.rows)) term.resize(size.cols, size.rows);
           }
@@ -369,13 +372,13 @@ export function TerminalView({
       });
       observer.observe(host);
       cleanups.push(() => {
-        cancelAnimationFrame(frame);
+        cancelAnimationFrame(raf.frame);
         observer.disconnect();
       });
 
       // Fonts that finish loading later change the cell size: measure again.
       const onFontsDone = () => {
-        if (cancelled) return;
+        if (life.cancelled) return;
         term.options.fontFamily = fontFamily;
         term.options.lineHeight = lineHeightOf(term.options.fontSize ?? settingsRef.current.fontSize);
         if (connection.current.state === 'live') fitAndClaim();
@@ -414,12 +417,14 @@ export function TerminalView({
         },
         paste: () => {
           if (readOnly || connection.current.state !== 'live' || !navigator.clipboard?.readText) return;
-          navigator.clipboard
-            .readText()
-            .then((text) => {
-              if (text && !cancelled) term.paste(text);
-            })
-            .catch(() => undefined);
+          void (async () => {
+            try {
+              const text = await navigator.clipboard.readText();
+              if (text && !life.cancelled) term.paste(text);
+            } catch {
+              // clipboard refused (permission): nothing to paste
+            }
+          })();
         },
         retry: () => connection.retryNow(),
         setLabel,
@@ -428,7 +433,7 @@ export function TerminalView({
     })();
 
     return () => {
-      cancelled = true;
+      life.cancelled = true;
       actionsRef.current = null;
       while (cleanups.length) {
         try {
