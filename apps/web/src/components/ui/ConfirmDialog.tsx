@@ -3,6 +3,7 @@
 import { useId, useRef, useState, type ReactNode } from 'react';
 import { Dialog as RadixDialog } from 'radix-ui';
 import { cn } from '@/lib/cn';
+import { useReturnFocus } from './return-focus';
 import { Icon, type IconName } from '@/components/icons';
 import { Banner } from './Banner';
 import { Button } from './Button';
@@ -48,6 +49,11 @@ export interface ConfirmDialogProps {
    * destructive face once the design decides.
    */
   confirmTone?: 'accent' | 'danger';
+  /**
+   * The action cannot run now (archive while sessions are live): the confirm button is disabled and
+   * `confirmDisabled` — the reason, always visible — is shown above the actions and linked to the button.
+   */
+  confirmDisabled?: ReactNode;
   className?: string;
 }
 
@@ -70,6 +76,7 @@ export function ConfirmDialog({
   error,
   typedConfirmation,
   confirmTone = 'accent',
+  confirmDisabled,
   className,
 }: ConfirmDialogProps) {
   const [pending, setPending] = useState(false);
@@ -85,8 +92,10 @@ export function ConfirmDialog({
     }
   }
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useReturnFocus();
   const descriptionId = useId();
   const typedOk = !typedConfirmation || typed.trim() === typedConfirmation.expected;
+  const blocked = confirmDisabled != null && confirmDisabled !== false;
 
   const handleOpenChange = (next: boolean) => {
     if (pending) return;
@@ -98,7 +107,7 @@ export function ConfirmDialog({
   };
 
   const confirm = async () => {
-    if (!typedOk || pending) return;
+    if (!typedOk || blocked || pending) return;
     setPending(true);
     setFailed(false);
     try {
@@ -119,13 +128,15 @@ export function ConfirmDialog({
           role="alertdialog"
           aria-describedby={descriptionId}
           onOpenAutoFocus={(event) => {
+            returnFocus.onOpenAutoFocus();
             event.preventDefault();
             cancelRef.current?.focus();
           }}
+          onCloseAutoFocus={returnFocus.onCloseAutoFocus}
           className={cn(
             'nu-dialog fixed z-50 flex flex-col gap-4 bg-bg p-6 text-text shadow-float outline-none',
             'inset-x-0 bottom-0 max-h-[92dvh] overflow-y-auto rounded-t-xl pb-[max(24px,env(safe-area-inset-bottom))]',
-            'nav:inset-x-auto nav:bottom-auto nav:top-1/2 nav:left-1/2 nav:w-[min(var(--dialog-confirm-w),calc(100vw-32px))] nav:-translate-x-1/2 nav:-translate-y-1/2 nav:rounded-xl nav:pb-6',
+            'nav:inset-x-auto nav:bottom-auto nav:top-1/2 nav:left-[calc(50%_+_var(--overlay-start)/2)] nav:w-[min(var(--dialog-confirm-w),calc(100vw_-_var(--overlay-start)_-_32px))] nav:-translate-x-1/2 nav:-translate-y-1/2 nav:rounded-xl nav:pb-6',
             className,
           )}
         >
@@ -162,6 +173,11 @@ export function ConfirmDialog({
             </div>
           ) : null}
           {shownError ? <Banner tone="danger" title={shownError} /> : null}
+          {blocked ? (
+            <p id={`${descriptionId}-blocked`} className="m-0 font-sans text-app-13 leading-[18px] text-muted">
+              {confirmDisabled}
+            </p>
+          ) : null}
           <div className="flex flex-col-reverse gap-2.5 nav:flex-row nav:justify-end">
             <Button ref={cancelRef} disabled={pending} onClick={() => handleOpenChange(false)} block className="nav:w-auto">
               {cancelLabel}
@@ -170,7 +186,8 @@ export function ConfirmDialog({
               variant="accent"
               tone={confirmTone === 'danger' ? 'danger' : undefined}
               loading={pending}
-              disabled={!typedOk}
+              disabled={!typedOk || blocked}
+              aria-describedby={blocked ? `${descriptionId}-blocked` : undefined}
               onClick={confirm}
               block
               className="nav:w-auto"

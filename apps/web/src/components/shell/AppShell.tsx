@@ -1,8 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
+import { Icon } from '@/components/icons';
 import { TooltipProvider } from '@/components/ui/Tooltip';
 import { useToastOffset } from '@/components/ui/Toast';
 import { LiveEventsProvider, useLiveEvents } from '@/hooks/useLiveEvents';
@@ -23,6 +25,11 @@ export interface AppShellProps {
    * `rail` = the Workspace: 72 px rail on desktop, no tab bar, no padding (the session takes the room).
    */
   variant: 'sidebar' | 'rail';
+  /**
+   * Global providers that render no page content (GlobalSearch: palette groups + its dialog). Mounted
+   * outside the T5 gate, so they stay registered while `ServerUnavailable` replaces the content.
+   */
+  globals?: ReactNode;
   children: ReactNode;
 }
 
@@ -38,13 +45,15 @@ const TABBAR_PX = 57;
  *    shows its own inline W7 banner with `ConnectionLostBanner context="workspace"`).
  * Pages can rely on `--shell-bottom` (space taken by the tab bar) for their sticky bottom bars.
  */
-export function AppShell({ data, variant, children }: AppShellProps) {
+export function AppShell({ data, variant, globals, children }: AppShellProps) {
   return (
     <ShellDataProvider data={data}>
       <LiveEventsProvider initial={data}>
         <CommandRegistryProvider>
           <TooltipProvider delayDuration={300}>
-            <ShellFrame variant={variant}>{children}</ShellFrame>
+            <ShellFrame variant={variant} globals={globals}>
+              {children}
+            </ShellFrame>
           </TooltipProvider>
         </CommandRegistryProvider>
       </LiveEventsProvider>
@@ -52,7 +61,7 @@ export function AppShell({ data, variant, children }: AppShellProps) {
   );
 }
 
-function ShellFrame({ variant, children }: { variant: AppShellProps['variant']; children: ReactNode }) {
+function ShellFrame({ variant, globals, children }: { variant: AppShellProps['variant']; globals?: ReactNode; children: ReactNode }) {
   const data = useShellData();
   const live = useLiveEvents();
   const pathname = usePathname();
@@ -72,6 +81,7 @@ function ShellFrame({ variant, children }: { variant: AppShellProps['variant']; 
     if (!retrying) return;
     const done = setTimeout(() => setRetrying(false), unavailable ? 4_000 : 0);
     return () => clearTimeout(done);
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- each reconnection attempt restarts the « retrying » timer
   }, [retrying, unavailable, live.attempt]);
 
   // Reconnects the stream now: when the runner answers again, the live provider re-reads the snapshot
@@ -96,7 +106,7 @@ function ShellFrame({ variant, children }: { variant: AppShellProps['variant']; 
   } as CSSProperties;
 
   return (
-    <div className="flex min-h-dvh bg-surface-raised" style={style}>
+    <div className="flex min-h-dvh bg-surface-raised" style={style} data-shell={variant}>
       <a
         href="#contenu"
         className="fixed top-4 left-4 z-[80] -translate-y-[200%] rounded-md bg-bg px-4 py-2 font-sans text-app-14 font-semibold text-text shadow-float focus-visible:translate-y-0"
@@ -135,7 +145,15 @@ function ShellFrame({ variant, children }: { variant: AppShellProps['variant']; 
         )}
       >
         {unavailable ? (
-          <div className={cn('flex flex-1 items-start justify-center', variant === 'rail' && 'px-4 py-7 nav:px-8')}>
+          <div className={cn('flex flex-1 items-start justify-center', variant === 'rail' && 'flex-col items-stretch justify-start px-4 pt-[calc(8px+env(safe-area-inset-top))] pb-7 nav:flex-row nav:items-start nav:justify-center nav:px-8 nav:py-7')}>
+            {variant === 'rail' ? (
+              // T5 « sans masquer la navigation »: the phone Workspace has neither rail nor tab bar, so its
+              // session header is the only way out — keep a back link while the card replaces it.
+              <Link href="/sessions" className="nu-hit mb-2 inline-flex h-11 items-center gap-1 self-start font-sans text-app-15 font-medium text-accent nav:hidden">
+                <Icon name="arrow-left" size={18} />
+                Sessions
+              </Link>
+            ) : null}
             <ServerUnavailable
               serverName={data.server.name}
               lastContactAt={live.lastRunnerContactAt}
@@ -163,6 +181,7 @@ function ShellFrame({ variant, children }: { variant: AppShellProps['variant']; 
 
       {showTabBar ? <TabBar className="nav:hidden" activeSessions={activeSessions} serverUnavailable={unavailable} /> : null}
 
+      {globals}
       <CommandPalette open={palette.open} onOpenChange={palette.setOpen} />
     </div>
   );

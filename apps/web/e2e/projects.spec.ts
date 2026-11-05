@@ -273,6 +273,20 @@ test('archiver puis restaurer un projet (T8)', async ({ page, stack }) => {
   expect(((await detail.json()) as { project: { archivedAt: string | null } }).project.archivedAt).toBeNull();
 });
 
+test('archiver un projet aux sessions actives : action désactivée, raison visible (T8)', async ({ page }) => {
+  test.skip(isMobile(), 'Le menu de ligne est propre au bureau.');
+  await openList(page);
+  await page.getByRole('button', { name: 'Actions pour Devis Express' }).click();
+  await page.getByRole('menuitem', { name: 'Archiver le projet…' }).click();
+  const confirm = page.getByRole('alertdialog', { name: 'Archiver Devis Express ?' });
+  await expect(confirm.getByText(/sessions? (est|sont) actives? : arrêtez-/)).toBeVisible({ timeout: 30_000 });
+  const archive = confirm.getByRole('button', { name: 'Archiver' });
+  await expect(archive).toBeDisabled();
+  await expect(archive).toHaveAccessibleDescription("Archiver reste indisponible tant qu'une session du projet est active.");
+  await confirm.getByRole('button', { name: 'Annuler' }).click();
+  await expect(confirm).toBeHidden();
+});
+
 test('API : routes protégées et Origin vérifiée', async ({ page, stack }) => {
   const devis = stack.seeded.projects!.devis!;
   const noOrigin = await page.request.post(`/api/projects/${devis.id}/sync`, { headers: { origin: 'https://evil.example' } });
