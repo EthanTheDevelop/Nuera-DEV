@@ -82,3 +82,11 @@ export function safeRedirectPath(value: unknown, fallback = '/'): string {
   if (/^\/(connexion|configuration|deconnexion)(\/|\?|$)/.test(value) || (value.startsWith('/api/') && !BROWSER_API_ROUTES.test(value))) return fallback;
   return value;
 }
+
+/**
+ * Double authentification exigée (par défaut). `NUERA_REQUIRE_2FA=false` la rend facultative :
+ * portail à compte unique partagé, sur décision du propriétaire (docs/SECURITY.md).
+ */
+export function twoFactorRequired(): boolean {
+  return process.env.NUERA_REQUIRE_2FA?.trim().toLowerCase() !== 'false';
+}

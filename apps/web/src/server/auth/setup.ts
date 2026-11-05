@@ -15,6 +15,7 @@ import { AppError, formatZodIssues } from '@/server/errors';
 import { audit, AUDIT_ACTIONS } from '@/server/security/audit';
 import { assertRateLimit, AUTH_RATE_LIMITS } from '@/server/security/rate-limit';
 import { getClientIp } from '@/server/security/request-info';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 /**
  * Owner setup (/configuration): SETUP_TOKEN → owner account → mandatory TOTP enrolment →
@@ -40,7 +41,7 @@ export type SetupState =
 export async function getSetupState(): Promise<SetupState> {
   const [owner] = await db.select({ id: user.id, twoFactorEnabled: user.twoFactorEnabled }).from(user).limit(1);
   if (!owner) return { kind: 'no_owner' };
-  return owner.twoFactorEnabled ? { kind: 'complete', ownerId: owner.id } : { kind: 'owner_without_2fa', ownerId: owner.id };
+  return owner.twoFactorEnabled || !twoFactorRequired() ? { kind: 'complete', ownerId: owner.id } : { kind: 'owner_without_2fa', ownerId: owner.id };
 }
 
 export async function ownerExists(): Promise<boolean> {

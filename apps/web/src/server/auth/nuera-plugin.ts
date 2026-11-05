@@ -10,6 +10,7 @@ import { consumeSetupNonce, SETUP_NONCE_HEADER } from '@/server/auth/setup-nonce
 import { audit, AUDIT_ACTIONS } from '@/server/security/audit';
 import { displayableIp, getClientCity, getClientIp, getUserAgent } from '@/server/security/request-info';
 import { getWebSessionPolicy } from '@/server/settings';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 /**
  * Nuera Dev rules layered on Better Auth (placed after twoFactor/passkey, before nextCookies):
@@ -332,7 +333,7 @@ export const nueraAuthPlugin = () =>
               if (!email) return;
               const found = await ctx.context.internalAdapter.findUserByEmail(email);
               const twoFactorEnabled = (found?.user as { twoFactorEnabled?: boolean | null } | undefined)?.twoFactorEnabled;
-              if (found && !twoFactorEnabled && !consumeSetupNonce(ctx.headers?.get(SETUP_NONCE_HEADER))) {
+              if (found && !twoFactorEnabled && twoFactorRequired() && !consumeSetupNonce(ctx.headers?.get(SETUP_NONCE_HEADER))) {
                 throw new APIError('FORBIDDEN', {
                   message: 'Configuration inachevée : terminez-la depuis la page de configuration, avec le jeton.',
                   code: 'SETUP_INCOMPLETE',

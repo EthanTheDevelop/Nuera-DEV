@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/server/auth/session';
 import { getSetupState } from '@/server/auth/setup';
 import { AuthCard, FormAlert } from '../_components/ui';
 import { SignInForm } from './sign-in-form';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 export const metadata: Metadata = { title: 'Connexion' };
 
@@ -16,7 +17,7 @@ export default async function ConnexionPage({ searchParams }: { searchParams: Se
   const next = safeRedirectPath(Array.isArray(params.suivant) ? params.suivant[0] : params.suivant);
 
   const user = await getCurrentUser();
-  if (user?.twoFactorEnabled) redirect(next);
+  if (user && (user.twoFactorEnabled || !twoFactorRequired())) redirect(next);
   if (user) redirect('/configuration/double-facteur');
 
   const setup = await getSetupState();
