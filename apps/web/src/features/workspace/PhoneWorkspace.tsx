@@ -6,7 +6,7 @@ import { CompactButton, EmptyState, ErrorPanel, IconButton, Sheet, SheetContent,
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
 import { useNow } from '@/hooks/useNow';
 import { useRouter } from 'next/navigation';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { CommitForm } from './commit/CommitForm';
 import { STEP_LABEL, useCommitFlow } from './commit/useCommitFlow';
 import { SessionStatus } from './header/SessionHeader';
@@ -189,6 +189,17 @@ export function PhoneWorkspace() {
   const ws = useWorkspace();
   const live = useOptionalLiveEvents();
   const keyboard = useKeyboardInset();
+  // The keyboard shrinks the tab panel: keep the focused field of a tab (S3 commit message, search…)
+  // visible above the sticky bar instead of leaving it hidden under « Committer et pousser ».
+  useEffect(() => {
+    if (!keyboard.open) return;
+    const frame = requestAnimationFrame(() => {
+      const field = document.activeElement;
+      if (field instanceof HTMLElement && field.closest('[role="tabpanel"]')) field.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- the inset is the trigger: re-run while the keyboard slides in
+  }, [keyboard.open, keyboard.inset]);
   const tab = ws.url.phoneTab;
   const count = ws.changedCount ?? 0;
   const git = usePhoneGit(tab === 'git');
