@@ -20,23 +20,23 @@ requests sans changer d'outil.
 
 ## 1. État du projet — au 5 novembre 2026
 
-**Résumé : environ 40 % du projet.** Toute la mécanique (base, authentification, design system, shell, composants,
-moteur d'exécution, intégrations côté serveur) est faite, vérifiée et poussée sur `main`. **Aucune des six pages
-métier n'existe encore** (Accueil définitive, Projets, Sessions, Workspace, Intégrations, Paramètres) : on peut créer
-le compte, se connecter avec la double authentification et voir le shell avec une page d'accueil provisoire, rien de
-plus côté utilisateur. Rien n'est déployé.
+**Résumé : environ 75 % du projet.** La mécanique (base, authentification, design system, shell, composants,
+moteur d'exécution, intégrations côté serveur) et les **six pages métier** (Accueil, Projets, Sessions, Workspace,
+Intégrations, Paramètres, bureau et mobile) sont faites, vérifiées sur la pile de test locale et poussées sur `main`.
+Restent les 5 parcours transversaux de bout en bout (phase 4), la revue globale (phase 5) et la construction réelle
+des images de déploiement (phase 6). Rien n'est déployé.
 
 | # | Jalon | État | Détail |
 |---|---|---|---|
 | 0 | Découverte (Figma, recherches) | ✅ fait | §2.1 |
 | 1 | Socle (monorepo, base, outillage) | ✅ fait | §2.2 |
 | 2 | Fondations (design system, shell, composants, auth, runner, intégrations serveur) | ✅ fait, vérifié, poussé | §2.3–2.8 |
-| 3 | Pages métier (6 domaines, bureau + mobile) | ⏸ interrompu au début | §3 et §4.1 |
+| 3 | Pages métier (6 domaines, bureau + mobile) + pile de test + terminal partagé | ✅ fait, vérifié, poussé | §3 |
 | 4 | Les 5 parcours obligatoires de bout en bout + Playwright | ⬜ à faire | §4.3 |
 | 5 | Revue globale (sécurité, fidélité Figma, boutons morts) et corrections | ⬜ à faire | §4.4 |
 | 6 | Déploiement Coolify / VPS-3 | ⏳ fichiers écrits, jamais testés, rien de déployé | §4.5 |
 
-Dernier commit vérifié sur `main` : `a79ea8d` (24 commits depuis l'initialisation). Le suivi court est tenu dans
+Phase 3 : commits `bef7e3d` (prérequis) → fin de la phase 3 sur `main` (voir `git log`). Le suivi court est tenu dans
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ---
@@ -156,74 +156,49 @@ Dernier commit vérifié sur `main` : `a79ea8d` (24 commits depuis l'initialisat
 
 ---
 
-## 3. Travail en cours **non commité** (phase 3 interrompue)
+## 3. Phase 3 — pages métier (faite)
 
-La phase 3 a été lancée comme un workflow multi-agents (script versionné :
-[docs/reprise/phase3-domaines.workflow.js](docs/reprise/phase3-domaines.workflow.js)). Elle a été **arrêtée après
-~1 h**, pendant ses deux lots préalables, **avant qu'ils ne soient terminés ni revus**. Les fichiers partiels sont
-dans la copie de travail du poste, **non commités sur `main`** (ils sont sauvegardés sur la branche distante
-`wip/phase3-prerequis`, voir §5.4) :
+Réalisée par un workflow multi-agents ([docs/reprise/phase3-domaines.workflow.js](docs/reprise/phase3-domaines.workflow.js)) :
+chaque lot construit puis relu indépendamment, intégré lot par lot sur `main`.
 
-| Lot | Fichiers | État |
+| Lot | Contenu | Vérification du lot |
 |---|---|---|
-| HARNESS (pile de test locale : faux GitHub + dépôts Git réels + runner + faux CLI + données) | `apps/web/e2e/harness/` (stack.mjs, cli.ts, stack.ts, seed.ts, scenarios.ts, github-*.ts, fixture-*.ts…), modifs de `apps/web/e2e/fixtures/env.ts` et `owner.ts`, `apps/runner/test/fixtures/fake-claude.mjs` (+399 lignes) | partiel : pas de `harness/README.md`, pas de `smoke.spec.ts`, cycles up/seed/login/down non validés, `playwright.config.ts` pas encore étendu |
-| TERMINAL (terminal xterm.js partagé) | `apps/web/src/components/terminal/` (TerminalView, TerminalDialog, protocol, connection, tests), `apps/web/src/server/terminals/`, `apps/web/src/app/api/terminals/route.ts` + `terminals.test.ts`, modifs des routes `/api/terminals/[id]/*` et `/api/stream/terminals/[id]`, page `/kit/terminal`, `apps/web/e2e/terminal.spec.ts` | partiel : non vérifié de bout en bout, non revu |
+| Pile de test | `apps/web/e2e/harness/` (`stack.mjs up/down/seed/login/shot…`, faux GitHub, vrais dépôts Git, runner, faux CLI, données), projets Playwright `desktop`/`mobile` — [docs/TESTING.md](docs/TESTING.md) | smoke + auth 20/20 |
+| Terminal | `components/terminal` (xterm.js), `server/terminals`, `/api/terminals/**`, `/kit/terminal` | e2e 13/13 (+1 ignoré) |
+| Accueil | D01/M01 en direct (`server/home`), recherche globale ⌘K (`/api/search`), correctif de boucle de la palette | e2e 12/12 |
+| Sessions | D06/M06, `NewSessionDialog`/`NewSessionButton`, `StopSessionDialog`, `server/sessions`, `/api/sessions/**` | e2e 19/19 |
+| Projets | D02/M02, ajout A1–A4/M03 (route interceptée), page projet D04/M04 à 7 onglets, `/api/projects/**`, `/api/runs/**` | e2e 14/14 (+4 ignorés) |
+| Workspace | D05/M05, W1–W7, S1–S4 : conversation, autorisations, Terminal brut, fichiers, diff, commit/push/PR, `/api/permissions/**`, `/api/worktrees/**` | e2e 21/21 (+5 ignorés) |
+| Intégrations | D07/M07, tiroir D1/D2 intercepté, ajout MCP, test, activation par projet, reconnexion Coolify/OAuth | e2e 15/15 (+1 ignoré) |
+| Paramètres | D08/M08 : Claude Code (statut, reconnexion par terminal, /status), Compte et sécurité, Serveur, Préférences | e2e 24/24 (+8 ignorés) |
 
-État mesuré de ces fichiers partiels (5 novembre 2026) — c'est pourquoi ils ne sont pas sur `main` :
-
-- `tsc` web : **5 erreurs**, toutes dans la pile de test — `apps/web/e2e/harness/fixture-repos.ts:224` et
-  `apps/web/e2e/harness/proc.ts:46,51` (objet d'environnement typé `ProcessEnv` qui exige `NODE_ENV` : typer en
-  `Record<string, string | undefined>`, cf. leçon de `CLAUDE.md`).
-- oxlint : **5 erreurs** — `react(immutability)` sur le drapeau `cancelled` des effets de
-  `components/terminal/TerminalView.tsx` (l. 275, 306, 431) et `TerminalDialog.tsx` (l. 90), probablement à passer en
-  `useRef` ou à désactiver localement après vérification ; `unicorn(no-new-array)` dans
-  `apps/runner/test/fixtures/fake-claude.mjs:284`.
-- Aucun test de ces lots n'a été exécuté jusqu'au bout ni revu.
+Vérification globale après intégration : `tsc` 0 erreur sur les 4 paquets ; oxlint 0 erreur ; Vitest shared 21,
+db 5, web 412, runner 64 ; `next build` OK. Les « ignorés » sont des tests propres au bureau ou au téléphone.
 
 ---
 
 ## 4. Ce qui reste à faire (précis)
 
-### 4.1 Phase 3 — pages métier (le plus gros morceau)
+### 4.1 Phase 3 — faite (§3)
 
-Chaque domaine : bureau **et** mobile fidèles à Figma (captures `.design-refs/screens/<code>.png`), données réelles
-uniquement, états T1/T2/T4/T5/T6, aucun bouton mort, audit des actions sensibles, tests unitaires + spec Playwright
-bureau/mobile. Le détail exact (chemins possédés, contrats, API, écrans à comparer) est dans
-[docs/reprise/phase3-domaines.workflow.js](docs/reprise/phase3-domaines.workflow.js) (constantes `PREREQ` et
-`DOMAINS`).
+### 4.2 Suivis techniques (hérités des phases 2 et 3)
 
-0. **Terminer les prérequis** :
-   - HARNESS : `node apps/web/e2e/harness/stack.mjs up|down|login|seed|status --name <pile> --web-port … --runner-port
-     … --hook-port … --github-port … --db …` ; scénarios de données `projects`, `sessions`, `changes`, `runs`,
-     `notifications` ; projets Playwright `desktop` (1440×1000) et `mobile` (390×844) pilotés par `E2E_STACK` ;
-     fixtures ; `smoke.spec.ts` ; `harness/README.md` ; `docs/TESTING.md` ; deux cycles complets validés + isolation de
-     deux piles simultanées.
-   - TERMINAL : `TerminalView`, `TerminalDialog`, `POST /api/terminals` (shell, claude-login, claude-status), `GET
-     /api/terminals/[id]`, démo `/kit/terminal`, tests contre un vrai terminal du runner.
-1. **Accueil** (D01, M01, S5) : `src/app/(shell)/page.tsx` définitive, `server/home`, tuiles serveur / Claude Code /
-   sessions actives / projets récents / dernières modifications / intégrations, temps réel, état de premier
-   lancement ; recherche globale `/api/search` branchée sur la palette ⌘K.
-2. **Projets** (D02, M02, D03 + A1–A4, M03, D04, M04) : liste filtrable, ajout en modale (route interceptée
-   `@modal/(.)nouveau`) avec choix du dépôt GitHub → configuration → clonage en direct → succès / erreur récupérable,
-   page projet à 7 onglets (`?onglet=`), API `/api/projects/**` (synchroniser, branches, worktrees, CLAUDE.md,
-   variables chiffrées, MCP par projet, favori, archivage) et `/api/runs/**` (commandes du projet).
-3. **Sessions** (D06, M06, W1) : `server/sessions` (créer, reprendre, arrêter, archiver, renommer, capacité, lister),
-   `NewSessionDialog` / `NewSessionButton` réutilisés partout, API `/api/sessions/**` (hors instruction/interruption),
-   page `/sessions` (capacité, en cours, historique à 4 filtres).
-4. **Workspace** (D05, M05, W1–W7, S1–S4) : `/workspace/[sessionId]`, fil Conversation alimenté par les événements
-   SSE, autorisations, saisie (instruction, Échap), Terminal brut (`TerminalView`), panneau contextuel 5 onglets
-   (fichiers, diff + stage, Git + commit / push / pull request W5, tests), sessions parallèles W6/S4, connexion
-   perdue W7 ; API `/api/sessions/[id]/{instruction,interrupt,events,terminal}`, `/api/permissions/**`,
-   `/api/worktrees/**`.
-5. **Intégrations** (D07, M07, D1, D2) : page `/integrations` + tiroir intercepté `@drawer/(.)mcp/[serverId]`,
-   connexion GitHub, grille MCP, ajout de serveur, test, activation par projet, reconnexion (Figma par terminal,
-   Coolify par jeton), garde-fous, codes `?github=` — sur les API existantes.
-6. **Paramètres** (D08, M08) : onglets Claude Code (statut du CLI, « Se reconnecter » =
-   `/parametres?onglet=claude-code&action=reconnexion`, « Ouvrir /status », réglages par défaut), Compte et sécurité
-   (2FA, codes de secours, clés d'accès, mot de passe, accès web, journal), Serveur (services, disponibilité 30 j,
-   worktrees anciens), Préférences (notifications push de l'appareil, thème, langue).
+Relevés par les lots de la phase 3 (honnêtement remplacés par un état vrai dans l'UI en attendant) :
 
-### 4.2 Suivis techniques hérités de la phase 2 (à traiter pendant ou après la phase 3)
+- Runner : persister `command_runs.details` ; route de suppression du clone principal (option T8 « Supprimer aussi le
+  clone ») et d'adoption d'un clone existant (A4) ; taille disque des worktrees (D08 « · 2,4 Go », T8 « Libère … ») ;
+  mises à jour du CLI / du système (D08 « Mise à jour système ») ; copie S5 et lien `#demande-<id>` des notifications
+  d'autorisation ; politique de redémarrage (D01) ; renommer une session CLI vivante ; liste des tests de Claude.
+- Web : liste des variables interdites à exporter de `@nuera/shared` (copiée dans `server/sessions/env.ts` et
+  `server/projects/env.ts`) ; archivage/renommage sans événement `session.status` ; `useLiveEvents` rafraîchit sous
+  une route interceptée (modal Projets, tiroir Intégrations) ; `GlobalSearch` désinscrite sous T5 ; `checkCoolify`
+  pourrait marquer le serveur MCP Coolify `expired` ; « Reprendre » d'une session terminée jamais affiché.
+- UI : `Banner` (texte qui ne passe pas à la ligne sur téléphone), `Dialog` centré sur la zone de contenu (D03),
+  `McpServerCard` sur une ligne à 1440, `Pastille` 48 → icône 20 px, `ConfirmDialog` sans état désactivé ; faux
+  GitHub sans `contents`/`size` (D03 « Détecté », « 84 Mo »).
+
+Hérités de la phase 2 :
+
 
 - Runner : lire/écrire `sessions.claude_session_id` (aujourd'hui dans `NUERA_DATA_DIR/sessions/<id>/launch.json`) et
   `command_runs.details` (résultats par test, aujourd'hui en mémoire seulement) ; politique au démarrage pour les
@@ -325,25 +300,17 @@ de `docs/` et de ce README.
   ./node_modules/.bin/oxlint
   pnpm --filter @nuera/shared test; pnpm --filter @nuera/db test; pnpm --filter @nuera/web test; pnpm --filter @nuera/runner test
   NEXT_DIST_DIR=.next-build pnpm --filter @nuera/web exec next build
-  pnpm --filter @nuera/web e2e   # Playwright (auth aujourd'hui ; les autres specs arrivent avec la phase 3)
+  E2E_STACK=<pile> pnpm --filter @nuera/web e2e [spec]   # Playwright sur la pile de test (docs/TESTING.md)
   ```
 
-### 5.4 Reprendre la phase 3
+### 5.4 Reprendre (phases 4 à 6)
 
-1. Vérifier l'état réel : `git status`, `git log --oneline -5`. La copie de travail du poste contient les fichiers
-   partiels du §3 ; ils sont aussi sur la branche distante `wip/phase3-prerequis` (= `main` + ces fichiers). Sur un
-   autre poste : `git fetch && git checkout -b reprise origin/wip/phase3-prerequis` (ou reprendre sur `main` et
-   récupérer les fichiers avec `git checkout origin/wip/phase3-prerequis -- <chemins>`).
-2. Revérifier types et lint de ces fichiers partiels avant de continuer (dernier état mesuré au §3 : 5 erreurs tsc,
-   5 erreurs oxlint) ; la pile `.data/stacks/e2e` laissée par l'agent HARNESS peut être supprimée
-   (`node apps/web/e2e/harness/stack.mjs down --name e2e --purge` une fois le lanceur réparé, sinon effacer le dossier
-   et la base `nuera_e2e*`).
-3. Relancer l'orchestration : le script [docs/reprise/phase3-domaines.workflow.js](docs/reprise/phase3-domaines.workflow.js)
-   est prêt pour l'outil Workflow (`Workflow({ scriptPath: 'P:/-Nuera-DEV/docs/reprise/phase3-domaines.workflow.js' })`).
-   La reprise par identifiant d'exécution (`wf_90d403d9-969`) n'est **pas** possible depuis une autre session : le
-   script repart du début, et ses agents trouveront les fichiers partiels dans leurs chemins (leur dire de les
-   reprendre plutôt que de les réécrire : ajouter une phrase en tête de `COMMON`). Mettre à jour dans le script la
-   ligne « STATE » (commit courant) avant de le lancer.
+1. Vérifier l'état réel : `git status`, `git log --oneline -5` ; la phase 3 est entièrement sur `main`.
+2. Les phases suivantes sont orchestrées par [docs/reprise/phases4-6.workflow.js](docs/reprise/phases4-6.workflow.js)
+   (argument `part` : `flows`, `review` ou `deploy`). Mettre à jour la ligne « STATE » (commit courant) avant de le
+   lancer ; ses agents reprennent les fichiers existants plutôt que de les réécrire.
+3. Conteneur Linux lancé en root : `embedded-postgres` refuse de tourner en root et initialise `.data/pg` avec
+   l'utilisateur `postgres` → `mkdir -p .data/pg && chown postgres:postgres .data/pg` avant `pnpm db:local`.
 4. Organisation qui a fonctionné en phase 2 : une copie de travail partagée, propriété stricte des fichiers par lot,
    contrats d'abord, aucun agent ne committe ni n'installe de dépendance, un relecteur indépendant par lot, rapports
    structurés (`files_changed`, `proposed_commits`, `followups`, `known_gaps`).
