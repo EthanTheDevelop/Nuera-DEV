@@ -48,6 +48,8 @@ services:
       # Traefik (Coolify) writes the client address in X-Real-IP: the only IP header trusted.
       TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-real-ip}
       NUERA_SERVER_STATUS_URL: ${NUERA_SERVER_STATUS_URL:-}
+      # "false" : double authentification facultative (compte unique partagé).
+      NUERA_REQUIRE_2FA: ${NUERA_REQUIRE_2FA:-true}
       GITHUB_FALLBACK_TOKEN: ${GITHUB_FALLBACK_TOKEN:-}
     expose:
       - "3000"
