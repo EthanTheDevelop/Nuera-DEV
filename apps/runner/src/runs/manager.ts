@@ -206,7 +206,8 @@ export class RunManager {
     const summary = tests && tests.counts.total > 0 ? formatTestCounts(tests.counts) : status === 'stopped' ? 'Arrêtée' : code === 0 ? 'Terminée' : `code ${code ?? '?'}`;
     const [row] = await this.deps.db
       .update(commandRuns)
-      .set({ status, exitCode: code, summary, outputTail: live.output, finishedAt: new Date(), port: live.row.port })
+      // The per-test report outlives the process (W2 « Résultats des tests » after the end of the run).
+      .set({ status, exitCode: code, summary, outputTail: live.output, details: tests ? { report: tests } : null, finishedAt: new Date(), port: live.row.port })
       .where(eq(commandRuns.id, live.id))
       .returning();
     this.live.delete(live.id);
@@ -221,7 +222,7 @@ export class RunManager {
     if (live) return this.dto(live.row, live.tests);
     const [row] = await this.deps.db.select().from(commandRuns).where(eq(commandRuns.id, runId)).limit(1);
     if (!row) throw new RunnerError('NOT_FOUND', 'Lancement introuvable.');
-    return this.dto(row, null);
+    return this.dto(row, row.details?.report ?? null);
   }
 
   /** Output kept for a new subscriber (live buffer or the stored tail). */

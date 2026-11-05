@@ -52,6 +52,9 @@ describe.skipIf(!dbReady)('project runs (platform shell in a PTY)', () => {
     expect(done).toMatchObject({ status: 'succeeded', exitCode: 0, port: 4321, summary: '2 / 2 réussis' });
     const [row] = await env.db.select().from(commandRuns).where(eq(commandRuns.id, run.id));
     expect(row!.outputTail).toContain('Tests  2 passed (2)');
+    // The per-test report is kept once the process is gone (read back by GET /v1/runs/:id).
+    expect(row!.details?.report?.tests.map((t) => t.name)).toEqual(['src/a.test.ts > somme', 'src/a.test.ts > produit']);
+    expect(done.tests?.counts).toMatchObject({ passed: 2, total: 2 });
   }, 300_000);
 
   it('stops a long-running command', async () => {
