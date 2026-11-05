@@ -15,6 +15,7 @@ import { Command } from 'cmdk';
 import { Dialog as RadixDialog, VisuallyHidden } from 'radix-ui';
 import { cn } from '@/lib/cn';
 import { Icon, type IconName } from '@/components/icons';
+import { useReturnFocus } from '@/components/ui/return-focus';
 import { Spinner } from '@/components/ui/Spinner';
 import { NAV_ITEMS } from './nav-items';
 
@@ -156,6 +157,8 @@ export function CommandPalette({ open, onOpenChange, groups: extraGroups = NO_GR
   );
   const results = useProviderResults(providers, query, open);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Opened by ⌘K or the sidebar button (no Radix Trigger): give the focus back to where it was.
+  const returnFocus = useReturnFocus();
 
   const navigation: CommandGroupDef = useMemo(
     () => ({
@@ -214,8 +217,10 @@ export function CommandPalette({ open, onOpenChange, groups: extraGroups = NO_GR
           aria-describedby={undefined}
           onOpenAutoFocus={(e) => {
             e.preventDefault();
+            returnFocus.onOpenAutoFocus();
             inputRef.current?.focus();
           }}
+          onCloseAutoFocus={returnFocus.onCloseAutoFocus}
           className="nu-pop fixed top-[12dvh] left-1/2 z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-lg border border-border bg-bg text-text shadow-float outline-none"
         >
           <VisuallyHidden.Root>

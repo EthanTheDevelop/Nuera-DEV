@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Dialog as RadixDialog } from 'radix-ui';
 import { IconButton, Button, Dialog, DialogContent, StepProgress, Stepper } from '@/components/ui';
 import { NewSessionButton } from '@/features/sessions';
 import { useIsDesktopNav } from '@/hooks/useMediaQuery';
@@ -131,6 +132,7 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
   }, []);
   useEffect(() => {
     if (step === 'configuration' && selected && previewFor !== selected) {
+      // eslint-disable-next-line react/set-state-in-effect -- reset before loading the preview of the newly selected repository
       setForm(null);
       setConflict(null);
       setFailure(null);
@@ -448,6 +450,7 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
         }
         heading={heading}
         footer={actions}
+        onDismiss={() => !submitting && close()}
       >
         {body}
       </PhoneShell>
@@ -502,7 +505,7 @@ function DesktopCard({
       <div className="flex flex-col gap-4 border-b border-border px-7 pt-6 pb-5">
         <div className="flex items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <h1 id="ajout-projet-titre" className="m-0 font-sans text-app-22 font-semibold text-text">
+            <h1 className="m-0 font-sans text-app-22 font-semibold text-text">
               {title}
             </h1>
             <p className="m-0 font-sans text-app-14 text-muted">{description}</p>
@@ -527,6 +530,7 @@ function PhoneShell({
   leading,
   heading,
   footer,
+  onDismiss,
   children,
 }: {
   title: string;
@@ -534,32 +538,40 @@ function PhoneShell({
   leading: ReactNode;
   heading: { title: string; text: string } | null;
   footer: ReactNode;
+  /** Échap (same as the leading « Annuler » / « Fermer »). */
+  onDismiss: () => void;
   children: ReactNode;
 }) {
+  // Radix Dialog, not portalled: focus trapped in the full-screen flow, Échap closes, the page under it
+  // (the list, for the intercepted route) is inert; it stays inside <main>, which keeps its landmark.
   return (
-    <div role="dialog" aria-modal="true" aria-labelledby="ajout-projet-titre" className="fixed inset-0 z-40 flex flex-col bg-bg">
-      <div className="pt-[env(safe-area-inset-top)]">
-        <div className="flex h-[52px] items-center gap-2 px-2">
-          <div className="w-11 shrink-0">{leading}</div>
-          <h1 id="ajout-projet-titre" className="m-0 min-w-0 flex-1 truncate text-center font-sans text-app-16 font-semibold text-text">
-            {title}
-          </h1>
-          <span className="w-11 shrink-0 text-center font-mono text-app-12 text-muted">{`${stepNumber} / 3`}</span>
-        </div>
-        <StepProgress total={3} current={stepNumber} className="px-4" label="Étapes de l'ajout" />
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pt-5 pb-4">
-        {heading ? (
-          <div className="flex flex-col gap-1">
-            <h2 className="m-0 font-sans text-app-22 font-semibold text-text">{heading.title}</h2>
-            <p className="m-0 font-sans text-app-13 text-muted">{heading.text}</p>
+    <RadixDialog.Root open modal onOpenChange={(open) => !open && onDismiss()}>
+      <RadixDialog.Content aria-describedby={undefined} onInteractOutside={(event) => event.preventDefault()} className="fixed inset-0 z-40 flex flex-col bg-bg outline-none">
+        <div className="pt-[env(safe-area-inset-top)]">
+          <div className="flex h-[52px] items-center gap-2 px-2">
+            <div className="w-11 shrink-0">{leading}</div>
+            <RadixDialog.Title asChild>
+              <h1 className="m-0 min-w-0 flex-1 truncate text-center font-sans text-app-16 font-semibold text-text">
+                {title}
+              </h1>
+            </RadixDialog.Title>
+            <span className="w-11 shrink-0 text-center font-mono text-app-12 text-muted">{`${stepNumber} / 3`}</span>
           </div>
-        ) : null}
-        {children}
-      </div>
-      <div className={cn('border-t border-border bg-bg px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))]')}>
-        <div className="flex w-full flex-col items-stretch gap-2 [&>*]:w-full">{footer}</div>
-      </div>
-    </div>
+          <StepProgress total={3} current={stepNumber} className="px-4" label="Étapes de l'ajout" />
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pt-5 pb-4">
+          {heading ? (
+            <div className="flex flex-col gap-1">
+              <h2 className="m-0 font-sans text-app-22 font-semibold text-text">{heading.title}</h2>
+              <p className="m-0 font-sans text-app-13 text-muted">{heading.text}</p>
+            </div>
+          ) : null}
+          {children}
+        </div>
+        <div className={cn('border-t border-border bg-bg px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom))]')}>
+          <div className="flex w-full flex-col items-stretch gap-2 [&>*]:w-full">{footer}</div>
+        </div>
+      </RadixDialog.Content>
+    </RadixDialog.Root>
   );
 }
