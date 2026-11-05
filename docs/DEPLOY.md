@@ -242,5 +242,8 @@ Mis en place par l'API de Coolify, sur le modèle de Nuera OS (NUERA-PROD-01 : a
 - Variables (dans Coolify, jamais dans le dépôt) : `DATABASE_URL`, `RUNNER_TOKEN`, `BETTER_AUTH_SECRET`,
   `APP_ENCRYPTION_KEY`, `SETUP_TOKEN`, `VAPID_*`, `APP_URL`, `TRUSTED_IP_HEADER=x-real-ip`, `RUNNER_CPUS=4`,
   `RUNNER_MEMORY=6g` (PERSO a 6 cœurs / 11,4 Go et héberge d'autres sites).
+- **CloudBeaver** `nuera-dev-cloudbeaver` (même modèle que `db.staging.nuera.studio` en PROD) : https://db-dev.perso.nuera.studio,
+  admin `nueraadmin`, mot de passe = variable `SERVICE_PASSWORD_CBADMIN` du service ; relié au réseau `coolify`
+  pour joindre la base par son nom interne (hôte = UUID de la base, port 5432).
 - Vérifié après déploiement : statut `running:healthy`, `/api/health` → `{"status":"ok","db":true}`,
   `/configuration` → 200.
