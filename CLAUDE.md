@@ -66,7 +66,8 @@ deploy/         Dockerfiles, compose Coolify, sauvegarde/restauration
 <!-- Ajouter ici, au fil du développement, les pratiques vérifiées : contexte → cause → solution → fichier. -->
 - Poste de dev Windows sans Docker : PostgreSQL via `embedded-postgres`, PTY via `@lydell/node-pty` (binaires
   précompilés), pas de tmux → le runner bascule sur le backend PTY direct (`NUERA_SESSION_BACKEND=pty`).
-- TypeScript 6.0.x (et non 7.x) : typescript-eslint exige `<6.1.0`.
+- TypeScript 6.0.x (et non 7.x) : TS 7 (port natif) n'a pas d'API JS, l'outillage Next/Vitest n'est pas garanti. Lint = oxlint (`.oxlintrc.json`) : ESLint mettait plusieurs minutes par fichier sur le poste.
+- État d'avancement exact, reste à faire et procédure de reprise : `README.md` §1–5 ; brief d'origine verbatim : `docs/reprise/BRIEF-ORIGINAL.md`.
 - `next dev` (Next 16.4) écrit `apps/web/AGENTS.md` au démarrage (« Generated AGENTS.md ») → fichier non suivi à chaque lancement ; `agentRules: false` dans `next.config.ts` pour l'éviter.
 - Texte de Claude : `react-markdown` 10 sans `rehype-raw` échappe le HTML brut et vide les liens `javascript:` → ne jamais ajouter `rehype-raw` (`components/dev/conversation/ClaudeMarkdown.tsx`).
 - Galerie client avec dates d'exemple : passer `now` depuis la page serveur, sinon `formatTime` diffère entre SSR et hydratation (`app/(dev)/kit/composites/page.tsx`).

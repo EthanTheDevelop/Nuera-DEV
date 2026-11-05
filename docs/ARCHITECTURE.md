@@ -129,7 +129,16 @@ entrées avec les schémas Zod de `@nuera/shared/runner`. Erreurs : `{ error: { 
 | Sessions Claude | `POST /sessions` (worktree + tmux + `claude`), `POST /sessions/:id/resume`, `POST /sessions/:id/instruction` (collage entre crochets + Entrée), `POST /sessions/:id/interrupt` (Échap), `POST /sessions/:id/stop`, `GET /sessions/:id/stream` (SSE conversation + statut), `GET /sessions/:id/terminal` (= terminal de la session), `POST /permissions/:id/decision` |
 | Processus projet | `POST /runs` (install/dev/build/test dans un worktree), `GET /runs/:id/stream`, `DELETE /runs/:id` |
 | Claude CLI | `GET /claude/status` (`claude --version`, `claude auth status --json`, `claude agents --json`), `POST /claude/mcp/sync` (`claude mcp add-json/remove --scope user`), `GET /claude/mcp/:name` (`claude mcp get`) |
-| Hooks (écoute 127.0.0.1 uniquement) | `POST /internal/hooks/:sessionToken` — appelé par `bin/nuera-hook.mjs` ; `POST /internal/statusline/:sessionToken` |
+| Hooks (écoute 127.0.0.1 uniquement) | `POST /internal/hooks/:sessionId`, `POST /internal/statusline/:sessionId`, `POST /internal/mcp-headers/:sessionId` — appelés par `bin/nuera-*.mjs` avec le jeton de la session en **en-tête Bearer** (jamais dans l'URL ni l'argv) |
+
+Écarts avec la première version de ce contrat, retenus à l'implémentation (référence : `apps/runner/README.md` et
+`packages/shared/src/runner/routes.ts`, 58 routes) : routes ajoutées `POST /repos/check-destination`,
+`POST /events/publish` (diffusion des notifications créées par le web), `GET /operations/:id` et
+`GET /operations/:id/stream`, `GET /repos/:id/sync`, `GET /worktrees/:id/status`, `GET /projects/:id/claude-md`,
+`GET /sessions`, `GET /sessions/:id`, `POST /sessions/:id/start`, `GET /sessions/:id/events?afterVersion=`, `GET|DELETE
+/terminals` ; tmux utilise le socket dédié `-L nuera` (attache SSH : `tmux -L nuera attach -t <nom>`) ; les worktrees
+vivent dans `<NUERA_PROJECTS_ROOT>/.worktrees/<slug>/<nom>` ; le push vers la branche par défaut est toujours refusé
+(`BRANCH_PROTECTED`) ; toute commande Git réseau refuse d'abord les réglages dangereux du dépôt (`GIT_CONFIG_UNSAFE`).
 
 Sécurité du runner : chemins résolus (`realpath`) et confinés à `NUERA_PROJECTS_ROOT` / `NUERA_DATA_DIR` ; `execFile`
 avec tableau d'arguments (jamais de shell) ; `GIT_TERMINAL_PROMPT=0` ; jeton GitHub (installation, réduit au dépôt
@@ -242,4 +251,5 @@ PostgreSQL = ressource Coolify distincte, non exposée. Volumes : `/srv/dev`, `/
 | WebSocket vs SSE | SSE + POST | Natif dans les route handlers Next, traverse Traefik sans configuration. |
 | Bouton destructif | Variante `Accent` comme dans Figma (+ prop `tone="danger"` prête) | Lacune 1 du design system. |
 | Postgres local | `embedded-postgres` (pas de Docker sur le poste) + `docker-compose.dev.yml` fourni | Reproductible sur Windows/macOS/Linux. |
-| TypeScript | 6.0.x | typescript-eslint ne supporte pas encore TS 7 (natif). |
+| TypeScript | 6.0.x | TS 7 (port natif) n'a pas d'API JS : outillage Next/Vitest non garanti. |
+| Lint | oxlint 1.91 | ESLint mettait plusieurs minutes par fichier sur le poste de dev ; oxlint couvre les règles React, hooks, a11y, Next, import, Vitest en natif (0,5 s pour le dépôt). |

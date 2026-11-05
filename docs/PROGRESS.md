@@ -9,7 +9,7 @@
 | 0 | Découverte : Figma (tokens, 8 écrans × 2, 26 états), recherche Claude Code / stack / intégrations | ✅ |
 | 1 | Socle : monorepo, dépendances, schéma DB + migrations, Postgres local, CLAUDE.md | ✅ |
 | 2 | Fondations : UI kit + shell, composants Nuera Dev, auth/sécurité, runner (Git/PTY/sessions), intégrations serveur | ✅ |
-| 3 | Domaines : Accueil, Projets, Workspace, Sessions, Intégrations, Paramètres (bureau + mobile) | ⏳ |
+| 3 | Domaines : Accueil, Projets, Workspace, Sessions, Intégrations, Paramètres (bureau + mobile) | ⏸ interrompu pendant ses prérequis (pile de test, terminal) — fichiers partiels hors de `main`, branche `wip/phase3-prerequis` |
 | 4 | Parcours transversaux de bout en bout + tests Playwright | ⬜ |
 | 5 | Revue (sécurité, fidélité Figma, boutons morts), corrections | ⬜ |
 | 6 | Déploiement Coolify/VPS-3 prêt (Dockerfiles, compose, sauvegardes, DEPLOY.md) | ⏳ (fichiers prêts, non déployé) |
@@ -39,6 +39,11 @@
   230, `@nuera/runner` 64 (vrais dépôts Git, PTY et faux CLI de test) ; Playwright auth 11/11 (bureau + mobile) ;
   captures comparées aux exports Figma par lot.
 - Migration 0000 régénérée (schéma Better Auth 1.7, colonnes de suivi) et appliquée sur `nuera_dev`.
+
+## Reprise
+
+État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :
+[docs/reprise/BRIEF-ORIGINAL.md](reprise/BRIEF-ORIGINAL.md). Script de la phase 3 : [docs/reprise/phase3-domaines.workflow.js](reprise/phase3-domaines.workflow.js).
 
 ## Reste à faire / blocages externes
 

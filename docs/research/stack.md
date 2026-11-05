@@ -31,7 +31,7 @@ Everything under §10 ("Probe results") was executed in `C:/Users/33767/AppData/
 | Git | Spawn the `git` binary directly (`execFile`/`spawn`, args array) — no `simple-git` | Need raw `--progress` streams, porcelain v2 parsing, explicit env (credentials). [I] |
 | GitHub | `octokit` **5.0.5** (details in `docs/research/integrations.md`) | |
 | Tests | Vitest **5.1.0** (+ Vite 8.3.5), Playwright **1.64.1** | |
-| Lint / format | ESLint **10.14.0** + `eslint-config-next` **16.4.5**; Prettier **3.9.10** | ESLint 9 is EOL since 2026-08-06 [D]; peer warnings from 3 React/import plugins are expected [D][V]. |
+| Lint / format | **oxlint 1.91.0** (chosen at integration: ESLint took minutes per file on the dev machine); Prettier **3.9.10** | ESLint 9 is EOL since 2026-08-06 [D]; peer warnings from 3 React/import plugins are expected [D][V]. |
 
 ---
 
