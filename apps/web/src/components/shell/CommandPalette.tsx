@@ -83,14 +83,16 @@ export function CommandRegistryProvider({ children }: { children: ReactNode }) {
 
 /** Adds a static group to the palette while the calling component is mounted. Memoise `group`. */
 export function useRegisterCommands(group: CommandGroupDef | null): void {
-  const registry = useContext(RegistryContext);
-  useEffect(() => (registry && group ? registry.registerGroup(group) : undefined), [registry, group]);
+  // Depends on the stable register function, not on the registry value (which changes with every
+  // registration: depending on it would unregister / register again in a loop).
+  const registerGroup = useContext(RegistryContext)?.registerGroup;
+  useEffect(() => (registerGroup && group ? registerGroup(group) : undefined), [registerGroup, group]);
 }
 
 /** Adds an async search provider while mounted. Memoise `provider`. */
 export function useRegisterSearchProvider(provider: CommandSearchProvider | null): void {
-  const registry = useContext(RegistryContext);
-  useEffect(() => (registry && provider ? registry.registerProvider(provider) : undefined), [registry, provider]);
+  const registerProvider = useContext(RegistryContext)?.registerProvider;
+  useEffect(() => (registerProvider && provider ? registerProvider(provider) : undefined), [registerProvider, provider]);
 }
 
 type ProviderResult = { status: 'loading' } | { status: 'done'; items: readonly CommandItem[] } | { status: 'error' };
@@ -232,9 +234,12 @@ export function CommandPalette({ open, onOpenChange, groups: extraGroups = NO_GR
               <kbd className="font-mono text-app-11 font-medium text-muted">Échap</kbd>
             </div>
             <Command.List className="max-h-[min(60dvh,400px)] overflow-y-auto p-1.5">
-              <Command.Empty className="px-3 py-6 text-center font-sans text-app-13 text-muted">
-                {query.trim() ? `Aucun résultat pour « ${query.trim()} »` : 'Aucun résultat'}
-              </Command.Empty>
+              {/* Not while a search is still running (its results are not counted yet). */}
+              {providers.some((p) => results[p.id]?.status === 'loading') ? null : (
+                <Command.Empty className="px-3 py-6 text-center font-sans text-app-13 text-muted">
+                  {query.trim() ? `Aucun résultat pour « ${query.trim()} »` : 'Aucun résultat'}
+                </Command.Empty>
+              )}
               {groups.map((group) =>
                 group.items.length > 0 ? (
                   <Command.Group key={group.id} heading={group.heading} className={groupClasses}>
@@ -244,9 +249,11 @@ export function CommandPalette({ open, onOpenChange, groups: extraGroups = NO_GR
               )}
               {providers.map((provider) => {
                 const result = results[provider.id];
-                if (!result) return null;
+                if (!result || (result.status === 'done' && result.items.length === 0)) return null;
+                // cmdk does not register (nor count for `Command.Empty`) the items of a `forceMount`
+                // group: force only the loading / error rows; results match the query through their keyword.
                 return (
-                  <Command.Group key={provider.id} heading={provider.heading} className={groupClasses} forceMount>
+                  <Command.Group key={provider.id} heading={provider.heading} className={groupClasses} forceMount={result.status !== 'done'}>
                     {result.status === 'loading' ? (
                       <Command.Loading>
                         <div className="flex items-center gap-2 px-3 py-2 font-sans text-app-13 text-muted">
