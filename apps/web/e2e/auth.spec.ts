@@ -14,8 +14,8 @@ import {
 /**
  * Authentication journeys: owner setup with the SETUP_TOKEN, mandatory TOTP enrolment, backup
  * codes, sign-out, sign-in with TOTP, sign-in with a backup code, refusals.
- * The @configuration test runs first (project "configuration"); the others run on desktop and
- * mobile against the same owner.
+ * The @configuration test runs first (project "configuration", on a stack started without owner);
+ * the others run on desktop and mobile against the same owner.
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -45,8 +45,11 @@ test('un visiteur non connecté est renvoyé vers la connexion ou la configurati
 
 // Project "configuration" (playwright.config.ts) runs this test alone, first, on the fresh database.
 test('configuration initiale : jeton refusé puis compte, double authentification et codes de secours', { tag: '@configuration' }, async ({ page }) => {
-  // The global setup has just re-created the database: the owner creation must be offered.
-  expect(await setupAvailable(page), 'formulaire de création du propriétaire').toBe(true);
+  // A stack created by this run (or E2E_PRISTINE=1) has no owner yet: the creation is offered.
+  // A stack reused from an earlier run already has its owner: nothing to configure.
+  const available = await setupAvailable(page);
+  test.skip(!available && readOwnerState() !== null, 'propriétaire déjà créé sur cette pile (E2E_RESET=1 E2E_PRISTINE=1 pour rejouer la configuration)');
+  expect(available, 'formulaire de création du propriétaire').toBe(true);
 
   // Wrong token: refused, nothing created.
   await page.getByLabel('Jeton de configuration').fill('mauvais-jeton-de-configuration');
