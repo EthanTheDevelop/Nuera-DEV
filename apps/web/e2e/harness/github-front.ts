@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { addInstallation, startFakeGithub, type FakeGithub, type IssuedToken } from '../../src/server/github/test/fake-github';
-import { listBareBranches } from './fixture-repos';
+import { listBareBranches, readBareContents } from './fixture-repos';
 import type { FixtureAccount, FixtureRepoState } from './state';
 
 export const FULL_PERMISSIONS = { contents: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read', issues: 'read' };
@@ -183,6 +183,30 @@ export async function startFakeGithubFront(config: FakeGithubConfig): Promise<Fa
     if (repo && record) record.pushedAt = latestPush(repo) ?? record.pushedAt;
   };
 
+  /**
+   * `GET /repos/{owner}/{repo}/contents/{path}?ref=` (D03 reads the root, package.json, CLAUDE.md):
+   * access checked by the inner fake (the token must read this repository's contents, as on
+   * GitHub, through its `/branches` route), content read from the REAL bare repository.
+   */
+  async function serveContents(owner: string, name: string, rel: string, ref: string | null, headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
+    const repo = repoOf(owner, name);
+    const probe = await fetch(`${inner.url}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches`, { headers });
+    if (probe.status !== 200) return { status: probe.status, body: await probe.json().catch(() => ({ message: 'Not Found' })) };
+    const found = repo ? readBareContents(repo.bare, rel, ref || repo.defaultBranch) : null;
+    if (!found) return { status: 404, body: { message: 'Not Found', documentation_url: 'https://docs.github.com/rest/repos/contents#get-repository-content' } };
+    const api = `https://api.github.com/repos/${owner}/${name}/contents`;
+    if (found.type === 'dir') {
+      return {
+        status: 200,
+        body: found.entries.map((entry) => ({ type: entry.type, name: entry.name, path: entry.path, sha: entry.sha, size: entry.size, url: `${api}/${entry.path}` })),
+      };
+    }
+    return {
+      status: 200,
+      body: { type: 'file', encoding: 'base64', name: found.name, path: found.path, sha: found.sha, size: found.size, content: found.content.toString('base64'), url: `${api}/${found.path}` },
+    };
+  }
+
   async function proxyApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const apiPath = url.pathname.slice('/api/v3'.length) || '/';
     const method = req.method ?? 'GET';
@@ -199,6 +223,12 @@ export async function startFakeGithubFront(config: FakeGithubConfig): Promise<Fa
     if (authorization) headers.authorization = authorization;
     if (req.headers['content-type']) headers['content-type'] = String(req.headers['content-type']);
     if (req.headers['x-github-api-version']) headers['x-github-api-version'] = String(req.headers['x-github-api-version']);
+    if (method === 'GET' && (match = /^\/repos\/([^/]+)\/([^/]+)\/contents(?:\/(.*))?$/.exec(apiPath))) {
+      const served = await serveContents(match[1]!, match[2]!, decodeURIComponent(match[3] ?? ''), url.searchParams.get('ref'), headers);
+      res.writeHead(served.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(served.body));
+      return;
+    }
     const upstream = await fetch(`${inner.url}${apiPath}${url.search}`, { method, headers, body });
     let text = await upstream.text();
     const outHeaders: Record<string, string> = {};

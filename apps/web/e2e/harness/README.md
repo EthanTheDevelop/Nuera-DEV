@@ -45,6 +45,10 @@ dépendance de développement du runner, puis lance `cli.ts`). `help` affiche l'
 | `github revoquer-cle\|retablir-cle\|suspendre <compte>\|reactiver <compte>` | contrôles du faux GitHub (clé de l'application refusée, installation suspendue) ; « Vérifier la connexion » ou `POST /api/integrations/github/check` applique le changement. |
 | `env` | variables `E2E_*` correspondant à la pile (pour lancer Playwright dessus). |
 
+Le faux GitHub (`github-front.ts`) sert aussi `GET /repos/{owner}/{repo}/contents/{path}?ref=` (racine, `package.json`,
+`CLAUDE.md` lus par la configuration A1 d'« Ajouter un projet ») : accès vérifié comme pour `/branches`, contenu lu
+dans le **vrai** dépôt nu (`readBareContents`, `fixture-repos.ts`).
+
 Les captures de `shot` masquent l'indicateur de `next dev` (bouton « N » de `<nextjs-portal>`, qui couvre la carte
 utilisateur de la barre latérale et le premier onglet du téléphone) ; une spec qui capture elle-même appelle
 `hideNextDevIndicator(page)` (exporté par `./fixtures`) avant `page.screenshot()`.
@@ -117,6 +121,16 @@ places de « Sessions parallèles ». Après un redémarrage du runner (`down` p
 s'arrêtent : leurs sessions deviennent « Interrompue » (reprenables) et `seed sessions` recrée une session
 « autorisation demandée » et une « en cours » neuves (les ids de `state.json` sont mis à jour) ; la session « export
 CSV » garde ses changements mais n'est plus vivante. Relire `state.json` (fixture `stack`) plutôt que de garder des ids.
+
+### Connexion MCP d'une session (`mcp-connect.mjs`)
+
+`node apps/web/e2e/harness/mcp-connect.mjs <mcp.json> <serveur>` fait ce que Claude Code fait à la connexion d'un
+serveur HTTP de son `--mcp-config` : exécute son `headersHelper` (`bin/nuera-mcp-headers.mjs` du runner, avec
+`CLAUDE_CODE_MCP_SERVER_NAME/_URL` et l'environnement de la session), puis envoie `initialize` avec les en-têtes
+obtenus. Il n'affiche que les **noms** des en-têtes et le statut HTTP. À lancer depuis une étape `bash` (`run: true`,
+`ask: false`) du faux CLI ; `mcp.json` = `runner-data/sessions/<id>/mcp.json`. Serveurs MCP et Coolify factices :
+`apps/web/src/server/mcp/test/fake-mcp.ts`, `apps/web/src/server/coolify/test/fake-coolify.ts` (cf.
+`parcours-5-mcp-diagnostic.spec.ts`).
 
 ### Faux CLI Claude (`apps/runner/test/fixtures/fake-claude.mjs`)
 
