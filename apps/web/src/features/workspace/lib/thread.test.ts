@@ -15,6 +15,7 @@ import {
   permissionOptionsOf,
   persistenceContextFor,
   reconcilePending,
+  statusNeedsSnapshot,
   upsertItems,
 } from './thread';
 
@@ -159,5 +160,15 @@ describe('W1 / W3 / W4 / W5 helpers', () => {
     expect(commitCtaLabel({ files: 4, push: true, openPr: true })).toBe('Committer et ouvrir la PR');
     expect(commitCtaLabel({ files: 4, push: true, openPr: false })).toBe('Committer et pousser');
     expect(commitCtaLabel({ files: 0, push: true, openPr: false })).toBe('Pousser');
+  });
+});
+
+describe('statusNeedsSnapshot', () => {
+  it('re-reads the server snapshot once the CLI is gone (resumable is not in the event)', () => {
+    expect(statusNeedsSnapshot({ live: false, status: 'interrupted' })).toBe(true);
+    expect(statusNeedsSnapshot({ live: false, status: 'stopped' })).toBe(true);
+    expect(statusNeedsSnapshot({ live: false, status: 'failed' })).toBe(true);
+    expect(statusNeedsSnapshot({ live: true, status: 'waiting_input' })).toBe(false);
+    expect(statusNeedsSnapshot({ live: false, status: 'new' })).toBe(false);
   });
 });

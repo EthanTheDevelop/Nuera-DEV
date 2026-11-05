@@ -71,6 +71,15 @@ export function applyStatusEvent(session: WorkspaceSession, event: SessionStatus
   };
 }
 
+/**
+ * Whether a `session.status` event needs a fresh server snapshot: once the CLI is gone, whether the
+ * session can be resumed (`resumable`, computed by the runner: worktree and conversation present)
+ * is not carried by the event — without it « Reprendre la session » stays hidden until a reload.
+ */
+export function statusNeedsSnapshot(event: Pick<SessionStatusEvent, 'live' | 'status'>): boolean {
+  return !event.live && event.status !== 'new';
+}
+
 /** Keeps the pending permission in sync with `session.permission` events. */
 export function applyPermissionEvent(current: PermissionRequestDto | null, next: PermissionRequestDto): PermissionRequestDto | null {
   if (next.status === 'pending') return next;
