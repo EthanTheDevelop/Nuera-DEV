@@ -1515,7 +1515,7 @@ export class SessionManager {
       title: created.title,
       body: created.target,
       dedupKey: `permission:${id}`,
-    });
+    }, { anchor: `demande-${id}` });
     return decision;
   }
 
@@ -1559,9 +1559,14 @@ export class SessionManager {
     return safe;
   }
 
-  private async notify(live: LiveSession, payload: Omit<Parameters<WebClient['notify']>[0], 'sessionId' | 'projectId' | 'href'>): Promise<void> {
-    // The session page is the Workspace (`/workspace/[sessionId]`, docs/figma/overview.md route map).
-    const href = `/workspace/${live.id}`;
+  private async notify(
+    live: LiveSession,
+    payload: Omit<Parameters<WebClient['notify']>[0], 'sessionId' | 'projectId' | 'href'>,
+    options: { anchor?: string } = {},
+  ): Promise<void> {
+    // The session page is the Workspace (`/workspace/[sessionId]`, docs/figma/overview.md route map);
+    // a permission request lands on its card (`#demande-<id>`, like « Répondre » of Sessions).
+    const href = `/workspace/${live.id}${options.anchor ? `#${options.anchor}` : ''}`;
     const result = await this.deps.web.notify({ ...payload, sessionId: live.id, projectId: live.projectId, href });
     this.deps.bus.publish(
       'notification.created',

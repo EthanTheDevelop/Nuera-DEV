@@ -343,6 +343,43 @@ export function listBareBranches(bare: string): Array<{ name: string; sha: strin
     });
 }
 
+export type BareContents =
+  | { type: 'dir'; entries: Array<{ type: 'file' | 'dir'; name: string; path: string; sha: string; size: number }> }
+  | { type: 'file'; name: string; path: string; sha: string; size: number; content: Buffer };
+
+/**
+ * What GitHub's `GET /repos/{owner}/{repo}/contents/{path}?ref=` serves, read from a bare repository
+ * (`''` = root). null when the ref or the path does not exist.
+ */
+export function readBareContents(bare: string, rel: string, ref: string): BareContents | null {
+  const clean = rel.replace(/^\/+|\/+$/g, '');
+  const run = (args: string[]) =>
+    execFileSync('git', args, { cwd: bare, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' }, windowsHide: true, timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
+  const object = clean ? `${ref}:${clean}` : `${ref}^{tree}`;
+  let kind: string;
+  try {
+    kind = run(['cat-file', '-t', object]).toString('utf8').trim();
+  } catch {
+    return null;
+  }
+  if (kind === 'tree') {
+    const entries = run(['ls-tree', '-z', '-l', object])
+      .toString('utf8')
+      .split('\0')
+      .filter(Boolean)
+      .map((line) => {
+        const [meta = '', name = ''] = line.split('\t');
+        const [, type = '', sha = '', size = '-'] = meta.split(/\s+/);
+        return { type: type === 'tree' ? ('dir' as const) : ('file' as const), name, path: clean ? `${clean}/${name}` : name, sha, size: size === '-' ? 0 : Number(size) };
+      });
+    return { type: 'dir', entries };
+  }
+  if (kind !== 'blob') return null;
+  const content = run(['cat-file', 'blob', object]);
+  const sha = run(['rev-parse', object]).toString('utf8').trim();
+  return { type: 'file', name: path.posix.basename(clean), path: clean, sha, size: content.length, content };
+}
+
 export function fixtureRepoStates(remotes: string): FixtureRepoState[] {
   return FIXTURE_REPOS.map((spec) => {
     const account = FIXTURE_ACCOUNTS.find((item) => item.login === spec.owner)!;

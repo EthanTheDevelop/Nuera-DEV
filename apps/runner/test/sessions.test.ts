@@ -83,6 +83,10 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
       }
     })();
 
+    const notified: RunnerEvent[] = [];
+    const offNotified = env.runner.services.bus.subscribe('global', (e) => {
+      if (e.type === 'notification.created') notified.push(e);
+    });
     const res = await inject('POST', `/v1/sessions/${sessionId}/instruction`, { text: 'scenario:full Termine le module pipeline du CRM.' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ queued: true, started: true, delivered: false });
@@ -106,6 +110,10 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
     });
     const busy = await inject('POST', `/v1/sessions/${sessionId}/instruction`, { text: 'autre chose' });
     expect(busy.statusCode).toBe(409);
+    // The permission notification lands on the request's card (« Répondre » of Sessions too).
+    const permissionNotice = await waitFor(() => notified.find((e) => e.type === 'notification.created' && e.data.kind === 'permission_request') ?? null, { timeoutMs: 30_000, label: 'permission notification' });
+    expect(permissionNotice.data).toMatchObject({ href: `/workspace/${sessionId}#demande-${waiting.pendingPermission!.id}`, sessionId });
+    offNotified();
 
     const decision = await inject('POST', `/v1/permissions/${waiting.pendingPermission!.id}/decision`, { behavior: 'allow', always: true });
     expect(decision.statusCode).toBe(200);
