@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { SubmitButton } from '../../_components/submit-button';
 import { CompactButton, FormAlert } from '../../_components/ui';
@@ -45,12 +46,12 @@ export function BackupCodesPanel({ codes, account }: { codes: string[]; account:
         <FormAlert tone="error" title="Codes de secours illisibles">
           Les codes n'ont pas pu être lus. Vous pourrez en générer de nouveaux depuis Paramètres · Compte et sécurité.
         </FormAlert>
-        <a
+        <Link
           href="/configuration/cle-d-acces"
           className="flex min-h-11 items-center text-app-14 font-medium text-accent underline-offset-4 hover:underline"
         >
           Continuer la configuration
-        </a>
+        </Link>
       </div>
     );
   }

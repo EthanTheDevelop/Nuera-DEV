@@ -59,6 +59,7 @@ export function EnvVarDialog({
 
   useEffect(() => {
     if (!target) return;
+    // eslint-disable-next-line react/set-state-in-effect -- form reset on each opening
     setFailure(null);
     setPending(false);
     if (target.mode === 'add') {
@@ -217,6 +218,7 @@ export function CommandsDialog({
   const [failure, setFailure] = useState<Failure | null>(null);
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react/set-state-in-effect -- form reset on each opening
     setFailure(null);
     setValues({
       install: commands.install ?? '',
@@ -312,6 +314,7 @@ export function ClaudeMdEditor({
 
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react/set-state-in-effect -- form reset on each opening
     setContent(initial);
     setCommit(true);
     setMessage('docs: mise à jour de CLAUDE.md');
@@ -425,7 +428,7 @@ export function RunOutputDialog({ run, onOpenChange, onStopped }: { run: RunView
     setUnavailable(false);
     setStopFailure(null);
     const source = new EventSource(`/api/stream/runs/${encodeURIComponent(runId)}`);
-    source.onmessage = (message: MessageEvent<string>) => {
+    source.addEventListener('message', (message: MessageEvent<string>) => {
       const event = parseRunnerEvent(message.data);
       if (!event) return;
       if (event.type === 'stream.error') setUnavailable(true);
@@ -452,7 +455,7 @@ export function RunOutputDialog({ run, onOpenChange, onStopped }: { run: RunView
             : current,
         );
       }
-    };
+    });
     return () => source.close();
   }, [runId]);
 
@@ -532,6 +535,7 @@ export function RemoveWorktreeDialog({
 
   useEffect(() => {
     if (!worktree) return;
+    // eslint-disable-next-line react/set-state-in-effect -- reset on opening, before the async load the effect starts
     setPreview(null);
     setError(null);
     setDeleteBranch(false);

@@ -86,6 +86,7 @@ export function TestsPanel() {
 
   useEffect(() => {
     const controller = new AbortController();
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     void read(controller.signal);
     return () => controller.abort();
   }, [read]);

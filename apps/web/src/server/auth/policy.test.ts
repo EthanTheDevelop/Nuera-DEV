@@ -10,8 +10,7 @@ const at = (ms: number) => new Date(t0.getTime() + ms);
 describe("evaluateSessionPolicy — « 12 h d'inactivité, au plus tard 30 jours »", () => {
   it('keeps a recently used session without touching it', () => {
     const verdict = evaluateSessionPolicy({ createdAt: t0, lastActivityAt: t0 }, policy, at(60_000));
-    expect(verdict).toMatchObject({ valid: true, shouldTouch: false });
-    if (verdict.valid) expect(verdict.expiresAt).toEqual(at(12 * HOUR));
+    expect(verdict).toMatchObject({ valid: true, shouldTouch: false, expiresAt: at(12 * HOUR) });
   });
 
   it('refreshes the activity at most every 5 minutes', () => {
@@ -19,7 +18,7 @@ describe("evaluateSessionPolicy — « 12 h d'inactivité, au plus tard 30 jours
     const after = evaluateSessionPolicy({ createdAt: t0, lastActivityAt: t0 }, policy, at(SESSION_TOUCH_INTERVAL_MS));
     expect(before.valid && before.shouldTouch).toBe(false);
     expect(after.valid && after.shouldTouch).toBe(true);
-    if (after.valid) expect(after.idleExpiresAt).toEqual(at(SESSION_TOUCH_INTERVAL_MS + 12 * HOUR));
+    expect(after).toMatchObject({ idleExpiresAt: at(SESSION_TOUCH_INTERVAL_MS + 12 * HOUR) });
   });
 
   it('expires after 12 h without activity', () => {
@@ -38,8 +37,7 @@ describe("evaluateSessionPolicy — « 12 h d'inactivité, au plus tard 30 jours
 
   it('caps the next expiry at the absolute limit', () => {
     const verdict = evaluateSessionPolicy({ createdAt: t0, lastActivityAt: at(30 * DAY - 2 * HOUR) }, policy, at(30 * DAY - HOUR));
-    expect(verdict.valid).toBe(true);
-    if (verdict.valid) expect(verdict.expiresAt).toEqual(at(30 * DAY));
+    expect(verdict).toMatchObject({ valid: true, expiresAt: at(30 * DAY) });
   });
 
   it('follows the configured durations', () => {

@@ -266,12 +266,12 @@ describe('DiffView', () => {
         },
       ],
     };
-    const file = { ...runnerDiff, additions: runnerDiff.insertions, status: toChangeStatus(runnerDiff.status) };
-    const truncated = text(<DiffView file={file} />);
+    const diffFile = { ...runnerDiff, additions: runnerDiff.insertions, status: toChangeStatus(runnerDiff.status) };
+    const truncated = text(<DiffView file={diffFile} />);
     expect(truncated).toContain('export {};');
     expect(truncated).toContain('Diff tronqué');
     const tooLarge = text(
-      <DiffView file={{ ...file, truncated: false, tooLarge: true, hunks: [], additions: 812, deletions: 640 }} onBeforeAfter={noop} />,
+      <DiffView file={{ ...diffFile, truncated: false, tooLarge: true, hunks: [], additions: 812, deletions: 640 }} onBeforeAfter={noop} />,
     );
     expect(tooLarge).toContain('trop volumineux');
     expect(tooLarge).not.toContain('Aucune ligne modifiée');

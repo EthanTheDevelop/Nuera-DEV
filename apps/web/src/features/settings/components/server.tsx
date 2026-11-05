@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { formatBytes, formatPercent, formatShortDate, formatTime, formatUsage } from '@nuera/shared/format';
 import { Icon } from '@/components/icons';
 import {
+  Checkbox,
   Badge,
   Card,
   ChipGroup,
@@ -36,6 +37,7 @@ import {
   serverBadge,
   serviceRows,
   staleWorktreesCaption,
+  freedSpaceText,
   uptimeBarDays,
   uptimeCaption,
 } from '../lib/copy';
@@ -202,7 +204,7 @@ export function MaintenanceTile({ withSettings = false }: { withSettings?: boole
 }
 
 export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: boolean; onOpenChange: (open: boolean) => void; initial: StaleWorktreesView }) {
-  const { refresh, now } = useSettings();
+  const { refresh, now, serverName } = useSettings();
   const [view, setView] = useState(initial);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(initial.items.filter((item) => item.eligible).map((item) => item.id)));
   const [error, setError] = useState<string | null>(null);
@@ -211,6 +213,7 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line react/set-state-in-effect -- reset on opening, before the async load the effect starts
     setError(null);
     void loadStaleWorktreesAction().then((result) => {
       if (cancelled) return;
@@ -227,7 +230,9 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
     };
   }, [open]);
 
-  const count = view.items.filter((item) => item.eligible && selected.has(item.id)).length;
+  const chosen = view.items.filter((item) => item.eligible && selected.has(item.id));
+  const count = chosen.length;
+  const freed = freedSpaceText(chosen, serverName);
 
   return (
     <ConfirmDialog
@@ -237,6 +242,7 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
       icon="trash"
       title={removeWorktreesTitle(count)}
       consequences={[
+        ...(freed ? [{ kind: 'kept' as const, text: freed }] : []),
         { kind: 'kept', text: 'Les branches et leurs commits sont conservés : seules les copies de travail sont supprimées.' },
         { kind: 'risk', text: "Un worktree avec des modifications non commitées est exclu d'office." },
         { kind: 'risk', text: 'Les sessions liées ne pourront plus être reprises.' },
@@ -274,16 +280,14 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
             return (
               <li key={item.id} className="border-b border-border last:border-b-0">
                 <label htmlFor={inputId} className={cn('flex min-h-11 items-center gap-2.5 px-3 py-[9px]', item.eligible ? 'cursor-pointer' : 'cursor-not-allowed')}>
-                  <input
+                  <Checkbox
                     id={inputId}
-                    type="checkbox"
-                    className="size-[18px] shrink-0 accent-(--accent)"
                     checked={checked}
                     disabled={!item.eligible}
-                    onChange={(event) =>
+                    onCheckedChange={(value) =>
                       setSelected((current) => {
                         const next = new Set(current);
-                        if (event.target.checked) next.add(item.id);
+                        if (value) next.add(item.id);
                         else next.delete(item.id);
                         return next;
                       })
@@ -330,6 +334,7 @@ export function LogsDrawer({ open, onOpenChange }: { open: boolean; onOpenChange
     });
   }, []);
   useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     if (open) load();
   }, [open, load]);
 

@@ -166,6 +166,7 @@ function useStickToBottom(ref: React.RefObject<HTMLDivElement | null>, signal: u
   useLayoutEffect(() => {
     const el = ref.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- signal is the trigger: stay pinned to the bottom on new content
   }, [ref, signal]);
 }
 
@@ -244,6 +245,7 @@ export function Thread({ variant, className }: ThreadProps) {
     scrolledToRequest.current = true;
     el.scrollIntoView({ block: 'center' });
     el.focus({ preventScroll: true });
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- retry once new items are rendered
   }, [items.length]);
 
   const empty = items.length === 0 && pending.length === 0;

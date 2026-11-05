@@ -28,10 +28,11 @@ export function useOperationStream(operationId: string | null): OperationStreamS
 
   useEffect(() => {
     if (!operationId) return;
+    // eslint-disable-next-line react/set-state-in-effect -- reset when following another operation, before its stream opens
     setState({ operation: null, log: '', liveLine: null, unavailable: false, failed: false });
     const source = new EventSource(`/api/stream/operations/${encodeURIComponent(operationId)}`);
     let errors = 0;
-    source.onmessage = (message: MessageEvent<string>) => {
+    source.addEventListener('message', (message: MessageEvent<string>) => {
       const event = parseRunnerEvent(message.data);
       if (!event) return;
       errors = 0;
@@ -54,14 +55,14 @@ export function useOperationStream(operationId: string | null): OperationStreamS
         };
       });
       if (operation.status === 'succeeded' || operation.status === 'failed' || operation.status === 'cancelled') source.close();
-    };
-    source.onerror = () => {
+    });
+    source.addEventListener('error', () => {
       errors += 1;
       // EventSource retries on its own; after a closed stream (4xx) it stops: say so after a few tries.
       if (source.readyState === EventSource.CLOSED || errors >= 5) {
         setState((current) => (current.operation && current.operation.status !== 'running' ? current : { ...current, failed: true }));
       }
-    };
+    });
     return () => source.close();
   }, [operationId]);
 

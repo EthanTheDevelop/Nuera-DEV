@@ -55,7 +55,6 @@ import {
   SheetTrigger,
   SkeletonList,
   SlotMeter,
-  Spinner,
   StatusDot,
   StepList,
   StepProgress,
@@ -853,7 +852,7 @@ export default function KitPage() {
               />
             </Card>
             <div className="max-w-[380px] rounded-lg border border-border bg-bg p-2 shadow-float">
-              <NotificationList items={SAMPLE_NOTIFICATIONS} unread={1} onOpenItem={() => undefined} onMarkAll={() => undefined} />
+              <NotificationList items={SAMPLE_NOTIFICATIONS} unread={1} onOpenItem={() => undefined} onMarkAll={() => undefined} now={NOW} />
             </div>
           </Section>
 

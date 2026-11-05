@@ -130,15 +130,13 @@ export function toGithubAppError(error: unknown, context: string): AppError {
     });
   }
   if (status === 409) {
-    return new AppError('CONFLICT', `GitHub signale un conflit pendant ${context}.`, { ...(raw ? { raw } : {}) });
+    return new AppError('CONFLICT', `GitHub signale un conflit pendant ${context}.`, raw ? { raw } : {});
   }
   if (status === 422) {
-    return new AppError('VALIDATION', `GitHub a refusé ${context}.`, { ...(raw ? { detail: raw, raw } : {}) });
+    return new AppError('VALIDATION', `GitHub a refusé ${context}.`, raw ? { detail: raw, raw } : {});
   }
   if (status === 429) {
-    return new AppError('RATE_LIMITED', 'Limite de requêtes GitHub atteinte. Réessayez dans quelques minutes.', {
-      ...(raw ? { raw } : {}),
-    });
+    return new AppError('RATE_LIMITED', 'Limite de requêtes GitHub atteinte. Réessayez dans quelques minutes.', raw ? { raw } : {});
   }
   return new AppError('UPSTREAM', `GitHub a renvoyé une erreur pendant ${context}.`, {
     ...(raw ? { raw } : {}),

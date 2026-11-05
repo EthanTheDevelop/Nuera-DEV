@@ -14,5 +14,6 @@ export function useAutoGrow(ref: RefObject<HTMLTextAreaElement | null>, value: s
     const next = Math.min(el.scrollHeight, maxHeight);
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  // eslint-disable-next-line react/exhaustive-effect-dependencies -- value is the trigger: re-measure the textarea on every change
   }, [ref, value, maxHeight]);
 }

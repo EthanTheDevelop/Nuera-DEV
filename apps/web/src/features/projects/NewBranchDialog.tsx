@@ -31,6 +31,7 @@ export function NewBranchDialog({ open, onOpenChange, project, branches, onCreat
 
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react/set-state-in-effect -- form reset on each opening
     setName('');
     setFrom(project.defaultBranch);
     setCheckout(false);

@@ -171,7 +171,7 @@ function tokenError(error: unknown): AppError {
       ...(raw ? { raw } : {}),
     });
   }
-  return new AppError('UPSTREAM', "GitHub n'a pas délivré de jeton d'installation.", { ...(raw ? { raw } : {}) });
+  return new AppError('UPSTREAM', "GitHub n'a pas délivré de jeton d'installation.", raw ? { raw } : {});
 }
 
 /** Drops every cached token (disconnect, key rotation, tests). */

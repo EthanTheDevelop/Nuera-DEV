@@ -30,7 +30,7 @@ describe('passwordProblems', () => {
   it('is exposed as a Zod schema with French messages', () => {
     const result = newPasswordSchema.safeParse('court');
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error.issues.map((issue) => issue.message)).toContain('12 caractères au minimum');
+    expect(result.error?.issues.map((issue) => issue.message)).toContain('12 caractères au minimum');
     expect(newPasswordSchema.safeParse('une-phrase-solide-42').success).toBe(true);
   });
 });

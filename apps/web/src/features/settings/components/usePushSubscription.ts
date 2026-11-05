@@ -89,6 +89,7 @@ export function usePushSubscription({ enabled, publicKey, initialDevices }: { en
 
   useEffect(() => {
     const detected = detectSupport();
+    // eslint-disable-next-line react/set-state-in-effect -- browser capability detected after mount, so SSR and hydration render the same
     setSupport(detected);
     if (detected.kind !== 'ready' || !enabled) return;
     let cancelled = false;

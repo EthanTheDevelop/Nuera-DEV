@@ -98,6 +98,7 @@ export function PhoneComposer({
           <textarea
             ref={composer.ref}
             rows={1}
+            // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
             value={composer.value}
             onChange={composer.onChange}
             onKeyDown={composer.onKeyDown}
@@ -119,6 +120,7 @@ export function PhoneComposer({
           label="Envoyer"
           variant="accent"
           loading={composer.busy}
+          // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
           disabled={!composer.canSend}
           onClick={() => void composer.submit()}
           className={SEND_DISABLED_CLASSES}

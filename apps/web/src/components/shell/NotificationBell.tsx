@@ -29,11 +29,12 @@ export interface NotificationListProps {
   onOpenItem: (item: ShellNotification) => void;
   onMarkAll: () => void;
   markingAll?: boolean;
-  now?: number;
+  /** Reference time for « il y a … » (the caller ticks it with useNow, so render stays pure). */
+  now: number;
 }
 
 /** Notification panel body (props only): unread first, severity dot + title + body + relative time. */
-export function NotificationList({ items, unread, onOpenItem, onMarkAll, markingAll, now = Date.now() }: NotificationListProps) {
+export function NotificationList({ items, unread, onOpenItem, onMarkAll, markingAll, now }: NotificationListProps) {
   if (items.length === 0) {
     return (
       <EmptyState icon="bell" title="Aucune notification" variant="plain" titleAs="p">

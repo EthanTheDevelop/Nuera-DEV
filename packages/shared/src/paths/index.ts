@@ -224,7 +224,7 @@ async function realpathOrNearest(
   for (;;) {
     try {
       const real = normalizeAbsolutePath(await options.realpath(current), options.platform);
-      return { real, missing: missing.reverse() };
+      return { real, missing: missing.toReversed() };
     } catch (error) {
       if (!isMissing(error)) throw new PathGuardError('PATH_INVALID', 'Chemin inaccessible.');
       const parent = parentAbsolute(current, options.platform);

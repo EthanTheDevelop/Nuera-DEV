@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import pidusage from 'pidusage';
-import { permissionRequests, sessionEvents, sessions, worktrees, type Database } from '@nuera/db';
+import { permissionRequests, projects, sessionEvents, sessions, worktrees, type Database } from '@nuera/db';
 import { LIVE_SESSION_STATUSES, type CliStatus, type PermissionRequestDto, type SessionDto, type SessionLaunchOptions } from '@nuera/shared/runner';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
@@ -159,6 +159,21 @@ function tokenMatches(token: string, expectedHash: string): boolean {
 }
 
 /** Cleans a pasted instruction: no bracketed-paste terminator, no control characters but \n and \t. */
+/**
+ * Web Push / notification copy of a permission request (Figma S5): title
+ * « Tests e2e du devis attend votre accord », body « npm run test -- e2e · Nuera OS · touchez pour répondre ».
+ * Without a target (rare tool inputs), the request title (« Exécuter une commande ») stands in for it.
+ */
+export function permissionNotificationCopy(input: { sessionTitle: string; projectName: string | null; target: string | null; requestTitle: string }): { title: string; body: string } {
+  const oneLine = (text: string, max: number) => {
+    const flat = text.replace(/\s+/g, ' ').trim();
+    return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+  };
+  const subject = oneLine(input.target?.trim() ? input.target : input.requestTitle, 160);
+  const parts = [subject, input.projectName ? oneLine(input.projectName, 80) : null, 'touchez pour répondre'].filter(Boolean);
+  return { title: `${oneLine(input.sessionTitle, 150)} attend votre accord`, body: parts.join(' · ') };
+}
+
 export function sanitizeInstruction(text: string): string {
   return text
     .replace(/\r\n?/g, '\n')
@@ -351,6 +366,7 @@ export class SessionManager {
       sessionId: row.id,
       projectId: row.projectId,
       status: row.status,
+      title: row.title,
       live: Boolean(live),
       currentActivity: row.currentActivity,
       lastInstruction: row.lastInstruction,
@@ -367,6 +383,18 @@ export class SessionManager {
       queuedInstructions: live?.queue.length ?? 0,
     };
     this.deps.bus.publish('session.status', data, { channels: [GLOBAL, sessionChannel(row.id)] });
+  }
+
+  /**
+   * The web changed the row itself (archive, rename): publish its status so every open tab follows;
+   * a live session also keeps the new title for its notifications.
+   */
+  async announce(sessionId: string): Promise<SessionDto> {
+    const row = await this.row(sessionId);
+    const live = this.live.get(sessionId);
+    if (live) live.title = row.title;
+    await this.publishStatus(row);
+    return this.dto(row);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -422,6 +450,8 @@ export class SessionManager {
       model: input.model ?? null,
       effort: input.effort ?? null,
       remoteControl: input.remoteControl,
+      // `--session-id` of the first launch; replaced by the id the CLI reports (SessionStart).
+      claudeSessionId: id,
       createdByUserId: input.createdByUserId ?? null,
     });
     const settings = await readAppSettings(this.deps.db);
@@ -510,9 +540,10 @@ export class SessionManager {
   private async refreshLaunch(sessionId: string, launch: Partial<SessionLaunchOptions>): Promise<void> {
     const current = await readLaunchFile(this.deps.dataDir, sessionId);
     if (launch.env) validateSessionEnv(launch.env);
+    const [stored] = await this.deps.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
     await writeSessionFiles(this.deps.dataDir, {
       sessionId,
-      claudeSessionId: current?.claudeSessionId ?? sessionId,
+      claudeSessionId: stored?.claudeSessionId ?? current?.claudeSessionId ?? sessionId,
       launch: {
         denyRules: launch.denyRules ?? current?.denyRules ?? [],
         env: launch.env ?? current?.env ?? {},
@@ -573,7 +604,7 @@ export class SessionManager {
       const settings = await readAppSettings(this.deps.db);
       await writeSessionFiles(this.deps.dataDir, {
         sessionId,
-        claudeSessionId: sessionId,
+        claudeSessionId: row.claudeSessionId ?? sessionId,
         launch: { denyRules: [], env: {}, mcpConfig: null },
         permissionWaitSeconds: settings?.permissionWaitSeconds ?? 120,
         maxConcurrentSessions: null,
@@ -588,12 +619,14 @@ export class SessionManager {
     const claude = resolveClaudeCommand(this.deps.claudeBin);
     if (!claude) throw new RunnerError('CONFLICT', 'Le CLI Claude Code est introuvable sur le serveur.', { reason: 'CLAUDE_NOT_INSTALLED' });
 
+    // The database is the reference (launch.json is only its copy next to the runtime files).
+    const claudeSessionId = row.claudeSessionId ?? launchFile.claudeSessionId;
     const token = newHookToken();
     const tokenHash = hashToken(token);
     const isTmux = this.deps.backend.kind === 'tmux';
     const files = await writeSessionFiles(this.deps.dataDir, {
       sessionId,
-      claudeSessionId: launchFile.claudeSessionId,
+      claudeSessionId,
       launch: { denyRules: launchFile.denyRules, env: launchFile.env, mcpConfig: undefined },
       permissionWaitSeconds: launchFile.permissionWaitSeconds,
       maxConcurrentSessions: launchFile.maxConcurrentSessions,
@@ -604,7 +637,7 @@ export class SessionManager {
 
     const mode = row.permissionMode === 'manual' ? 'default' : row.permissionMode;
     const args = [
-      ...(options.resume ? ['--resume', launchFile.claudeSessionId] : ['--session-id', launchFile.claudeSessionId]),
+      ...(options.resume ? ['--resume', claudeSessionId] : ['--session-id', claudeSessionId]),
       '--name',
       row.title,
       '--permission-mode',
@@ -676,6 +709,7 @@ export class SessionManager {
         hookTokenHash: tokenHash,
         backend: this.deps.backend.kind,
         tmuxName,
+        claudeSessionId,
         status: options.queue.length ? 'running' : row.status === 'new' && !options.resume ? 'new' : 'waiting_input',
         startedAt: row.startedAt ?? new Date(),
         endedAt: null,
@@ -1198,7 +1232,10 @@ export class SessionManager {
         live.tailer.start();
       }
     }
-    if (claudeId && /^[0-9a-f-]{36}$/i.test(claudeId)) await updateLaunchFile(this.deps.dataDir, live.id, { claudeSessionId: claudeId });
+    if (claudeId && /^[0-9a-f-]{36}$/i.test(claudeId)) {
+      patch.claudeSessionId = claudeId;
+      await updateLaunchFile(this.deps.dataDir, live.id, { claudeSessionId: claudeId });
+    }
     if (bridge && /^session_[A-Za-z0-9_-]{4,128}$/.test(bridge)) patch.remoteControlUrl = `https://claude.ai/code/${bridge}`;
     if (source === 'clear') {
       await this.deps.store.append(live.id, 'system', { message: 'Nouvelle conversation (/clear)', at: nowIso() });
@@ -1509,13 +1546,7 @@ export class SessionManager {
       await this.setSession(live.id, { status: 'waiting_permission', currentActivity: 'En attente de votre autorisation' });
       this.deps.bus.publish('session.permission', { sessionId: live.id, permission: created }, { channels: [GLOBAL, sessionChannel(live.id)] });
     });
-    void this.notify(live, {
-      kind: 'permission_request',
-      severity: 'warning',
-      title: created.title,
-      body: created.target,
-      dedupKey: `permission:${id}`,
-    }, { anchor: `demande-${id}` });
+    void this.notifyPermission(live, created);
     return decision;
   }
 
@@ -1557,6 +1588,24 @@ export class SessionManager {
     const safe: Record<string, string> = {};
     for (const [k, v] of Object.entries(headers)) if (/^[A-Za-z0-9-]{1,64}$/.test(k) && typeof v === 'string' && !/[\r\n]/.test(v)) safe[k] = v;
     return safe;
+  }
+
+  /** S5 « <titre> attend votre accord » / « <cible> · <projet> · touchez pour répondre », on the request's card. */
+  private async notifyPermission(live: LiveSession, permission: PermissionRequestDto): Promise<void> {
+    const [names] = await this.deps.db
+      .select({ title: sessions.title, project: projects.name })
+      .from(sessions)
+      .innerJoin(projects, eq(projects.id, sessions.projectId))
+      .where(eq(sessions.id, live.id))
+      .limit(1)
+      .catch(() => []);
+    const copy = permissionNotificationCopy({
+      sessionTitle: names?.title ?? live.title,
+      projectName: names?.project ?? null,
+      target: permission.target,
+      requestTitle: permission.title,
+    });
+    await this.notify(live, { kind: 'permission_request', severity: 'warning', ...copy, dedupKey: `permission:${permission.id}` }, { anchor: `demande-${permission.id}` });
   }
 
   private async notify(
@@ -1615,72 +1664,28 @@ export class SessionManager {
   /**
    * Runner start: re-attach to live tmux sessions, mark vanished ones `interrupted`
    * (resumable when the worktree and the conversation still exist).
+   *
+   * Orphan policy for the other `nuera-*` sessions of the tmux socket (a CLI that outlived its row's
+   * status, e.g. a crash between the spawn and the status write): a session whose row is known and
+   * can still be reached (hook token, worktree free, not archived) is adopted (`waiting_input`);
+   * any other one is left running and logged — the runner never kills a tmux session on its own
+   * (the owner may be attached to it over SSH, `tmux -L nuera attach -t <nom>`).
    */
-  async reconcile(): Promise<{ reattached: number; interrupted: number }> {
+  async reconcile(): Promise<{ reattached: number; interrupted: number; adopted: number; orphans: number }> {
     const rows = await this.deps.db.select().from(sessions).where(inArray(sessions.status, [...LIVE_SESSION_STATUSES]));
     let reattached = 0;
     let interrupted = 0;
+    let adopted = 0;
+    let orphans = 0;
     const tmux = this.deps.backend instanceof TmuxBackend ? this.deps.backend : null;
     const alive = new Set(tmux ? await tmux.listSessions() : []);
+    const tried = new Set<string>();
     for (const row of rows) {
       if (tmux && row.backend === 'tmux' && row.tmuxName && alive.has(row.tmuxName) && row.hookTokenHash && row.worktreeId) {
-        try {
-          const { worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
-          const launchFile = await readLaunchFile(this.deps.dataDir, row.id);
-          const terminal = tmux.attach(row.tmuxName, { sessionId: row.id, title: row.title, cwd, worktreeId: worktree.id, cols: 120, rows: 36 });
-          const live: LiveSession = {
-            id: row.id,
-            projectId: row.projectId,
-            worktreeId: worktree.id,
-            cwd,
-            title: row.title,
-            backend: 'tmux',
-            tmuxName: row.tmuxName,
-            terminal,
-            tokenHash: row.hookTokenHash,
-            permissionWaitSeconds: launchFile?.permissionWaitSeconds ?? 120,
-            memoryLimitMb: launchFile?.memoryLimitMb ?? null,
-            ready: true,
-            queue: [],
-            typing: Promise.resolve(),
-            delivering: false,
-            lastActiveAt: Date.now(),
-            pasted: [],
-            pending: new Map(),
-            tailer: null,
-            turn: 0,
-            stopping: null,
-            sessionEnded: false,
-            pid: null,
-            readyTimer: null,
-            detachExit: null,
-            lastCliFingerprint: '',
-            cliWriteTimer: null,
-            pendingCli: null,
-            toolSeq: 0,
-            planCurrent: null,
-          };
-          live.turn = await this.countTurns(row.id);
-          this.live.set(row.id, live);
-          this.watchTerminal(live, terminal);
-          live.pid = await tmux.pid(terminal, row.tmuxName);
-          if (row.transcriptPath) {
-            const transcript = await validateTranscriptPath(row.transcriptPath);
-            if (transcript) {
-              live.tailer = this.newTailer(live, transcript, true);
-              live.tailer.start();
-            }
-          }
-          // Hooks that were waiting on the previous runner process got no answer: the CLI shows its own dialog.
-          await this.deps.db
-            .update(permissionRequests)
-            .set({ status: 'answered_in_terminal' })
-            .where(and(eq(permissionRequests.sessionId, row.id), eq(permissionRequests.status, 'pending')));
-          await this.setSession(row.id, { pid: live.pid, currentActivity: row.status === 'waiting_permission' ? 'Répondez à la demande dans le terminal' : row.currentActivity });
+        tried.add(row.id);
+        if (await this.reattachTmux(row, tmux, { adopt: false })) {
           reattached += 1;
           continue;
-        } catch (error) {
-          this.deps.logger.warn({ err: error, sessionId: row.id }, 'réattachement tmux impossible');
         }
       }
       await this.deps.db
@@ -1693,13 +1698,116 @@ export class SessionManager {
       });
       interrupted += 1;
     }
-    if (reattached) this.ensureWatchdog();
-    return { reattached, interrupted };
+    if (tmux) {
+      const attached = new Set([...this.live.values()].map((l) => l.tmuxName).filter(Boolean));
+      for (const name of alive) {
+        if (!name.startsWith('nuera-') || attached.has(name)) continue;
+        const [known] = await this.deps.db.select().from(sessions).where(eq(sessions.tmuxName, name)).orderBy(desc(sessions.createdAt)).limit(1);
+        const adoptable =
+          known &&
+          !tried.has(known.id) &&
+          !this.live.has(known.id) &&
+          known.backend === 'tmux' &&
+          !known.archivedAt &&
+          known.hookTokenHash &&
+          known.worktreeId &&
+          !this.liveSessionForWorktree(known.worktreeId);
+        if (adoptable && (await this.reattachTmux(known, tmux, { adopt: true }))) {
+          adopted += 1;
+          continue;
+        }
+        orphans += 1;
+        this.deps.logger.warn({ tmuxName: name, sessionId: known?.id ?? null }, 'session tmux orpheline laissée en place');
+      }
+    }
+    if (reattached || adopted) this.ensureWatchdog();
+    return { reattached, interrupted, adopted, orphans };
+  }
+
+  /** Attach client + live state for a tmux session that outlived the previous runner process. */
+  private async reattachTmux(row: SessionRow, tmux: TmuxBackend, options: { adopt: boolean }): Promise<boolean> {
+    if (!row.tmuxName || !row.hookTokenHash || !row.worktreeId) return false;
+    const tmuxName = row.tmuxName;
+    let terminal: Terminal | null = null;
+    try {
+      const { worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
+      const launchFile = await readLaunchFile(this.deps.dataDir, row.id);
+      terminal = tmux.attach(tmuxName, { sessionId: row.id, title: row.title, cwd, worktreeId: worktree.id, cols: 120, rows: 36 });
+      const live: LiveSession = {
+        id: row.id,
+        projectId: row.projectId,
+        worktreeId: worktree.id,
+        cwd,
+        title: row.title,
+        backend: 'tmux',
+        tmuxName,
+        terminal,
+        tokenHash: row.hookTokenHash,
+        permissionWaitSeconds: launchFile?.permissionWaitSeconds ?? 120,
+        memoryLimitMb: launchFile?.memoryLimitMb ?? null,
+        ready: true,
+        queue: [],
+        typing: Promise.resolve(),
+        delivering: false,
+        lastActiveAt: Date.now(),
+        pasted: [],
+        pending: new Map(),
+        tailer: null,
+        turn: 0,
+        stopping: null,
+        sessionEnded: false,
+        pid: null,
+        readyTimer: null,
+        detachExit: null,
+        lastCliFingerprint: '',
+        cliWriteTimer: null,
+        pendingCli: null,
+        toolSeq: 0,
+        planCurrent: null,
+      };
+      live.turn = await this.countTurns(row.id);
+      this.live.set(row.id, live);
+      this.watchTerminal(live, terminal);
+      live.pid = await tmux.pid(terminal, tmuxName);
+      if (row.transcriptPath) {
+        const transcript = await validateTranscriptPath(row.transcriptPath);
+        if (transcript) {
+          live.tailer = this.newTailer(live, transcript, true);
+          live.tailer.start();
+        }
+      }
+      // Hooks that were waiting on the previous runner process got no answer: the CLI shows its own dialog.
+      await this.deps.db
+        .update(permissionRequests)
+        .set({ status: 'answered_in_terminal' })
+        .where(and(eq(permissionRequests.sessionId, row.id), eq(permissionRequests.status, 'pending')));
+      if (options.adopt) {
+        // The row said « ended » but its CLI is alive: show the truth (the session waits for input).
+        await this.deps.store.queue.run(row.id, async () => {
+          await this.deps.store.append(row.id, 'status', { status: 'waiting_input', label: 'Session reprise', at: nowIso() });
+          await this.setSession(row.id, { status: 'waiting_input', pid: live.pid, endedAt: null, exitCode: null, errorCode: null, errorMessage: null, currentActivity: null });
+        });
+      } else {
+        await this.setSession(row.id, { pid: live.pid, currentActivity: row.status === 'waiting_permission' ? 'Répondez à la demande dans le terminal' : row.currentActivity });
+      }
+      return true;
+    } catch (error) {
+      const live = this.live.get(row.id);
+      if (live?.terminal === terminal) {
+        live?.detachExit?.();
+        live?.tailer?.stop();
+        this.live.delete(row.id);
+      }
+      terminal?.kill();
+      this.deps.logger.warn({ err: error, sessionId: row.id }, 'réattachement tmux impossible');
+      return false;
+    }
   }
 
   /** Runner shutdown: tmux sessions stay alive (attach clients detached), direct PTYs are interrupted. */
   async shutdown(): Promise<void> {
     if (this.watchdog) clearInterval(this.watchdog);
+    // eslint-disable-next-line unicorn/no-useless-spread -- snapshot: stopping a session deletes it from this.live
     for (const live of [...this.live.values()]) {
       for (const p of live.pending.values()) {
         clearTimeout(p.timer);

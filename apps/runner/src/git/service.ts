@@ -1,4 +1,5 @@
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { and, eq, isNull } from 'drizzle-orm';
 import { projects, worktrees, type Database } from '@nuera/db';
@@ -23,6 +24,7 @@ import { ensurePrimaryWorktree, getProject, getReadyProject, getWorktree, listAc
 import { RunnerError } from '../errors';
 import type { OperationService } from '../operations/service';
 import type { PathGuard } from '../safety/paths';
+import type { DiskUsage } from '../system/disk-usage';
 import { GitCommandError, type Git } from './git';
 import {
   additionDiff,
@@ -39,6 +41,11 @@ import {
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const DIFF_OUTPUT_CAP = 4 * 1024 * 1024;
 const UNTRACKED_READ_CAP = 2 * 1024 * 1024;
+/**
+ * `changes()` counts the lines of untracked files within a budget: a huge untracked tree (build
+ * output, vendored dependencies not ignored) must not be read file by file at every refresh.
+ */
+export const UNTRACKED_COUNT_BUDGET = { files: 400, bytes: 16 * 1024 * 1024, ms: 2_500 };
 
 /** `:(literal)path` so that paths never act as glob magic. */
 const literal = (p: string) => `:(literal)${p}`;
@@ -51,6 +58,10 @@ export interface GitServiceDeps {
   logger: Logger;
   /** Live Claude session attached to a worktree (one at most). */
   liveSessionForWorktree: (worktreeId: string) => string | null;
+  /** Project commands still running in a worktree (dev server, tests…). */
+  liveRunsForWorktree?: (worktreeId: string) => number;
+  /** Folder sizes (`?sizes=1`, clone removal). */
+  diskUsage?: DiskUsage;
 }
 
 export interface ResolvedWorktree {
@@ -71,6 +82,9 @@ function countLines(text: string): number {
 }
 
 export class GitService {
+  /** Line-count budget of `changes()` for untracked files (tests lower it). */
+  untrackedBudget = { ...UNTRACKED_COUNT_BUDGET };
+
   constructor(private readonly deps: GitServiceDeps) {}
 
   private get git() {
@@ -510,7 +524,7 @@ export class GitService {
   // Worktrees
   // -------------------------------------------------------------------------------------------
 
-  async listWorktrees(projectId: string): Promise<{ worktrees: WorktreeDto[] }> {
+  async listWorktrees(projectId: string, options: { sizes?: boolean } = {}): Promise<{ worktrees: WorktreeDto[] }> {
     const project = await getReadyProject(this.db, projectId);
     const primaryCwd = await this.projectCwd(project);
     await ensurePrimaryWorktree(this.db, project, await this.currentBranch(primaryCwd));
@@ -548,9 +562,119 @@ export class GitService {
           this.deps.logger.debug({ err: error, worktreeId: row.id }, 'état du worktree illisible');
         }
       }
-      result.push(worktreeRowToDto({ ...row, status }, live));
+      const dto = worktreeRowToDto({ ...row, status }, live);
+      result.push(options.sizes ? { ...dto, sizeBytes: onDisk ? await this.folderSize(row.path) : null } : dto);
     }
     return { worktrees: result };
+  }
+
+  /** Disk space of a confined folder, null when unknown (budget spent, unreadable, no meter). */
+  private async folderSize(folder: string): Promise<number | null> {
+    if (!this.deps.diskUsage) return null;
+    try {
+      return await this.deps.diskUsage.measure(await this.deps.paths.confineProjectPath(folder));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Deletes the primary clone of a project and the folders of its worktrees (T8 « Supprimer aussi le
+   * clone de VPS-3 »). Only work that also exists elsewhere may go: refused while a session or a
+   * command runs, and when the server holds the only copy of something (uncommitted or untracked
+   * files, a stash, commits reachable from a local branch but from no remote-tracking ref).
+   * Paths are confined to the projects root (never the root itself). The project row stays.
+   */
+  async removeClone(projectId: string, input: { actorUserId?: string | null } = {}) {
+    const project = await getProject(this.db, projectId);
+    const rows = await this.db.select().from(worktrees).where(and(eq(worktrees.projectId, project.id), isNull(worktrees.removedAt)));
+    for (const row of rows) {
+      if (this.deps.liveSessionForWorktree(row.id)) {
+        throw new RunnerError('CONFLICT', "Une session Claude tourne encore dans ce projet : arrêtez-la d'abord.", {
+          reason: 'WORKTREE_IN_USE',
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+      if ((this.deps.liveRunsForWorktree?.(row.id) ?? 0) > 0) {
+        throw new RunnerError('CONFLICT', "Une commande du projet tourne encore : arrêtez-la d'abord.", {
+          reason: 'RUN_IN_PROGRESS',
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+    }
+    const primaryPath = path.resolve(project.path);
+    const present = existsSync(primaryPath);
+    const primary = present ? await this.deps.paths.confineProjectPath(primaryPath) : null;
+    if (primary && samePath(primary, this.deps.paths.projectsRoot)) {
+      throw new RunnerError('VALIDATION', 'Le dossier des projets lui-même ne peut pas être supprimé.', { untouched: "Rien n'a été supprimé du disque." });
+    }
+    // Every folder to delete, confined first: nothing is removed if one of them escapes the root.
+    const folders: Array<{ row: WorktreeRow | null; dir: string }> = primary ? [{ row: rows.find((r) => r.isPrimary) ?? null, dir: primary }] : [];
+    for (const row of rows) {
+      if (row.isPrimary || !existsSync(row.path)) continue;
+      const dir = await this.deps.paths.confineProjectPath(row.path);
+      if (samePath(dir, this.deps.paths.projectsRoot)) continue;
+      folders.push({ row, dir });
+    }
+    for (const { row, dir } of folders) {
+      const st = await this.status(dir).catch(() => null);
+      const name = row?.name ?? project.slug;
+      if (!st) {
+        throw new RunnerError('CONFLICT', `L'état Git de ${name} est illisible : le clone n'a pas été supprimé.`, {
+          reason: 'CLONE_UNREADABLE',
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+      const dirty = st.files.filter((f) => f.kind !== 'ignored');
+      if (dirty.length > 0) {
+        throw new RunnerError('CONFLICT', `${name} contient ${dirty.length} fichier(s) non commité(s) : ils n'existent que sur le serveur.`, {
+          reason: 'CLONE_DIRTY',
+          data: { worktree: name, files: dirty.slice(0, 50).map((f) => f.path), count: dirty.length },
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+    }
+    if (primary) {
+      const unpushed = (await this.git.output(['log', '--branches', '--not', '--remotes', '--format=%h %s', '-n', '20'], { cwd: primary })).trim();
+      if (unpushed) {
+        const lines = unpushed.split(/\r?\n/);
+        throw new RunnerError('CONFLICT', `${lines.length >= 20 ? '20 commits ou plus' : `${lines.length} commit(s)`} n'existe(nt) que sur le serveur : poussez-les d'abord.`, {
+          reason: 'CLONE_UNPUSHED',
+          data: { commits: lines },
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+      if (await this.refExists(primary, 'refs/stash')) {
+        throw new RunnerError('CONFLICT', "Le clone garde des modifications mises de côté (git stash) : récupérez-les d'abord.", {
+          reason: 'CLONE_DIRTY',
+          untouched: "Rien n'a été supprimé du disque.",
+        });
+      }
+    }
+    let freedBytes: number | null = 0;
+    for (const { dir } of folders) {
+      const size = this.deps.diskUsage ? await this.deps.diskUsage.measure(dir, { fresh: true }) : null;
+      freedBytes = freedBytes === null || size === null ? null : freedBytes + size;
+    }
+    const { operationId, value } = await this.deps.ops.run(
+      { kind: 'clone_remove', projectId: project.id, title: `Suppression du clone de ${project.name}`, actorUserId: input.actorUserId },
+      async (op) => {
+        // Worktrees first (their .git file points into the primary clone), then the clone itself.
+        for (const { dir } of [...folders].reverse()) {
+          op.appendLog([`Suppression de ${dir}`]);
+          await rm(dir, { recursive: true, force: true, maxRetries: 3 });
+          this.deps.diskUsage?.forget(dir);
+          // `.worktrees/<slug>` once empty
+          await rmdir(path.dirname(dir)).catch(() => undefined);
+        }
+        const now = new Date();
+        await this.db.update(worktrees).set({ status: 'removed', removedAt: now }).where(and(eq(worktrees.projectId, project.id), isNull(worktrees.removedAt)));
+        await this.db.update(projects).set({ status: 'error', statusDetail: 'Clone supprimé du serveur.' }).where(eq(projects.id, project.id));
+        return { removed: folders.length > 0, freedBytes: folders.length > 0 ? freedBytes : 0, worktrees: folders.filter((f) => f.row && !f.row.isPrimary).length };
+      },
+      (r) => ({ ...r }),
+    );
+    return { operationId, ...value };
   }
 
   /** `git worktree add` under <projectsRoot>/.worktrees/<slug>/<name> + worktrees row. */
@@ -653,6 +777,7 @@ export class GitService {
           op.appendLog([`$ git branch -d ${row.branch}`, ...(branchDeleted ? [] : ["Branche conservée : elle n'est pas fusionnée."])]);
         }
         await this.db.update(worktrees).set({ status: 'removed', removedAt: new Date() }).where(eq(worktrees.id, row.id));
+        this.deps.diskUsage?.forget(row.path);
         return { removed: true, branchDeleted };
       },
     );
@@ -677,11 +802,11 @@ export class GitService {
     return { ref: head ? 'HEAD' : EMPTY_TREE, label: (await this.currentBranch(cwd)) ?? 'HEAD' };
   }
 
-  private async readUntracked(cwd: string, relativePath: string): Promise<{ binary: boolean; content: string | null; size: number }> {
+  private async readUntracked(cwd: string, relativePath: string, maxBytes = UNTRACKED_READ_CAP): Promise<{ binary: boolean; content: string | null; size: number }> {
     const abs = await this.deps.paths.resolveInWorktree(cwd, relativePath);
     const info = await stat(abs);
     if (!info.isFile()) return { binary: false, content: null, size: info.size };
-    if (info.size > UNTRACKED_READ_CAP) return { binary: false, content: null, size: info.size };
+    if (info.size > Math.min(UNTRACKED_READ_CAP, maxBytes)) return { binary: false, content: null, size: info.size };
     const buffer = await readFile(abs);
     if (isBinaryBuffer(buffer)) return { binary: true, content: null, size: info.size };
     return { binary: false, content: buffer.toString('utf8'), size: info.size };
@@ -732,18 +857,35 @@ export class GitService {
         seen.add(s.path);
       }
     }
+    const budget = { files: this.untrackedBudget.files, bytes: this.untrackedBudget.bytes, until: Date.now() + this.untrackedBudget.ms };
     for (const s of status.files) {
       if (s.kind !== 'untracked' || seen.has(s.path)) continue;
       let insertions = 0;
       let binary = false;
-      try {
-        const u = await this.readUntracked(cwd, s.path);
-        binary = u.binary;
-        insertions = u.content ? countLines(u.content) : 0;
-      } catch {
-        // unreadable: counts stay at 0
+      let linesCounted = false;
+      if (budget.files > 0 && budget.bytes > 0 && Date.now() < budget.until) {
+        budget.files -= 1;
+        try {
+          const u = await this.readUntracked(cwd, s.path, budget.bytes);
+          linesCounted = u.content !== null || u.binary;
+          if (linesCounted) budget.bytes -= u.size;
+          binary = u.binary;
+          insertions = u.content ? countLines(u.content) : 0;
+        } catch {
+          // unreadable: not counted
+        }
       }
-      files.push({ path: s.path, oldPath: null, status: 'A', staged: false, unstaged: true, insertions, deletions: 0, binary });
+      files.push({
+        path: s.path,
+        oldPath: null,
+        status: 'A',
+        staged: false,
+        unstaged: true,
+        insertions,
+        deletions: 0,
+        binary,
+        ...(linesCounted ? {} : { linesCounted: false }),
+      });
     }
     files.sort((a, b) => a.path.localeCompare(b.path));
     return {
@@ -934,7 +1076,7 @@ export class GitService {
         const result = await this.git.run(args, { cwd, network: true, extraHeader: input.extraHeader, allowFailure: true, timeoutMs: 120_000 });
         const refs = parsePushPorcelain(result.stdout);
         const ref = refs.find((r) => r.to === `refs/heads/${remoteBranch}`);
-        op.appendLog(result.stderr.split(/\r?\n/).filter((l) => l.trim() && !/^To /.test(l)));
+        op.appendLog(result.stderr.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('To ')));
         if (ref?.flag === '!' || (result.exitCode !== 0 && /rejected|non-fast-forward|fetch first/i.test(result.stdout + result.stderr))) {
           throw new RunnerError('CONFLICT', `GitHub a refusé le push : ${remoteBranch} a avancé sur origin. Mettez la branche à jour d'abord.`, {
             reason: 'PUSH_REJECTED',

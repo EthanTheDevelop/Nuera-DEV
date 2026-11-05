@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { describeDevice } from '@/server/auth/device';
@@ -22,9 +23,9 @@ export default async function DeconnexionPage() {
     >
       <form action={signOutAction} className="flex flex-col gap-4">
         <SubmitButton pendingLabel="Déconnexion…">Se déconnecter</SubmitButton>
-        <a href="/" className="text-app-13 text-muted underline-offset-4 hover:underline">
+        <Link href="/" className="text-app-13 text-muted underline-offset-4 hover:underline">
           Revenir à l'Accueil
-        </a>
+        </Link>
       </form>
     </AuthCard>
   );
