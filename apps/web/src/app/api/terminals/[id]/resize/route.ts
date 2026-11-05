@@ -15,6 +15,7 @@ export const POST = apiRoute({
   params: z.object({ id: z.string().regex(TERMINAL_ID_PATTERN) }),
   body: TerminalResizeRequestSchema,
   maxBodyBytes: 4 * 1024,
+  rateLimit: { limit: 600, windowMs: 60_000 },
   handler: async ({ params, body }) => {
     await runner.terminalResize({ params: { terminalId: params.id }, body });
     return undefined;

@@ -58,8 +58,12 @@ export interface ApiRouteOptions<
   body?: TBodySchema;
   query?: TQuerySchema;
   params?: TParamsSchema;
-  /** Per IP (+ user) sliding window; `scope` defaults to the request path. */
-  rateLimit?: RateLimitRule & { scope?: string };
+  /**
+   * Per IP (+ user) sliding window; `scope` defaults to `api:<METHOD>:<route pattern>` (ids
+   * replaced by `:id`, see {@link defaultRateLimitScope}). Mutations without a declared rule get
+   * {@link DEFAULT_MUTATION_RATE_LIMIT}; `false` opts out (keystrokes of a terminal only).
+   */
+  rateLimit?: (RateLimitRule & { scope?: string }) | false;
   /** Maximum JSON body size in bytes (default 1 MiB). */
   maxBodyBytes?: number;
   handler: (
@@ -75,6 +79,34 @@ export interface ApiRouteOptions<
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
+/** Applied to every POST/PUT/PATCH/DELETE route that declares no rule of its own. */
+export const DEFAULT_MUTATION_RATE_LIMIT: RateLimitRule = { limit: 120, windowMs: 60_000 };
+
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Rate-limit scope of a request: one window per method and route pattern, not per concrete URL —
+ * otherwise each new id (session, worktree…) would start a fresh window, and the GET polling of a
+ * resource would eat the budget of its PATCH/DELETE (same path, same key).
+ */
+export function defaultRateLimitScope(method: string, pathname: string): string {
+  const pattern = pathname
+    .split('/')
+    .map((segment) => (UUID_SEGMENT.test(segment) || /^\d+$/.test(segment) ? ':id' : segment))
+    .join('/');
+  return `api:${method.toUpperCase()}:${pattern}`;
+}
+
+/** Rule applied to a request (`null` = none). */
+export function effectiveRouteRateLimit(
+  method: string,
+  declared: (RateLimitRule & { scope?: string }) | false | undefined,
+): (RateLimitRule & { scope?: string }) | null {
+  if (declared === false) return null;
+  if (declared) return declared;
+  return SAFE_METHODS.has(method.toUpperCase()) ? null : DEFAULT_MUTATION_RATE_LIMIT;
+}
+
 function parseWith<TSchema extends ZodType>(schema: TSchema, value: unknown, what: string): z.output<TSchema> {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -83,11 +115,46 @@ function parseWith<TSchema extends ZodType>(schema: TSchema, value: unknown, wha
   return result.data;
 }
 
+/** The client went away while its body was being read: answered (to nobody) without an error log. */
+function abortedBody(): AppError {
+  return new AppError('VALIDATION', 'Requête interrompue par le client.', { status: 400 });
+}
+
+/**
+ * Body as text, read as a stream: stops as soon as it exceeds `maxBytes` (a chunked body declares no
+ * Content-Length), and a body cut by the client (aborted fetch, closed tab) ends quietly as a 400
+ * instead of an « Erreur inattendue » logged with its stack.
+ */
+async function readBodyText(request: NextRequest, maxBytes: number): Promise<string> {
+  if (request.signal?.aborted) throw abortedBody();
+  const stream = request.body;
+  if (!stream) return '';
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new AppError('VALIDATION', 'Requête trop volumineuse.');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw abortedBody();
+  }
+  return text + decoder.decode();
+}
+
 async function readJsonBody(request: NextRequest, maxBytes: number): Promise<unknown> {
   const declared = Number(request.headers.get('content-length') ?? '0');
   if (declared > maxBytes) throw new AppError('VALIDATION', 'Requête trop volumineuse.');
-  const text = await request.text();
-  if (Buffer.byteLength(text, 'utf8') > maxBytes) throw new AppError('VALIDATION', 'Requête trop volumineuse.');
+  const text = await readBodyText(request, maxBytes);
   if (text.trim() === '') return undefined;
   const contentType = request.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
@@ -130,9 +197,10 @@ export function apiRoute<
       const ip = getClientIp(request.headers);
       const user = options.auth === false ? null : await requireUserForApi();
 
-      if (options.rateLimit) {
-        const scope = options.rateLimit.scope ?? `api:${request.nextUrl.pathname}`;
-        assertRateLimit(scope, `${ip ?? 'unknown'}:${user?.id ?? 'anon'}`, options.rateLimit);
+      const rule = effectiveRouteRateLimit(method, options.rateLimit);
+      if (rule) {
+        const scope = rule.scope ?? defaultRateLimitScope(method, request.nextUrl.pathname);
+        assertRateLimit(scope, `${ip ?? 'unknown'}:${user?.id ?? 'anon'}`, { limit: rule.limit, windowMs: rule.windowMs });
       }
 
       const rawParams = ((await context?.params) ?? {}) as RouteParams;
