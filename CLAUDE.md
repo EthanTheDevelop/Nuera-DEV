@@ -27,7 +27,8 @@ pousser et ouvrir des pull requests — depuis un PC ou un téléphone.
    tableau d'arguments, jamais de shell ; chemins confinés (`realpath`) ; environnement nettoyé.
 5. **Commits** : messages conventionnels sobres (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`), sans
    aucune mention d'IA/agent/outil de génération, sans trailer `Co-authored-by`. Inspecter le diff avant de committer.
-6. **Copie UI** : textes français identiques à Figma (accents, apostrophes typographiques `’`, points médians `·`).
+6. **Copie UI** : textes français identiques à Figma — accents, apostrophe **droite** `'` (la page NUERA DEV n'emploie
+   jamais `’`), points médians `·`, guillemets « » espacés, points de suspension `…`.
 
 ## Commandes
 
@@ -66,3 +67,50 @@ deploy/         Dockerfiles, compose Coolify, sauvegarde/restauration
 - Poste de dev Windows sans Docker : PostgreSQL via `embedded-postgres`, PTY via `@lydell/node-pty` (binaires
   précompilés), pas de tmux → le runner bascule sur le backend PTY direct (`NUERA_SESSION_BACKEND=pty`).
 - TypeScript 6.0.x (et non 7.x) : typescript-eslint exige `<6.1.0`.
+- `next dev` (Next 16.4) écrit `apps/web/AGENTS.md` au démarrage (« Generated AGENTS.md ») → fichier non suivi à chaque lancement ; `agentRules: false` dans `next.config.ts` pour l'éviter.
+- Texte de Claude : `react-markdown` 10 sans `rehype-raw` échappe le HTML brut et vide les liens `javascript:` → ne jamais ajouter `rehype-raw` (`components/dev/conversation/ClaudeMarkdown.tsx`).
+- Galerie client avec dates d'exemple : passer `now` depuis la page serveur, sinon `formatTime` diffère entre SSR et hydratation (`app/(dev)/kit/composites/page.tsx`).
+- Captures Playwright de longues pages à horloges vivantes : `fullPage` / capture d'élément expirent (attente de stabilité) → défiler puis `page.screenshot({ clip })`.
+- Better Auth 1.7.17 valide le schéma Drizzle au démarrage (requêtes d'auth refusées sinon) et son plugin twoFactor
+  exige `two_factor.verified/failed_verification_count/locked_until` → `packages/db/src/schema/auth.ts`.
+- Better Auth : `disableSignUp` bloque aussi `auth.api.signUpEmail` côté serveur → le propriétaire est créé en
+  transaction par `apps/web/src/server/auth/setup.ts` ; l'index `user_single_owner_idx` (`(true)`) garantit 1 ligne.
+- Better Auth : `auth.api.*` n'est jamais limité en débit (seul le routeur HTTP l'est) → les actions serveur d'auth
+  passent par `src/server/security/rate-limit.ts` ; `NUERA_RATE_LIMIT_FACTOR` (ignoré en prod) pour les e2e.
+- Better Auth : les hooks `after` des plugins tournent dans l'ordre des plugins → l'audit des connexions vit dans
+  `nueraAuthPlugin`, placé après `twoFactor` (avant lui, une connexion en attente de 2FA ressemble à une session).
+- Vitest : `server-only` lève une erreur hors condition `react-server` → stub dans `apps/web/vitest.config.ts`.
+- Playwright démarre `webServer` AVANT `globalSetup` : `/api/health` répond 200 même sans base ; l'init e2e
+  (`e2e/fixtures/global-setup.ts`) recrée la base puis préchauffe les pages (compilation à froid de `next dev`).
+- `next dev` à froid peut bloquer la boucle d'événements > 10 s : `connect_timeout` postgres.js à 30 s
+  (`packages/db/src/index.ts`, `DATABASE_CONNECT_TIMEOUT`), sinon les premières requêtes échouent (CONNECT_TIMEOUT).
+- `@octokit/auth-app` 8 garde ses jetons 59 min dans son propre cache : appeler `auth({ type: 'installation', …, refresh: true })` et tenir son cache (marge 5 min) ; lui passer `request: octokit.request` pour hériter de `GITHUB_API_URL` et de `X-GitHub-Api-Version` → `apps/web/src/server/github/tokens.ts`.
+- web-push 3.6 envoie toujours via `https.request` : chiffrer avec `webpush.generateRequestDetails()` puis POST avec `fetch` (testable avec un faux service de push) → `apps/web/src/server/push/index.ts`.
+- Next 16 : `generateImageMetadata` dans `app/icon.tsx` sert des URL stables `/icon/<id>` (utilisables dans `manifest.ts`) ; satori rend un `<svg>` inline de glyphes vectorisés, sans fichier de police → `apps/web/src/server/push/app-icon.tsx`.
+- Next augmente `NodeJS.ProcessEnv` avec un `NODE_ENV` obligatoire : une fonction qui reçoit un objet d'environnement doit accepter `Record<string, string | undefined>` (sinon `{}` ne compile pas dans les tests).
+- Contrat runner : dans `--mcp-config`, `headersHelper` ne peut valoir que `'nuera'` (le runner y substitue `bin/nuera-mcp-headers.mjs`) ; aucun en-tête secret dans la config → `apps/web/src/server/mcp/session-config.ts`.
+- Vitest exécute les fichiers en parallèle : une base PostgreSQL par fichier de test (`nuera_integrations_<suite>`, créée et migrée par `src/server/integrations/test/db.ts`, recréée si la migration 0000 a été régénérée).
+- `next dev` (16.4) bloque les ressources de dev venant d'une autre origine que `localhost` : ouvrir `http://127.0.0.1:<port>` refuse le websocket HMR et la page **ne s'hydrate jamais** (aucune erreur visible) → Playwright et navigateur sur `http://localhost:<port>` (ou `allowedDevOrigins`).
+- Galerie `/kit` en capture : `proxy.ts` redirige sans cookie de session même avec `NUERA_KIT_PUBLIC=1` → poser un cookie factice `nuera.session_token` (le proxy est optimiste ; le layout `(dev)` saute `requireUser()` sous ce drapeau en dev) ; sous Git Bash, `MSYS_NO_PATHCONV=1` sinon l'argument `/kit` devient `C:/Program Files/Git/kit`.
+- tailwind-merge ignore les tailles `text-app-*` : sans `extendTailwindMerge`, `twMerge('text-app-14 text-muted')` supprime la taille → toujours `cn()` de `apps/web/src/lib/cn.ts`.
+- `useSyncExternalStore` : `getServerSnapshot` doit renvoyer une valeur stable (constante), sinon « should be cached to avoid an infinite loop » → `apps/web/src/components/ui/Toast.tsx`.
+- Radix Select n'affiche la valeur choisie (`Select.Value`) qu'après hydratation (le texte de l'option est porté depuis un fragment monté côté client) : une capture d'une page non hydratée montre un champ vide.
+- Le dossier scratchpad est partagé entre agents parallèles : y travailler dans un sous-dossier propre au lot (`uikit/…`), des noms génériques (`shots/`) se télescopent.
+- `@lydell/node-pty`, `@xterm/headless` et `@xterm/addon-serialize` sont CommonJS : `import * as ns` puis `ns.X ?? ns.default.X` fonctionne sous tsx, Vitest et esbuild → `apps/runner/src/terminals/terminal.ts`.
+- Fastify 5.12 : `disableRequestLogging` est déprécié (FSTDEP023) et `loggerInstance: <pino>` type l'instance avec le `Logger` pino (non assignable à `FastifyInstance`) → caster en `FastifyBaseLogger`, logger enfant `warn` pour l'écoute des hooks → `apps/runner/src/app.ts`.
+- Node : `request.raw` émet `close` dès que la requête est lue (pas à la déconnexion) → flux SSE et attente du hook `PermissionRequest` écoutent `reply.raw.on('close')` ; et le hook utilise `node:http` (l'undici de `fetch` coupe à 300 s d'attente des en-têtes) → `apps/runner/src/sessions/hook-server.ts`, `apps/runner/bin/nuera-hook.mjs`.
+- Relais SSE : ne jamais passer `AbortSignal.timeout()` au `fetch` d'un flux (il coupe aussi la lecture du corps) ; limiter la minuterie à la connexion → `apps/web/src/server/runner/stream.ts`.
+- `git branch -d` accepte une branche fusionnée dans son amont déjà poussé, même si HEAD ne la contient pas : la suppression de worktree (`deleteBranch`) garde seulement les branches ni poussées ni fusionnées → `apps/runner/src/git/service.ts`.
+- Poste Windows chargé (lots en parallèle, antivirus) : un `git`/`node` peut mettre plusieurs secondes à démarrer et un `rm` de dossier temporaire dépasser 10 s → tests runner séquentiels, délais larges, `afterAll` avec délai explicite (`apps/runner/vitest.config.ts`).
+- `@next/env` met en cache son premier `loadEnvConfig` (celui de Next sur `apps/web`, sans `.env`) : l'appel de `next.config.ts` sur la racine du dépôt est alors sans effet et `next dev` démarre **sans** les variables du `.env` racine (« RUNNER_TOKEN n'est pas configuré côté web » sur `/api/stream/events`) → passer `forceReload` (4e argument) ou fournir les variables dans l'environnement du processus.
+- Le PAT GitHub de secours (`GITHUB_FALLBACK_TOKEN`) ne peut être ni limité à un dépôt ni réduit à la lecture : il sert à l'API et à Git (runner) mais n'est jamais servi au serveur MCP GitHub d'une session (écarté de `--mcp-config`, `403` sur `/api/internal/mcp-headers`) → `apps/web/src/server/mcp/headers.ts`.
+- Coolify n'expose les capacités d'un jeton que par la liste d'outils de son serveur MCP (`tools/list`) : sans MCP joignable à la reconnexion, le jeton est enregistré mais gardé hors de portée de Claude jusqu'à un test MCP réussi sans outil `manage_*`/`create_*` (`coolifyTokenRefusal`) → `apps/web/src/server/mcp/headers.ts`, `mcp/diagnostics.ts`.
+- Proxy paresseux sur un client Drizzle : ne lier (`bind`) que les méthodes du prototype ; `$client` (postgres.js) est une fonction porteuse de méthodes (`end`, `unsafe`) que le `bind` fait disparaître → `apps/web/src/server/db.ts`.
+- Vitest avec le vrai Better Auth : `vi.mock('next/headers')` sert `headers()`/`cookies()` au code testé, mais `nextCookies` (dépendance externe) charge le vrai module et ignore `cookies()` hors requête → lire les cookies via `returnHeaders: true` → `apps/web/src/server/auth/auth-flows.test.ts`.
+- `@nuera/shared/format` (Intl) lève `RangeError: Invalid time value` sur une date invalide : une seule date malformée casse tout le rendu → valider la date avant de la formater (`formatLiveTime`, `apps/web/src/components/dev/status/LiveTime.tsx`).
+- Git : `GIT_CONFIG_COUNT/KEY/VALUE` ne l'emporte que sur une clé de **même nom** ; dans un `.git/config` que Claude peut modifier, `http.<url>.sslVerify=false` (ou `.proxy`), `url.<x>.insteadOf`, `protocol.<x>.allow` ou `[remote "<url>"]` battent nos surcharges → toute commande Git réseau lit d'abord `git config --list --show-scope -z` et refuse ces clés (`GIT_CONFIG_UNSAFE`), et chaque `protocol.<nom>.allow` est figé → `apps/runner/src/git/git.ts`.
+- Sessions : un double clic (ou `start` + instruction) lançait deux `claude --session-id` identiques (le second écrasait le jeton de hook, l'instruction du premier était perdue) → un seul point d'entrée `launch()` avec test-et-réservation synchrones (`launching`), plafond et worktree revérifiés sans `await` avant l'enregistrement → `apps/runner/src/sessions/manager.ts`.
+- Claude Code n'exécute pas le hook `Stop` après une interruption (Échap) : sans correction la session reste « En cours » → le runner rétablit `waiting_input` et ferme les lignes d'outil restées en cours si aucun hook d'activité ne suit dans les 2,5 s (`settleAfterInterrupt`, aussi pour Échap / Ctrl+C tapés dans le terminal brut) → `apps/runner/src/sessions/manager.ts`.
+- Lecteur tolérant du journal (`transcript_path`) : ses lectures périodiques prennent la file de la session (`runExclusive`), sinon elles concurrencent le hook `Stop` (message final en double, conflit d'index de position) → `apps/runner/src/sessions/transcript.ts`.
+- `router.refresh()` sans réseau (Next 16.4) : « Failed to fetch RSC payload… Falling back to browser navigation » → navigation complète et page d'erreur du navigateur à la place du bandeau W7 → ne jamais rafraîchir à l'aveugle quand le flux tombe : sonde du flux (401/403 ⇒ refresh vers `/connexion`), refresh seulement sur preuve de vie du runner → `apps/web/src/hooks/useLiveEvents.tsx`.
+- Un `EventSource` recréé à la main ne renvoie pas `Last-Event-ID` (seule la reconnexion automatique du navigateur le fait) : passer `?lastEventId=<dernier id>` (le relais le transmet au runner, qui rejoue ou envoie `stream.reset`) → `apps/web/src/hooks/useLiveEvents.tsx`.
