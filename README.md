@@ -32,7 +32,7 @@ des images de déploiement (phase 6). Rien n'est déployé.
 | 1 | Socle (monorepo, base, outillage) | ✅ fait | §2.2 |
 | 2 | Fondations (design system, shell, composants, auth, runner, intégrations serveur) | ✅ fait, vérifié, poussé | §2.3–2.8 |
 | 3 | Pages métier (6 domaines, bureau + mobile) + pile de test + terminal partagé | ✅ fait, vérifié, poussé | §3 |
-| 4 | Les 5 parcours obligatoires de bout en bout + Playwright | ⬜ à faire | §4.3 |
+| 4 | Les 5 parcours obligatoires de bout en bout + Playwright | ✅ fait (`apps/web/e2e/parcours-*.spec.ts`) | §4.3 |
 | 5 | Revue globale (sécurité, fidélité Figma, boutons morts) et corrections | ⬜ à faire | §4.4 |
 | 6 | Déploiement Coolify / VPS-3 | ⏳ fichiers écrits, jamais testés, rien de déployé | §4.5 |
 
