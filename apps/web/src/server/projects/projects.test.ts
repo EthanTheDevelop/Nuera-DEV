@@ -17,6 +17,10 @@ const state = vi.hoisted(() => ({
   pullFailure: null as null | { code: string; message: string; reason?: string; data?: Record<string, unknown> },
   /** Runner reads of the project page: 'down' (unreachable) or 'timeout' (no answer in time). */
   reads: 'down' as 'down' | 'timeout',
+  /** Answer of runner.listWorktrees when set (otherwise it fails like the other reads). */
+  worktreeList: null as null | Array<Record<string, unknown>>,
+  /** Answer (or refusal) of runner.removeClone. */
+  cloneRemoval: null as null | { code: string; message: string; reason: string },
 }));
 
 vi.mock('@/server/runner/client', async (importOriginal) => {
@@ -60,6 +64,7 @@ vi.mock('@/server/runner/client', async (importOriginal) => {
           name,
           async () => {
             record(name, null);
+            if (name === 'listWorktrees' && state.worktreeList) return { worktrees: state.worktreeList };
             if (state.reads === 'timeout') {
               const cause = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
               throw new original.RunnerError('UPSTREAM', "Le runner n'a pas répondu à temps.", { cause });
@@ -68,6 +73,22 @@ vi.mock('@/server/runner/client', async (importOriginal) => {
           },
         ]),
       ),
+      writeClaudeMd: async (input: unknown) => {
+        record('writeClaudeMd', input);
+        return { worktreeId: '33333333-3333-4333-8333-333333333333', lines: 12, commitSha: 'c0ffee1234567890' };
+      },
+      removeClone: async (input: unknown) => {
+        record('removeClone', input);
+        if (state.cloneRemoval) {
+          const f = state.cloneRemoval;
+          throw new original.RunnerError(f.code as never, f.message, { reason: f.reason, untouched: "Rien n'a été supprimé du disque." });
+        }
+        return { operationId: '44444444-4444-4444-8444-444444444444', removed: true, freedBytes: 2_254_857_830, worktrees: 1 };
+      },
+      removeWorktree: async (input: unknown) => {
+        record('removeWorktree', input);
+        return { removed: true, branchDeleted: false };
+      },
       createRun: async (input: { body: Record<string, unknown> }) => {
         record('createRun', input);
         return { id: '22222222-2222-4222-8222-222222222222', projectId: input.body.projectId, worktreeId: input.body.worktreeId, kind: input.body.kind, command: input.body.command, status: 'running', exitCode: null, pid: 1, port: null, summary: null, tests: null, startedAt: new Date().toISOString(), finishedAt: null, live: true };
@@ -131,6 +152,8 @@ beforeEach(async () => {
   state.cloneFailure = null;
   state.pullFailure = null;
   state.reads = 'down';
+  state.worktreeList = null;
+  state.cloneRemoval = null;
   await resetProjectTables();
 });
 
@@ -330,10 +353,10 @@ describe('favourite, archive, restore', () => {
       { id: live, projectId: project.id, title: 'live', status: 'running' },
       { id: crypto.randomUUID(), projectId: project.id, title: 'done', status: 'finished' },
     ]);
-    expect(await mod.getArchivePreview(project.id)).toEqual({ endedSessions: 1, liveSessions: 1 });
+    expect(await mod.getArchivePreview(project.id)).toEqual({ endedSessions: 1, liveSessions: 1, clone: { onDisk: null, sizeBytes: null } });
     await expect(mod.archiveProject(project.id, TEST_ACTOR)).rejects.toThrow(/active/);
     await db.update(sessions).set({ status: 'stopped' }).where(eq(sessions.id, live));
-    expect(await mod.archiveProject(project.id, TEST_ACTOR)).toEqual({ archivedSessions: 2 });
+    expect(await mod.archiveProject(project.id, TEST_ACTOR)).toEqual({ archivedSessions: 2, clone: null });
     const [row] = await db.select().from(projects).where(eq(projects.id, project.id));
     expect(row!.archivedAt).not.toBeNull();
     expect((await mod.listProjects()).items).toHaveLength(0);
@@ -342,6 +365,30 @@ describe('favourite, archive, restore', () => {
     expect((await db.select().from(auditLog).where(eq(auditLog.actorUserId, TEST_USER_ID))).map((r) => r.action)).toEqual(
       expect.arrayContaining(['project.archived', 'project.restored']),
     );
+  });
+
+  it('offers the clone with its measured size, deletes it after the archive, and reports a refusal', async () => {
+    const { project } = await insertProject({ slug: 'alpha' });
+    const wt = (id: string, sizeBytes: number | null, extra: Record<string, unknown> = {}) => ({ id, projectId: project.id, name: id.slice(0, 4), branch: 'main', baseBranch: null, path: '/srv/dev/alpha', isPrimary: false, status: 'active', createdAt: new Date().toISOString(), lastUsedAt: null, dirtyFiles: 0, ahead: 0, behind: 0, liveSessionId: null, sizeBytes, ...extra });
+    state.worktreeList = [wt(crypto.randomUUID(), 2_000_000_000, { isPrimary: true }), wt(crypto.randomUUID(), 254_857_830), wt(crypto.randomUUID(), null, { status: 'removed' })];
+    expect((await mod.getArchivePreview(project.id)).clone).toEqual({ onDisk: true, sizeBytes: 2_254_857_830 });
+
+    // Refused by the runner (work only on the server): archived anyway, clone kept, both audited.
+    state.cloneRemoval = { code: 'CONFLICT', message: "1 commit(s) n'existe(nt) que sur le serveur : poussez-les d'abord.", reason: 'CLONE_UNPUSHED' };
+    const refused = await mod.archiveProject(project.id, TEST_ACTOR, { removeClone: true });
+    expect(refused).toEqual({ archivedSessions: 0, clone: { removed: false, message: "1 commit(s) n'existe(nt) que sur le serveur : poussez-les d'abord.", untouched: "Rien n'a été supprimé du disque." } });
+    const [archived] = await db.select().from(projects).where(eq(projects.id, project.id));
+    expect(archived!.archivedAt).not.toBeNull();
+
+    // Asked again on the archived project: removed this time.
+    state.cloneRemoval = null;
+    expect(await mod.archiveProject(project.id, TEST_ACTOR, { removeClone: true })).toEqual({ archivedSessions: 0, clone: { removed: true, freedBytes: 2_254_857_830 } });
+    expect(state.calls.filter((c) => c.name === 'removeClone')).toEqual([
+      { name: 'removeClone', input: { params: { projectId: project.id } } },
+      { name: 'removeClone', input: { params: { projectId: project.id } } },
+    ]);
+    const audits = (await db.select().from(auditLog).where(eq(auditLog.targetId, project.id))).map((r) => r.action);
+    expect(audits).toEqual(expect.arrayContaining(['project.archived', 'project.clone_remove_refused', 'project.clone_removed']));
   });
 
   it('removes only a project whose clone failed', async () => {
@@ -390,6 +437,25 @@ describe('retryProjectClone', () => {
     expect(row!.path).toBe('/srv/dev/beta-2');
     const clone = state.calls.find((call) => call.name === 'cloneRepo')!.input as { body: { destination: string } };
     expect(clone.body.destination).toBe('/srv/dev/beta-2');
+  });
+
+  it('audits a CLAUDE.md write and a worktree removal (never the file content)', async () => {
+    const { project } = await insertProject({ slug: 'gamma' });
+    await mod.writeProjectClaudeMd(project.id, { content: '# Règles\nNe jamais pousser sur main.' }, TEST_ACTOR);
+    const [written] = await db.select().from(auditLog).where(eq(auditLog.action, 'project.claude_md_written'));
+    expect(written).toMatchObject({ actorUserId: TEST_USER_ID, targetId: project.id });
+    expect(written!.summary).toContain('CLAUDE.md de gamma modifié (12 lignes), commit c0ffee1');
+    expect(JSON.stringify(written)).not.toContain('Ne jamais pousser');
+
+    const extraId = '44444444-4444-4444-8444-444444444444';
+    state.worktreeList = [
+      { id: extraId, name: 'export-csv', branch: 'feature/export-csv', baseBranch: 'main', path: '/srv/dev/.worktrees/gamma/export-csv', isPrimary: false, status: 'ready', createdAt: new Date().toISOString(), lastUsedAt: null, dirtyFiles: 0, ahead: 0, behind: 0, liveSessionId: null },
+    ];
+    await mod.removeProjectWorktree(project.id, extraId, { deleteBranch: true }, TEST_ACTOR);
+    expect(state.calls.find((call) => call.name === 'removeWorktree')?.input).toEqual({ params: { worktreeId: extraId }, query: { force: false, deleteBranch: true } });
+    const [removed] = await db.select().from(auditLog).where(eq(auditLog.action, 'project.worktree_removed'));
+    expect(removed).toMatchObject({ actorUserId: TEST_USER_ID, targetType: 'worktree', targetId: extraId });
+    expect(removed!.summary).toBe('worktree export-csv (feature/export-csv) supprimé de gamma, branche conservée');
   });
 
   it('refuses an invalid starting branch before touching anything', async () => {

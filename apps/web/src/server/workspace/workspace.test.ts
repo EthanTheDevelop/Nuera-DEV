@@ -28,6 +28,7 @@ vi.mock('@/server/runner/client', async () => {
 const githubMock = {
   getGitAuthForRepo: vi.fn<(fullName: string, access: string) => Promise<{ extraHeader: string; expiresAt: string }>>(async () => ({ extraHeader: 'AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dGVzdA==', expiresAt: new Date().toISOString() })),
   createPullRequest: vi.fn<(input: unknown) => Promise<unknown>>(),
+  listProtectedBranches: vi.fn<(fullName: string, defaultBranch: string, options?: unknown) => Promise<string[]>>(async (_fullName, defaultBranch) => [defaultBranch]),
 };
 vi.mock('@/server/github', () => githubMock);
 const resumeMock = vi.fn<(sessionId: string, actor: unknown) => Promise<unknown>>(async () => ({}));
@@ -274,10 +275,22 @@ describe('Git (W5)', () => {
     expect(githubMock.getGitAuthForRepo).toHaveBeenCalledWith('atelier-test/devis-express', 'write');
     expect(runnerMock.push.mock.calls[0]![0].body).toMatchObject({ protectedBranches: ['main'], setUpstream: true });
     expect(result.url).toBe('https://github.com/atelier-test/devis-express/tree/feature/export-csv');
+    const [entry] = await (await db()).select().from(auditLog).where(eq(auditLog.action, 'git.push'));
+    expect(entry).toMatchObject({ actorUserId: TEST_USER_ID, targetType: 'project' });
+    expect(entry?.summary).toBe('push de feature/export-csv vers origin/feature/export-csv · Devis Express');
+    expect(JSON.stringify(entry)).not.toMatch(/AUTHORIZATION|basic /i);
 
     await resetWorkspaceTables();
     const main = await fixture({ branch: 'main' });
     await expect((await ws()).pushBranch(main.worktree.id, {}, actor)).rejects.toMatchObject({ code: 'CONFLICT' });
+    // A branch protected on GitHub is refused before any token is minted, and the list goes to the runner.
+    await resetWorkspaceTables();
+    const release = await fixture({ branch: 'release' });
+    githubMock.getGitAuthForRepo.mockClear();
+    githubMock.listProtectedBranches.mockResolvedValueOnce(['main', 'release']);
+    await expect((await ws()).pushBranch(release.worktree.id, {}, actor)).rejects.toMatchObject({ code: 'CONFLICT', untouched: "Rien n'a été envoyé sur GitHub." });
+    expect(githubMock.getGitAuthForRepo).not.toHaveBeenCalled();
+    expect(githubMock.listProtectedBranches).toHaveBeenCalledWith('atelier-test/devis-express', 'main', { maxAgeMs: 0 });
   });
 
   it('opens the pull request, stores it and audits', async () => {
