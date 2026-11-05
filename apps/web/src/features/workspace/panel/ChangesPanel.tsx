@@ -27,6 +27,7 @@ export function GitActions({ className }: { className?: string }) {
       : 'worktree supprimé';
   const disabled = !ws.canPrepareCommit || Boolean(ws.serverDisabledReason);
   const prDisabled = disabled || (Boolean(branch) && branch!.ahead === 0 && (changes?.totals.files ?? 0) === 0);
+  const openPullRequest = ws.ctl.state.pullRequest?.state === 'open' ? ws.ctl.state.pullRequest : null;
   return (
     <BranchStatusBar
       className={className}
@@ -38,9 +39,16 @@ export function GitActions({ className }: { className?: string }) {
           <CompactButton variant="principal" icon="git-commit" disabled={disabled} onClick={() => ws.openCommit('commit')}>
             Préparer le commit
           </CompactButton>
-          <CompactButton variant="secondaire" icon="git-pull-request" disabled={prDisabled} onClick={() => ws.openCommit('pull-request')}>
-            Préparer la pull request
-          </CompactButton>
+          {openPullRequest ? (
+            // The open pull request stays one click away once the W5 toast is gone (the push updates it).
+            <CompactButton variant="secondaire" icon="git-pull-request" href={openPullRequest.url} external title={`${openPullRequest.title} · ouverte vers ${openPullRequest.baseBranch}`}>
+              {`Pull request #${openPullRequest.number}`}
+            </CompactButton>
+          ) : (
+            <CompactButton variant="secondaire" icon="git-pull-request" disabled={prDisabled} onClick={() => ws.openCommit('pull-request')}>
+              Préparer la pull request
+            </CompactButton>
+          )}
         </>
       }
     />
