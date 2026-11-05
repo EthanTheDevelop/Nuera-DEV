@@ -310,7 +310,23 @@ export async function archiveSession(sessionId: string, actor: SessionActor): Pr
     actorUserId: actor.id,
     metadata: { projectId: row.projectId, previousStatus: row.status },
   });
+  await announceStatus(sessionId);
   return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+}
+
+/**
+ * Other tabs follow a web-side change (archive, rename) through the runner's `session.status`.
+ * Best effort: the change is already written and audited; an unreachable runner only delays them
+ * until their next refresh.
+ */
+async function announceStatus(sessionId: string): Promise<void> {
+  try {
+    await runner.announceSession({ params: { sessionId } }, { timeoutMs: 5_000 });
+  } catch (error) {
+    if (!isRunnerUnavailable(error) && !(error instanceof AppError && error.code === 'NOT_FOUND')) {
+      console.error('[sessions] publication du statut impossible', error instanceof Error ? error.message : error);
+    }
+  }
 }
 
 /** « Renommer »: Nuera's title of the session (the CLI keeps its `--name` until the next launch). */
@@ -329,6 +345,7 @@ export async function renameSession(sessionId: string, title: string, actor: Ses
       actorUserId: actor.id,
       metadata: { projectId: row.projectId, from: row.title, to: next },
     });
+    await announceStatus(sessionId);
   }
   return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
 }

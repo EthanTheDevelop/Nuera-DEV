@@ -87,6 +87,7 @@ export { Sheet, SheetClose, SheetContent, SheetTrigger, type SheetContentProps }
 export { Skeleton, SkeletonList, SkeletonRow, type SkeletonListProps, type SkeletonProps, type SkeletonRowProps } from './Skeleton';
 export { Spinner, type SpinnerProps } from './Spinner';
 export { StatusDot, type StatusDotProps, type StatusTone } from './StatusDot';
+export { Checkbox, type CheckboxProps } from './Checkbox';
 export { Switch, type SwitchProps } from './Switch';
 export { Tabs, TabsContent, TabsList, TabsTrigger, type TabsListProps, type TabsTriggerProps } from './Tabs';
 export { TileHeader, type TileHeaderProps } from './TileHeader';

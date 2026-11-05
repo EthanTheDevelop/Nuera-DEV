@@ -15,6 +15,7 @@ const runnerMock = {
   resumeSession: vi.fn<RunnerClient['resumeSession']>(),
   stopSession: vi.fn<RunnerClient['stopSession']>(),
   worktreeChanges: vi.fn<RunnerClient['worktreeChanges']>(),
+  announceSession: vi.fn<RunnerClient['announceSession']>(),
 };
 vi.mock('@/server/runner/client', async () => {
   const errors = await import('@/server/runner/errors');
@@ -246,6 +247,14 @@ describe('archive, rename, stop, resume', () => {
     const [renamed] = await (await db()).select().from(sessions).where(eq(sessions.id, stopped.id));
     expect(renamed!.title).toBe('Export CSV');
     await expect(renameSession(stopped.id, '   ', actor)).rejects.toMatchObject({ code: 'VALIDATION' });
+    // Other tabs follow both changes live (runner `session.status`), once each.
+    expect(runnerMock.announceSession.mock.calls.map((call) => call[0])).toEqual([{ params: { sessionId: stopped.id } }, { params: { sessionId: stopped.id } }]);
+    // Runner unreachable: the change stays done.
+    const { RunnerError } = await import('@/server/runner/errors');
+    runnerMock.announceSession.mockRejectedValueOnce(new RunnerError('RUNNER_UNAVAILABLE', 'Le runner ne répond pas.'));
+    await renameSession(stopped.id, 'Export CSV v2', actor);
+    const [again] = await (await db()).select().from(sessions).where(eq(sessions.id, stopped.id));
+    expect(again!.title).toBe('Export CSV v2');
 
     await expect(stopSession(stopped.id, actor)).rejects.toMatchObject({ code: 'CONFLICT' });
     runnerMock.stopSession.mockResolvedValue(dto({ id: running.id, projectId: project.id, status: 'stopped', title: 'Vivante' }));
@@ -253,7 +262,7 @@ describe('archive, rename, stop, resume', () => {
     expect(runnerMock.stopSession).toHaveBeenCalledWith({ params: { sessionId: running.id }, body: { force: false } });
 
     const actions = (await (await db()).select().from(auditLog)).map((a) => a.action).sort();
-    expect(actions).toEqual(['session.archive', 'session.rename', 'session.stop']);
+    expect(actions).toEqual(['session.archive', 'session.rename', 'session.rename', 'session.stop']);
   });
 
   it('resumes with rebuilt launch options and refuses an archived session', async () => {
@@ -326,6 +335,19 @@ describe('listSessions / getCapacity', () => {
 
     runnerMock.listSessions.mockResolvedValue({ sessions: [], capacity: { live: 2, max: 4 } });
     expect(await getCapacity()).toEqual({ active: 2, max: 4, source: 'runner' });
+  });
+
+  it('offers « Reprendre » for a finished session, like the runner (worktree and journal present)', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/a');
+    const done = await createSessionRow(project.id, wt.id, { status: 'finished', title: 'Galerie photos', transcriptPath: '/g.jsonl', startedAt: new Date(), endedAt: new Date() });
+    runnerMock.getSession.mockImplementation(async ({ params }) => dto({ id: params.sessionId, projectId: project.id, status: 'finished', resumable: true }));
+    const { listSessions } = await import('./index');
+    const history = await listSessions({ status: 'history' });
+    expect(history.items.find((i) => i.id === done.id)).toMatchObject({ status: 'finished', resumable: true, resumeBlockedReason: null });
+    // The « reprise » filters stay about interrupted conversations.
+    expect((await listSessions({ status: 'history', filter: 'reprise-possible' })).items).toHaveLength(0);
+    expect((await listSessions({ status: 'history', filter: 'terminees' })).items.map((i) => i.id)).toEqual([done.id]);
   });
 
   it('falls back to the database when the runner does not answer', async () => {

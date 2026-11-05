@@ -168,6 +168,45 @@ describe('registry and per-session configuration', () => {
   });
 });
 
+describe('mcp_servers.config (non-secret headers, denied tools, preset)', () => {
+  it('sends the stored static headers and denied tools to the session and shows them in the drawer', async () => {
+    const { createMcpServer, updateMcpServer, getMcpServer, setProjectMcpServer, listMcpServers } = await import('./registry');
+    const { buildSessionMcpConfig } = await import('./session-config');
+    const { db } = await import('@/server/db');
+    const project = await createProject();
+    const view = await createMcpServer({
+      name: 'linear',
+      label: 'Linear',
+      transport: 'http',
+      url: 'https://mcp.linear.example/mcp',
+      staticHeaders: { 'X-Workspace': 'nuera' },
+      denyTools: ['delete_issue'],
+    });
+    expect(view.denyRules).toEqual(['mcp__linear__delete_issue']);
+    expect(view.configurationLines).toEqual(expect.arrayContaining(['en-têtes fixes : X-Workspace', 'outils refusés à Claude : delete_issue']));
+    await setProjectMcpServer({ projectId: project.id, serverIdOrName: 'linear', enabled: true });
+    // Narrowing a preset is allowed; its own headers stay (GitHub read-only), new ones are refused.
+    await updateMcpServer('figma', { denyTools: ['get_screenshot'] });
+    await expect(updateMcpServer('github', { staticHeaders: { 'X-MCP-Readonly': 'false' } })).rejects.toMatchObject({ code: 'VALIDATION' });
+    await setProjectMcpServer({ projectId: project.id, serverIdOrName: 'figma', enabled: true });
+
+    const config = await buildSessionMcpConfig(project.id);
+    expect(config.mcpConfig.mcpServers.linear).toEqual({ type: 'http', url: 'https://mcp.linear.example/mcp', headers: { 'X-Workspace': 'nuera' } });
+    expect(config.denyRules).toEqual(expect.arrayContaining(['mcp__linear__delete_issue', 'mcp__figma__get_screenshot', 'mcp__figma__use_figma']));
+
+    // Credential headers never go to the clear config; clearing works.
+    await expect(updateMcpServer('linear', { staticHeaders: { Authorization: 'Bearer x' } })).rejects.toThrow();
+    await updateMcpServer('linear', { staticHeaders: null, denyTools: null });
+    expect((await getMcpServer('linear')).denyRules).toEqual([]);
+    expect((await buildSessionMcpConfig(project.id)).mcpConfig.mcpServers.linear).toEqual({ type: 'http', url: 'https://mcp.linear.example/mcp' });
+
+    // Seeded presets record their preset id.
+    await listMcpServers();
+    const rows = await db.select({ name: mcpServers.name, config: mcpServers.config }).from(mcpServers);
+    expect(rows.find((row) => row.name === 'coolify')?.config).toMatchObject({ presetId: 'coolify' });
+  });
+});
+
 describe('diagnostics', () => {
   it('checks an HTTP server with its stored credential, then reports « Autorisation expirée » on 401', async () => {
     const server = await startFakeMcp({ expectedAuthorization: 'Bearer lin_token_0123456789', tools: ['list_issues', 'get_issue'] });

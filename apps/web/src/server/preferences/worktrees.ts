@@ -21,7 +21,7 @@ import { getAppSettings } from '@/server/settings';
 const DAY_MS = 86_400_000;
 
 export interface StaleCandidate {
-  worktree: Pick<WorktreeDto, 'id' | 'name' | 'branch' | 'isPrimary' | 'status' | 'createdAt' | 'lastUsedAt' | 'dirtyFiles' | 'liveSessionId'>;
+  worktree: Pick<WorktreeDto, 'id' | 'name' | 'branch' | 'isPrimary' | 'status' | 'createdAt' | 'lastUsedAt' | 'dirtyFiles' | 'liveSessionId' | 'sizeBytes'>;
   projectId: string;
   projectName: string;
   lastSessionActivityAt: Date | null;
@@ -53,6 +53,7 @@ export function selectStaleWorktrees(candidates: readonly StaleCandidate[], stal
       dirtyFiles: worktree.dirtyFiles,
       eligible: excludedReason === null,
       excludedReason,
+      sizeBytes: worktree.sizeBytes ?? null,
     });
   }
   return items.sort((a, b) => Number(b.eligible) - Number(a.eligible) || a.lastActivityAt.localeCompare(b.lastActivityAt));
@@ -94,7 +95,8 @@ export async function listStaleWorktrees(now = new Date()): Promise<StaleWorktre
   const lists = await Promise.all(
     rows.map(async (project) => {
       try {
-        const { worktrees } = await runner.listWorktrees({ params: { projectId: project.id } }, { timeoutMs: 20_000 });
+        // Sizes are measured (and cached) by the runner: D08 « · 2,4 Go », T8 « Libère 1,8 Go ».
+        const { worktrees } = await runner.listWorktrees({ params: { projectId: project.id }, query: { sizes: true } }, { timeoutMs: 30_000 });
         return worktrees.map((worktree) => ({ worktree, projectId: project.id, projectName: project.name }));
       } catch (error) {
         // The runner itself is down: the whole section is unavailable (no partial lie).

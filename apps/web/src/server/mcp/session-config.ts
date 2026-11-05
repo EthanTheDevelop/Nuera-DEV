@@ -9,7 +9,7 @@ import { getGithubMode } from '@/server/github/access';
 import type { GithubMode } from '@/server/github/types';
 import { coolifyTokenRefusal, GITHUB_MCP_APP_REQUIRED } from './headers';
 import { presetOf } from './presets';
-import { credentialSourceOf, type McpServerRow } from './registry';
+import { credentialSourceOf, denyRulesOf, staticHeadersOf, type McpServerRow } from './registry';
 
 /**
  * Per-session MCP configuration (research §5.7): only the servers enabled for THIS project, given
@@ -56,7 +56,9 @@ async function entryFor(
     return { skip: context.githubMode === 'fallback_token' ? GITHUB_MCP_APP_REQUIRED : "GitHub n'est pas connecté." };
   }
   if (!url) return { skip: 'Adresse absente.' };
-  const headers = preset?.staticHeaders;
+  // Non-secret headers: `mcp_servers.config.headers` + the preset's (which win).
+  const staticHeaders = staticHeadersOf(row);
+  const headers = Object.keys(staticHeaders).length ? staticHeaders : null;
   const needsHelper = credential === 'github_installation' || credential === 'coolify_token' || credential === 'stored_headers';
   return {
     entry: {
@@ -93,7 +95,7 @@ export async function buildSessionMcpConfig(projectId: string): Promise<SessionM
       continue;
     }
     servers[server.name] = result.entry;
-    for (const rule of presetOf(server.name)?.denyRules ?? []) deny.add(rule);
+    for (const rule of denyRulesOf(server)) deny.add(rule);
   }
   const mcpConfig = McpConfigSchema.parse({ mcpServers: servers });
   return { mcpConfig, denyRules: [...deny], env: { ...SESSION_MCP_ENV }, skipped };

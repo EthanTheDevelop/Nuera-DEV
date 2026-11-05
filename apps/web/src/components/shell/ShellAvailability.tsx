@@ -1,7 +1,6 @@
 'use client';
 
-import { formatLongDate } from '@nuera/shared/format';
-import { formatShortDay } from '@/lib/format';
+import { formatLongDate, formatShortDay } from '@nuera/shared/format';
 import { useLiveEvents } from '@/hooks/useLiveEvents';
 import { useNow } from '@/hooks/useNow';
 import { useShellData } from './ShellContext';

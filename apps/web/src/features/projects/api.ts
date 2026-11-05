@@ -5,6 +5,7 @@
 import type {
   AddReposResult,
   ArchivePreviewView,
+  ArchiveResultView,
   BranchesView,
   ClaudeMdView,
   CreateProjectResult,
@@ -107,7 +108,8 @@ export const projectsApi = {
   discard: (projectId: string) => projectFetch<void>(`${p(projectId)}/clone`, json('DELETE')),
   patch: (projectId: string, body: Record<string, unknown>) => projectFetch<ProjectListItem>(p(projectId), json('PATCH', body)),
   archivePreview: (projectId: string) => projectFetch<ArchivePreviewView>(`${p(projectId)}/archive`),
-  archive: (projectId: string) => projectFetch<{ archivedSessions: number }>(p(projectId), json('DELETE')),
+  archive: (projectId: string, options: { removeClone?: boolean } = {}) =>
+    projectFetch<ArchiveResultView>(p(projectId), json('DELETE', options.removeClone ? { removeClone: true } : undefined)),
   restore: (projectId: string) => projectFetch<ProjectListItem>(`${p(projectId)}/restore`, json('POST')),
   sync: (projectId: string) =>
     projectFetch<{ outcome: string; commits: number; project: ProjectListItem }>(`${p(projectId)}/sync`, json('POST')),

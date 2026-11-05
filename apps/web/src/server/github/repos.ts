@@ -201,3 +201,31 @@ export async function listBranches(fullName: string): Promise<GithubBranch[]> {
     throw toGithubAppError(error, `la liste des branches de ${owner}/${repo}`);
   }
 }
+
+const protectedCache = new Map<string, { at: number; names: string[] }>();
+const PROTECTED_CACHE_MS = 60_000;
+
+/**
+ * Branches the runner must refuse to push to: the default branch (always: it evolves by pull
+ * request) plus the branches protected on GitHub. GitHub unreachable or the App without access →
+ * the default branch alone (GitHub still enforces its own protection on the push itself).
+ * `maxAgeMs: 0` reads GitHub again (a push), listings accept a minute-old answer.
+ */
+export async function listProtectedBranches(
+  fullName: string,
+  defaultBranch: string,
+  options: { maxAgeMs?: number; listImpl?: typeof listBranches } = {},
+): Promise<string[]> {
+  const maxAge = options.maxAgeMs ?? PROTECTED_CACHE_MS;
+  const cached = protectedCache.get(fullName);
+  let names = cached && Date.now() - cached.at < maxAge ? cached.names : null;
+  if (!names) {
+    try {
+      names = (await (options.listImpl ?? listBranches)(fullName)).filter((branch) => branch.protected).map((branch) => branch.name);
+      protectedCache.set(fullName, { at: Date.now(), names });
+    } catch {
+      names = cached?.names ?? [];
+    }
+  }
+  return [...new Set([defaultBranch, ...names])].slice(0, 50);
+}

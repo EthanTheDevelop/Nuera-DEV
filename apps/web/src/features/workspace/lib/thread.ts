@@ -58,6 +58,7 @@ export function applyStatusEvent(session: WorkspaceSession, event: SessionStatus
   if (event.sessionId !== session.id) return session;
   return {
     ...session,
+    title: event.title ?? session.title,
     status: event.status,
     live: event.live,
     currentActivity: event.currentActivity,

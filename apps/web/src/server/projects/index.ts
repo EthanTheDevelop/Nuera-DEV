@@ -67,6 +67,7 @@ export {
   markProjectOpened,
   getArchivePreview,
   archiveProject,
+  archiveProjectInputSchema,
   restoreProject,
   discardFailedProject,
   type ArchivePreview,

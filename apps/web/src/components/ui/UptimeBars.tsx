@@ -32,7 +32,7 @@ export function UptimeBars({ days, label, className }: UptimeBarsProps) {
         const text =
           day.availability === null
             ? `${date} · pas de mesure`
-            : `${date} · ${formatPercent(day.availability * 100, day.availability < 1 ? 1 : 0)}${day.note ? ` · ${day.note}` : ''}`;
+            : `${date} · ${formatPercent(Math.floor(day.availability * 10_000) / 100, 2)}${day.note ? ` · ${day.note}` : ''}`;
         const measured = day.availability !== null;
         return (
           <li

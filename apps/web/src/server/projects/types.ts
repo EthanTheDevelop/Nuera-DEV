@@ -317,4 +317,17 @@ export interface ArchivePreviewView {
   endedSessions: number;
   /** Live sessions block the archive (stop them first). */
   liveSessions: number;
+  /**
+   * T8 option « Supprimer aussi le clone de VPS-3 (2,1 Go) »: whether a clone exists on the server
+   * (null = the runner did not answer, the option is then unavailable) and its disk space with its
+   * worktrees (null = not measured).
+   */
+  clone: { onDisk: boolean | null; sizeBytes: number | null };
+}
+
+/** Result of « Archiver » (the optional clone removal runs after the archive itself). */
+export interface ArchiveResultView {
+  archivedSessions: number;
+  /** null = not asked. */
+  clone: { removed: true; freedBytes: number | null } | { removed: false; message: string; untouched: string | null } | null;
 }

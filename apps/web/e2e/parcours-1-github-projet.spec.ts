@@ -131,6 +131,8 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     const name = flow.getByLabel('Nom dans Nuera Dev');
     // Prefilled from the repository name (« site-vitrine » → « Site Vitrine »), then renamed.
     await expect(name).toHaveValue('Site Vitrine', { timeout: 60_000 });
+    // Repository line: visibility, language, last push and the size GitHub reports (fake: the bare repository).
+    await expect(flow.getByText(/^(Privé|Public) · .+ · \d+(,\d)? (Ko|Mo|Go)$/)).toBeVisible();
     const projectName = `Site vitrine · ${device()}`;
     await name.fill(projectName);
     // Default destination = the leftover folder: the runner's live check says so before submitting.

@@ -6,7 +6,8 @@ import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import { audit } from '@/server/security/audit';
 import { LIVE_STATUSES, loadListItem, requireProjectRow } from './queries';
-import type { ArchivePreviewView, ProjectListItem } from './types';
+import { isRunnerUnavailable, runner, RunnerError } from '@/server/runner/client';
+import type { ArchivePreviewView, ArchiveResultView, ProjectListItem } from './types';
 
 type Actor = { id: string };
 
@@ -108,17 +109,43 @@ export async function getArchivePreview(projectId: string): Promise<ArchivePrevi
     })
     .from(sessions)
     .where(and(eq(sessions.projectId, projectId), ne(sessions.status, 'archived'), isNull(sessions.archivedAt)));
-  return { endedSessions: Number(row?.ended ?? 0), liveSessions: Number(row?.live ?? 0) };
+  return { endedSessions: Number(row?.ended ?? 0), liveSessions: Number(row?.live ?? 0), clone: await readCloneFootprint(projectId) };
 }
+
+/** Folders of the project on the server (primary clone + worktrees) and their measured size. */
+async function readCloneFootprint(projectId: string): Promise<ArchivePreviewView['clone']> {
+  try {
+    const { worktrees } = await runner.listWorktrees({ params: { projectId }, query: { sizes: true } }, { timeoutMs: 20_000 });
+    const present = worktrees.filter((worktree) => worktree.status === 'active');
+    if (present.length === 0) return { onDisk: false, sizeBytes: null };
+    let total = 0;
+    for (const worktree of present) {
+      if (worktree.sizeBytes === null || worktree.sizeBytes === undefined) return { onDisk: true, sizeBytes: null };
+      total += worktree.sizeBytes;
+    }
+    return { onDisk: true, sizeBytes: total };
+  } catch (error) {
+    // Runner down, or the folder already gone (NOT_FOUND / WORKTREE_MISSING): nothing to offer.
+    if (isRunnerUnavailable(error)) return { onDisk: null, sizeBytes: null };
+    return { onDisk: false, sizeBytes: null };
+  }
+}
+
+export const archiveProjectInputSchema = z
+  .object({
+    /** T8 option « Supprimer aussi le clone de VPS-3 »: the runner refuses if work exists only there. */
+    removeClone: z.boolean().default(false),
+  })
+  .optional();
 
 /**
  * Archives a project (T8 « Archiver … ? »): it leaves the list (« Archivés » keeps it), its ended
  * sessions are archived with it, the GitHub repository and the clone on VPS-3 are never touched.
  * Refused while a Claude session is live on it (CONFLICT, the dialog says why).
  */
-export async function archiveProject(projectId: string, actor: Actor): Promise<{ archivedSessions: number }> {
+export async function archiveProject(projectId: string, actor: Actor, options: { removeClone?: boolean } = {}): Promise<ArchiveResultView> {
   const project = await requireProjectRow(projectId);
-  if (project.archivedAt) return { archivedSessions: 0 };
+  if (project.archivedAt) return { archivedSessions: 0, clone: options.removeClone ? await removeProjectClone(project, actor) : null };
   if (project.status === 'cloning') throw new AppError('CONFLICT', 'Le clonage est en cours : attendez la fin pour archiver le projet.');
   const preview = await getArchivePreview(projectId);
   if (preview.liveSessions > 0) {
@@ -144,7 +171,38 @@ export async function archiveProject(projectId: string, actor: Actor): Promise<{
     metadata: { fullName: project.githubFullName, archivedSessions: archived },
     actorUserId: actor.id,
   });
-  return { archivedSessions: archived };
+  return { archivedSessions: archived, clone: options.removeClone ? await removeProjectClone(project, actor) : null };
+}
+
+/**
+ * Deletes the clone and the worktrees of an archived project from the server (runner `removeClone`:
+ * confined, refused while something runs or when work exists only there). Audited either way.
+ */
+async function removeProjectClone(project: { id: string; name: string; githubFullName: string }, actor: Actor): Promise<NonNullable<ArchiveResultView['clone']>> {
+  try {
+    const result = await runner.removeClone({ params: { projectId: project.id } });
+    await audit({
+      action: 'project.clone_removed',
+      summary: `clone de ${project.name} supprimé du serveur (${result.worktrees} worktree${result.worktrees > 1 ? 's' : ''} avec lui)`,
+      targetType: 'project',
+      targetId: project.id,
+      metadata: { fullName: project.githubFullName, operationId: result.operationId, freedBytes: result.freedBytes, worktrees: result.worktrees },
+      actorUserId: actor.id,
+    });
+    return { removed: true, freedBytes: result.freedBytes };
+  } catch (error) {
+    const appError = error instanceof AppError ? error : null;
+    const message = isRunnerUnavailable(error) ? 'Le runner ne répond pas : le clone est conservé.' : (appError?.message ?? "Le clone n'a pas pu être supprimé.");
+    await audit({
+      action: 'project.clone_remove_refused',
+      summary: `suppression du clone de ${project.name} refusée : ${message}`,
+      targetType: 'project',
+      targetId: project.id,
+      metadata: { fullName: project.githubFullName, reason: error instanceof RunnerError ? (error.reason ?? error.code) : error instanceof AppError ? error.code : 'UNKNOWN' },
+      actorUserId: actor.id,
+    });
+    return { removed: false, message, untouched: appError?.untouched ?? "Rien n'a été supprimé du disque." };
+  }
 }
 
 /** « Restaurer » from the « Archivés » chip (or A4 « Ouvrir le projet existant »). */

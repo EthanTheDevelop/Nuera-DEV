@@ -30,6 +30,12 @@ import { getAppSettings } from '@/server/settings';
  */
 
 const RESUMABLE_STATUSES = ['interrupted', 'stopped', 'failed'] as const satisfies readonly SessionStatus[];
+/**
+ * Ended statuses `claude --resume` accepts — the runner's rule (`resumable`: not live, not archived,
+ * worktree and journal present). A finished session can be resumed too (D06 menu « Reprendre »); it
+ * keeps its « Terminée » badge, and the « reprise » filters stay about interrupted conversations.
+ */
+const RESUME_STATUSES = [...RESUMABLE_STATUSES, 'finished'] as const satisfies readonly SessionStatus[];
 
 const columns = {
   id: sessions.id,
@@ -118,7 +124,7 @@ function worktreePresent(row: SessionRow): boolean {
 /** « Reprise possible » as far as the database can tell (the runner also checks the journal on disk). */
 export function resumableFromDatabase(row: SessionRow): boolean {
   return (
-    (RESUMABLE_STATUSES as readonly SessionStatus[]).includes(row.status) &&
+    (RESUME_STATUSES as readonly SessionStatus[]).includes(row.status) &&
     Boolean(row.transcriptPath) &&
     worktreePresent(row) &&
     !row.projectArchivedAt

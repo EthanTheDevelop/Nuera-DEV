@@ -1,6 +1,6 @@
 import 'server-only';
 import { mcpServers, projectMcpServers, projects } from '@nuera/db/schema';
-import type { McpAuthKind, McpStatus, McpTransport } from '@nuera/db/schema';
+import type { McpAuthKind, McpServerConfig, McpStatus, McpTransport } from '@nuera/db/schema';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
@@ -64,9 +64,47 @@ export function credentialSourceOf(row: Pick<McpServerRow, 'name' | 'authKind' |
   return 'none';
 }
 
+/**
+ * Header names that always carry a credential: never accepted as « non-secret » static headers
+ * (they belong in the encrypted secret headers, served by the headers helper).
+ */
+const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key']);
+
+export function isCredentialHeaderName(name: string): boolean {
+  return CREDENTIAL_HEADERS.has(name.trim().toLowerCase());
+}
+
+/** `mcp_servers.config`, read defensively (written by this module, but stored as free JSON). */
+export function readServerConfig(row: Pick<McpServerRow, 'config'>): Required<Pick<McpServerConfig, 'headers' | 'denyTools'>> & { presetId: string | null } {
+  const value = (row.config ?? {}) as McpServerConfig;
+  const headers: Record<string, string> = {};
+  if (value.headers && typeof value.headers === 'object') {
+    for (const [name, header] of Object.entries(value.headers)) {
+      if (typeof header === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(name) && !isCredentialHeaderName(name) && !/[\r\n]/.test(header)) headers[name] = header;
+    }
+  }
+  const denyTools = Array.isArray(value.denyTools) ? value.denyTools.filter((tool): tool is string => typeof tool === 'string' && MCP_TOOL_NAME.test(tool)) : [];
+  return { presetId: typeof value.presetId === 'string' ? value.presetId : null, headers, denyTools: [...new Set(denyTools)] };
+}
+
+/** Non-secret headers sent with every request: the stored ones, the preset's own winning (GitHub read-only). */
+export function staticHeadersOf(row: Pick<McpServerRow, 'name' | 'config'>): Record<string, string> {
+  return { ...readServerConfig(row).headers, ...(presetOf(row.name)?.staticHeaders ?? {}) };
+}
+
+/** Claude Code `permissions.deny` rules of the server: the preset's, plus the tools denied in its config. */
+export function denyRulesOf(row: Pick<McpServerRow, 'name' | 'config'>): string[] {
+  const rules = new Set(presetOf(row.name)?.denyRules ?? []);
+  for (const tool of readServerConfig(row).denyTools) rules.add(`mcp__${row.name}__${tool}`);
+  return [...rules];
+}
+
 // ---------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------
+
+/** MCP tool name as Claude Code writes it after `mcp__<server>__`. */
+const MCP_TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 
 export const mcpServerNameSchema = z
   .string()
@@ -75,6 +113,12 @@ export const mcpServerNameSchema = z
 
 const headerName = z.string().regex(/^[A-Za-z0-9-]{1,64}$/, "nom d'en-tête invalide");
 const headerValue = z.string().min(1).max(4096).regex(/^[^\r\n]*$/, "valeur d'en-tête invalide");
+/** Non-secret headers stored in clear in `mcp_servers.config` (credential headers refused). */
+const staticHeadersSchema = z
+  .record(headerName.refine((name) => !isCredentialHeaderName(name), 'en-tête secret : à enregistrer comme en-tête secret'), headerValue.max(1024))
+  .refine((value) => Object.keys(value).length <= 20, '20 en-têtes au plus');
+/** Tools of the server Claude must not call (session deny rules). */
+const denyToolsSchema = z.array(z.string().trim().regex(MCP_TOOL_NAME, "nom d'outil invalide")).max(100);
 
 const httpsUrl = z
   .url('adresse invalide')
@@ -105,6 +149,9 @@ export const createMcpServerInputSchema = z.discriminatedUnion('transport', [
     bearerToken: z.string().trim().min(1).max(4096).regex(/^[^\s]+$/, 'jeton invalide').optional(),
     /** authKind = header → secret headers (all stored encrypted). */
     headers: z.record(headerName, headerValue).optional(),
+    /** Non-secret headers (`mcp_servers.config.headers`). */
+    staticHeaders: staticHeadersSchema.optional(),
+    denyTools: denyToolsSchema.optional(),
   }),
   z.object({
     ...common,
@@ -117,6 +164,7 @@ export const createMcpServerInputSchema = z.discriminatedUnion('transport', [
       .regex(/^[A-Za-z0-9_./@:\\-]+$/, 'commande sans espace ni caractère spécial attendue'),
     args: z.array(z.string().max(4096)).max(50).default([]),
     authKind: z.literal('none').default('none'),
+    denyTools: denyToolsSchema.optional(),
   }),
 ]);
 export type CreateMcpServerInput = z.input<typeof createMcpServerInputSchema>;
@@ -134,6 +182,10 @@ export const updateMcpServerInputSchema = z.object({
   /** Replaces the secret headers (custom HTTP servers). `null` removes them. */
   bearerToken: z.string().trim().min(1).max(4096).regex(/^[^\s]+$/).nullable().optional(),
   headers: z.record(headerName, headerValue).nullable().optional(),
+  /** Replaces the non-secret headers (custom HTTP servers); `null` removes them. */
+  staticHeaders: staticHeadersSchema.nullable().optional(),
+  /** Replaces the tools denied to Claude (any server, presets included: it only narrows); `null` clears. */
+  denyTools: denyToolsSchema.nullable().optional(),
 });
 export type UpdateMcpServerInput = z.input<typeof updateMcpServerInputSchema>;
 
@@ -159,6 +211,7 @@ export async function ensurePresetServers(): Promise<void> {
       permissionsNote: preset.permissionsNote,
       isEnabled: true,
       status: 'unknown' as McpStatus,
+      config: { presetId: preset.id } satisfies McpServerConfig,
     };
   });
   await db.insert(mcpServers).values(rows).onConflictDoNothing({ target: mcpServers.name });
@@ -257,6 +310,7 @@ export function toServerView(
   const projectCount = activations.filter((item) => item.enabled).length;
   const displayStatus: McpStatus = !row.isEnabled || projectCount === 0 ? 'disabled' : row.status;
   const diagnostic = readDiagnostic(row);
+  const config = readServerConfig(row);
   const url = preset?.id === 'coolify' ? (options.coolifyBaseUrl ? `${options.coolifyBaseUrl}/mcp` : null) : row.url;
   return {
     id: row.id,
@@ -283,12 +337,17 @@ export function toServerView(
     scopeNote: row.scopeNote,
     permissionsNote: row.permissionsNote,
     permissions: preset?.permissions ?? [],
-    configurationLines: preset?.configurationLines ?? [
-      'configuration générée par Nuera Dev pour chaque session',
-      `transport : ${row.transport === 'stdio' ? 'stdio' : 'HTTP distant'}`,
-      `authentification : ${row.authKind === 'oauth' ? 'autorisation OAuth dans Claude Code' : row.secretKeys.length ? 'en-têtes chiffrés sur VPS-3' : 'aucune'}`,
+    configurationLines: [
+      ...(preset?.configurationLines ?? [
+        'configuration générée par Nuera Dev pour chaque session',
+        `transport : ${row.transport === 'stdio' ? 'stdio' : 'HTTP distant'}`,
+        `authentification : ${row.authKind === 'oauth' ? 'autorisation OAuth dans Claude Code' : row.secretKeys.length ? 'en-têtes chiffrés sur VPS-3' : 'aucune'}`,
+      ]),
+      // From `mcp_servers.config` (non-secret): fixed headers by name, tools refused to Claude.
+      ...(Object.keys(config.headers).length ? [`en-têtes fixes : ${Object.keys(config.headers).join(', ')}`] : []),
+      ...(config.denyTools.length ? [`outils refusés à Claude : ${config.denyTools.join(', ')}`] : []),
     ],
-    denyRules: preset?.denyRules ?? [],
+    denyRules: denyRulesOf(row),
     toolCount: diagnostic.tools.length ? diagnostic.tools.length : null,
     lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
     lastLatencyMs: row.lastLatencyMs,
@@ -438,6 +497,7 @@ export async function createMcpServer(input: CreateMcpServerInput, options: { ac
   if (data.transport === 'stdio') {
     values.command = data.command;
     values.args = data.args;
+    if (data.denyTools?.length) values.config = { denyTools: [...new Set(data.denyTools)] };
   } else {
     values.url = data.url;
     if (data.authKind === 'bearer' && !data.bearerToken) throw new AppError('VALIDATION', 'Jeton requis pour une authentification Bearer.');
@@ -447,6 +507,11 @@ export async function createMcpServer(input: CreateMcpServerInput, options: { ac
       headers: data.authKind === 'header' ? data.headers : undefined,
     });
     if (secrets) Object.assign(values, secrets);
+    const config: McpServerConfig = {
+      ...(data.staticHeaders && Object.keys(data.staticHeaders).length ? { headers: data.staticHeaders } : {}),
+      ...(data.denyTools?.length ? { denyTools: [...new Set(data.denyTools)] } : {}),
+    };
+    if (Object.keys(config).length) values.config = config;
   }
   const [row] = await db.insert(mcpServers).values(values).returning();
   if (!row) throw new AppError('INTERNAL', 'Création du serveur MCP impossible.');
@@ -470,12 +535,15 @@ export async function updateMcpServer(
   const row = await getMcpServerRow(idOrName);
   if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
   const preset = presetOf(row.name);
-  if (preset && (data.url !== undefined || data.command !== undefined || data.args !== undefined || data.bearerToken !== undefined || data.headers !== undefined)) {
+  if (
+    preset &&
+    (data.url !== undefined || data.command !== undefined || data.args !== undefined || data.bearerToken !== undefined || data.headers !== undefined || data.staticHeaders !== undefined)
+  ) {
     throw new AppError('VALIDATION', "La configuration d'un serveur intégré ne se modifie pas.", {
       detail: preset.credential === 'coolify_token' ? 'Pour Coolify, utilisez « Reconnecter ».' : undefined,
     });
   }
-  if (row.transport === 'stdio' && (data.url !== undefined || data.bearerToken !== undefined || data.headers !== undefined)) {
+  if (row.transport === 'stdio' && (data.url !== undefined || data.bearerToken !== undefined || data.headers !== undefined || data.staticHeaders !== undefined)) {
     throw new AppError('VALIDATION', "Un serveur stdio n'a ni adresse ni en-têtes.");
   }
   if (row.transport !== 'stdio' && (data.command !== undefined || data.args !== undefined)) {
@@ -485,6 +553,20 @@ export async function updateMcpServer(
   for (const key of ['label', 'description', 'icon', 'url', 'command', 'args', 'scopeNote', 'permissionsNote', 'isEnabled'] as const) {
     if (data[key] !== undefined) (patch as Record<string, unknown>)[key] = data[key];
   }
+  if (data.staticHeaders !== undefined || data.denyTools !== undefined) {
+    const current = readServerConfig(row);
+    const next: McpServerConfig = { ...(row.config ?? {}) };
+    if (data.staticHeaders !== undefined) {
+      if (data.staticHeaders && Object.keys(data.staticHeaders).length) next.headers = data.staticHeaders;
+      else delete next.headers;
+    }
+    if (data.denyTools !== undefined) {
+      if (data.denyTools?.length) next.denyTools = [...new Set(data.denyTools)];
+      else delete next.denyTools;
+    }
+    if (current.presetId && !next.presetId) next.presetId = current.presetId;
+    patch.config = next;
+  }
   const secrets = secretPayload({ bearerToken: data.bearerToken, headers: data.headers });
   if (secrets) {
     Object.assign(patch, secrets);
@@ -493,7 +575,7 @@ export async function updateMcpServer(
   }
   if (Object.keys(patch).length === 0) return getMcpServer(row.id);
   // A changed endpoint or credential invalidates the last diagnostic.
-  if (patch.url !== undefined || patch.command !== undefined || patch.args !== undefined || secrets) patch.status = 'unknown';
+  if (patch.url !== undefined || patch.command !== undefined || patch.args !== undefined || secrets || data.staticHeaders !== undefined) patch.status = 'unknown';
   await db.update(mcpServers).set(patch).where(eq(mcpServers.id, row.id));
   await audit({
     action: secrets ? 'integration.mcp.credentials_updated' : 'integration.mcp.updated',

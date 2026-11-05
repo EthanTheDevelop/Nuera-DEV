@@ -15,7 +15,7 @@ import 'server-only';
  */
 
 export { getGitAuthForRepo, getOctokitForRepo, getRepoCredential, getGithubMode, REPO_READ_PERMISSIONS } from './access';
-export { listAccessibleRepos, getRepo, listBranches } from './repos';
+export { listAccessibleRepos, getRepo, listBranches, listProtectedBranches } from './repos';
 export { createPullRequest, createPullRequestInputSchema, getPullRequest, deriveChecksState, deriveReviewsState } from './pulls';
 export { getGithubStatus, checkGithub, disconnectGithub, summarizePermissions, GITHUB_IMPACT } from './status';
 export {

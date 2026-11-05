@@ -4,6 +4,7 @@
  */
 import type { PermissionMode } from '@nuera/db/schema';
 import {
+  formatBytes,
   formatDuration,
   formatPercent,
   formatRelative,
@@ -402,13 +403,11 @@ export function serverBadge(health: RunnerHealthView | null, unavailable: boolea
   return { tone: 'success', label: 'En ligne' };
 }
 
-const AVAILABILITY_FORMAT = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
-
 /** `99,95 %` (two decimals at most, as in Figma). */
 export function formatAvailability(percent: number | null): string {
   if (percent === null) return '—';
   const value = Math.floor(percent * 100) / 100;
-  return `${AVAILABILITY_FORMAT.format(value).replace(/[\u00a0\u202f]/g, ' ')} %`;
+  return formatPercent(value, 2);
 }
 
 /** Bars of `UptimeBars` (0–1 ratios; incident days drawn warn). */
@@ -451,7 +450,24 @@ function lowerFirst(text: string): string {
 export function staleWorktreesCaption(view: StaleWorktreesView): string {
   const count = view.items.length;
   if (count === 0) return `aucun worktree sans session depuis ${plural(view.staleDays, 'jour')}`;
-  return `${plural(count, 'worktree')} sans session depuis ${plural(view.staleDays, 'jour')}`;
+  const size = totalSize(view.items);
+  return `${plural(count, 'worktree')} sans session depuis ${plural(view.staleDays, 'jour')}${size === null ? '' : ` · ${formatBytes(size)}`}`;
+}
+
+/** Sum of measured sizes; null when one of them is unknown (no partial total shown as a measure). */
+export function totalSize(items: ReadonlyArray<{ sizeBytes: number | null }>): number | null {
+  let total = 0;
+  for (const item of items) {
+    if (item.sizeBytes === null) return null;
+    total += item.sizeBytes;
+  }
+  return total;
+}
+
+/** T8 « Libère 1,8 Go sur VPS-3. » (null when a selected size is unknown or nothing is selected). */
+export function freedSpaceText(items: ReadonlyArray<{ sizeBytes: number | null }>, serverName: string): string | null {
+  const size = items.length > 0 ? totalSize(items) : null;
+  return size === null ? null : `Libère ${formatBytes(size)} sur ${serverName}.`;
 }
 
 /** `Supprimer 2 worktrees` (the count follows the selected eligible items). */
@@ -478,6 +494,7 @@ export const OPERATION_KIND_LABELS: Record<string, string> = {
   branch_create: 'Création de branche',
   worktree_create: 'Création de worktree',
   worktree_remove: 'Suppression de worktree',
+  clone_remove: 'Suppression du clone',
   pr_create: 'Pull request',
   install: 'Installation',
   archive: 'Archivage',

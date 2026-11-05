@@ -208,6 +208,33 @@ describe('tokens', () => {
   });
 });
 
+describe('protected branches', () => {
+  it('adds the default branch, caches a minute, reads again for a push and falls back on failure', async () => {
+    const { listProtectedBranches } = await import('./repos');
+    let calls = 0;
+    const listImpl = async () => {
+      calls += 1;
+      return [
+        { name: 'main', sha: 'a', protected: true },
+        { name: 'release', sha: 'b', protected: true },
+        { name: 'feature/x', sha: 'c', protected: false },
+      ];
+    };
+    const repo = `nuera-studio/protected-${Date.now()}`;
+    expect(await listProtectedBranches(repo, 'main', { listImpl })).toEqual(['main', 'release']);
+    expect(await listProtectedBranches(repo, 'main', { listImpl })).toEqual(['main', 'release']);
+    expect(calls).toBe(1);
+    expect(await listProtectedBranches(repo, 'main', { listImpl, maxAgeMs: 0 })).toEqual(['main', 'release']);
+    expect(calls).toBe(2);
+    const failing = async () => {
+      throw new Error('GitHub injoignable');
+    };
+    // Known list kept when GitHub fails; an unknown repository falls back to its default branch.
+    expect(await listProtectedBranches(repo, 'main', { listImpl: failing, maxAgeMs: 0 })).toEqual(['main', 'release']);
+    expect(await listProtectedBranches(`${repo}-autre`, 'develop', { listImpl: failing })).toEqual(['develop']);
+  });
+});
+
 describe('pull requests', () => {
   it('creates a pull request with a pull_requests:write token and reads it with its checks', async () => {
     await connectApp();

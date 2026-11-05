@@ -279,6 +279,7 @@ export function applySessionStatus(items: readonly HomeSession[], event: Session
   if (pendingChanged && event.pendingPermissionId) return null;
   const next: HomeSession = {
     ...current,
+    title: event.title ?? current.title,
     status: event.status,
     live: event.live,
     currentActivity: event.currentActivity,

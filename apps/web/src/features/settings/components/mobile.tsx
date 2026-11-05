@@ -2,6 +2,7 @@
 
 import { useId, useState } from 'react';
 import type { PermissionMode } from '@nuera/db/schema';
+import { formatBytes } from '@nuera/shared/format';
 import { Icon } from '@/components/icons';
 import { Sheet, SheetContent } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
@@ -19,6 +20,7 @@ import {
   permissionModeShort,
   serverBadge,
   serviceRows,
+  totalSize,
 } from '../lib/copy';
 import { SECTION_IDS, type SettingsTab } from '../lib/tabs';
 import { MobileGroup, MobileRow } from './parts';
@@ -58,6 +60,8 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
     .filter(Boolean)
     .join(' · ');
   const stale = data.worktrees.ok ? data.worktrees.data.items.length : null;
+  // M08 « 2,4 Go » when every size is measured, else the count.
+  const staleSize = data.worktrees.ok && stale ? totalSize(data.worktrees.data.items) : null;
   const claudeUnavailable = !claude && !data.claude.ok && data.claude.error.unavailable;
 
   return (
@@ -101,7 +105,7 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
           iconTone="danger"
           label="Nettoyer les worktrees inactifs"
           labelTone="danger"
-          value={stale === null ? null : String(stale)}
+          value={stale === null ? null : staleSize !== null ? formatBytes(staleSize) : String(stale)}
           onClick={() => setCleanOpen(true)}
           disabled={stale === null || stale === 0}
           sublabel={stale === 0 ? 'aucun worktree inactif' : stale === null ? 'worktrees illisibles' : undefined}

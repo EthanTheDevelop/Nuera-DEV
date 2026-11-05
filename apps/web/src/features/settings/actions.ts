@@ -18,11 +18,13 @@ import {
   getAccountView,
   getClaudeCli,
   getJournalPage,
+  getLiveSessions,
   getOperationLog,
   getPasskeys,
   listOperationLogs,
   listSessionLogs,
   listStaleWorktrees,
+  load,
   removeStaleWorktrees,
   updateSettings,
 } from '@/server/preferences';
@@ -33,6 +35,7 @@ import type {
   AccountView,
   ClaudeCliView,
   JournalPage,
+  LiveStatusView,
   OperationLogItem,
   PasskeyView,
   RemoveWorktreesResult,
@@ -195,6 +198,19 @@ export async function reauthenticateAction(): Promise<void> {
 }
 
 // --- Serveur / maintenance ---------------------------------------------------------------------
+
+/**
+ * The part of the page a session status change moves (live Claude processes of the « Services »
+ * list, eligibility of the inactive worktrees): re-read on `session.status` instead of the page.
+ */
+export async function loadLiveStatusAction(): Promise<ActionResult<LiveStatusView>> {
+  return run(async () => {
+    const user = await guard();
+    assertRateLimit('settings:live-status', user.id, { limit: 60, windowMs: 60_000 });
+    const [liveSessions, worktrees] = await Promise.all([load(() => getLiveSessions()), load(() => listStaleWorktrees())]);
+    return { liveSessions, worktrees };
+  });
+}
 
 export async function loadStaleWorktreesAction(): Promise<ActionResult<StaleWorktreesView>> {
   return run(async () => {

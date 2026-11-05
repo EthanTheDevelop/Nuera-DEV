@@ -168,6 +168,8 @@ export interface StaleWorktree {
   /** Eligible = no live session and no uncommitted change (excluded d'office otherwise). */
   eligible: boolean;
   excludedReason: string | null;
+  /** Disk space measured by the runner (like `du -s`); null = not measured. */
+  sizeBytes: number | null;
 }
 
 export interface StaleWorktreesView {
@@ -219,6 +221,12 @@ export interface PushView {
   publicKey: string | null;
   reason: string | null;
   devices: PushDeviceView[];
+}
+
+/** Sections of the page that follow the session statuses (`loadLiveStatusAction`). */
+export interface LiveStatusView {
+  liveSessions: Load<LiveSessionsView>;
+  worktrees: Load<StaleWorktreesView>;
 }
 
 export interface SettingsPageData {

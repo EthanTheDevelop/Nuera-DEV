@@ -30,6 +30,7 @@ import {
   getMcpServer,
   getMcpServerRow,
   readDiagnostic,
+  staticHeadersOf,
   type McpDiagnosticRecord,
   type McpServerRow,
   type McpServerView,
@@ -259,7 +260,7 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
     } else {
       const probe = await probeMcpServer({
         url,
-        headers: { ...(preset?.staticHeaders ?? {}), ...credential.headers },
+        headers: { ...staticHeadersOf(row), ...credential.headers },
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       });
       steps.push(...probe.steps);

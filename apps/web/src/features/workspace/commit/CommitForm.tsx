@@ -1,32 +1,10 @@
 'use client';
 
 import { ChangedFileRow, formatLineDelta, toChangeStatus } from '@/components/dev';
-import { Icon } from '@/components/icons';
-import { ErrorPanel, Field, Input, LinkButton, Switch, Textarea } from '@/components/ui';
+import { Checkbox, ErrorPanel, Field, Input, LinkButton, Switch, Textarea } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { useId } from 'react';
 import type { CommitFlow } from './useCommitFlow';
-
-/** W5 `Case` (18 × 18, accent when checked), 44 px hit area. */
-function Checkbox({ checked, onChange, label, disabled }: { checked: boolean; onChange: () => void; label: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onChange}
-      className={cn(
-        'nu-hit inline-flex size-[18px] shrink-0 items-center justify-center rounded-[6px] border transition-colors duration-(--dur-fast)',
-        checked ? 'border-accent bg-accent text-on-accent' : 'border-border bg-bg',
-        'disabled:cursor-not-allowed disabled:opacity-40',
-      )}
-    >
-      {checked ? <Icon name="check" size={12} /> : null}
-    </button>
-  );
-}
 
 function OptionRow({
   title,
@@ -96,7 +74,7 @@ export function CommitForm({ flow, variant }: { flow: CommitFlow; variant: 'dial
                     additions={file.insertions}
                     deletions={file.deletions}
                     binary={file.binary}
-                    leading={<Checkbox checked={checked} onChange={() => flow.toggleFile(file.path)} label={`Inclure ${file.path}`} disabled={busy} />}
+                    leading={<Checkbox checked={checked} onCheckedChange={() => flow.toggleFile(file.path)} aria-label={`Inclure ${file.path}`} disabled={busy} />}
                   />
                 </li>
               );

@@ -12,8 +12,7 @@ export default async function ShellLayout({ children }: { children: ReactNode })
   const user = await requireUser();
   const shell = await getShellData(user);
   return (
-    <AppShell data={shell} variant="sidebar">
-      <GlobalSearch />
+    <AppShell data={shell} variant="sidebar" globals={<GlobalSearch />}>
       {children}
     </AppShell>
   );

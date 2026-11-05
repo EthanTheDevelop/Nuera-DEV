@@ -11,14 +11,11 @@ import { E2E_BASE_URL, E2E_DATABASE_URL, expect, test } from './fixtures';
  *
  * Needs a stack whose runner uses the TEST-ONLY fake CLI (NUERA_CLAUDE_BIN =
  * apps/runner/test/fixtures/fake-claude.mjs, NUERA_SESSION_BACKEND=pty), the web server pointing
- * at it (RUNNER_URL / RUNNER_TOKEN) and, for the shell test, NUERA_PROJECTS_ROOT = the runner's
- * projects root (the worktree folder is created there and seeded in the e2e database).
+ * at it (RUNNER_URL / RUNNER_TOKEN). The shell test creates its worktree folder under the stack's
+ * projects root (`stack.paths.projects`, the runner's NUERA_PROJECTS_ROOT) and seeds it in the e2e
+ * database. The local test stack provides all of it:
  *
- *   E2E_STACK=terminal E2E_WEB_PORT=3202 NUERA_PROJECTS_ROOT=<racine des projets du runner> \
- *     pnpm --filter @nuera/web e2e terminal.spec.ts
- *
- * Without NUERA_PROJECTS_ROOT the shell test is skipped. Verified against a runner started from
- * source (pty backend, fake CLI) and `next dev`: 12/12 on the desktop and mobile projects.
+ *   node apps/web/e2e/harness/stack.mjs up && E2E_STACK=e2e pnpm --filter @nuera/web e2e terminal.spec.ts
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -256,11 +253,9 @@ test('la connexion à Claude Code se fait dans le terminal : lien ouvert dans un
   await expect(dialog).toBeHidden();
 });
 
-test("un shell s'ouvre dans un worktree actif et exécute ce qu'on y tape", async ({ page }) => {
-  const projectsRoot = process.env.NUERA_PROJECTS_ROOT;
-  test.skip(!projectsRoot, 'NUERA_PROJECTS_ROOT (racine des projets du runner de la pile) est nécessaire pour créer le worktree de test.');
+test("un shell s'ouvre dans un worktree actif et exécute ce qu'on y tape", async ({ page, stack }) => {
   const worktreeName = 'terminal-e2e';
-  const folder = path.resolve(projectsRoot!, worktreeName);
+  const folder = path.resolve(stack.paths.projects, worktreeName);
   mkdirSync(folder, { recursive: true });
   const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'nuera-e2e-terminal' });
   try {

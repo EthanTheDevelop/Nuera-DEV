@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { apiRoute } from '@/server/http';
-import { archiveProject, getProjectDetail, patchProjectInputSchema, updateProject, withProjectErrors } from '@/server/projects';
+import { archiveProject, archiveProjectInputSchema, getProjectDetail, patchProjectInputSchema, updateProject, withProjectErrors } from '@/server/projects';
 
 /**
  * GET /api/projects/[projectId] — everything D04 / M04 shows (runner parts degrade on their own).
  * PATCH — { favorite?, name?, commands?, options? } (audited except the favourite star).
- * DELETE — archives the project (T8 « Archiver … ? »): ended sessions archived with it, GitHub
- * repository and clone untouched; 409 while a Claude session is live on it.
+ * DELETE — { removeClone? } archives the project (T8 « Archiver … ? »): ended sessions archived with
+ * it, GitHub repository untouched; 409 while a Claude session is live on it. With `removeClone`, the
+ * clone and its worktrees are then deleted from the server (refused, and reported in `clone`, when
+ * work exists only there).
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,5 +29,7 @@ export const PATCH = apiRoute({
 
 export const DELETE = apiRoute({
   params,
-  handler: ({ params: { projectId }, user }) => withProjectErrors(() => archiveProject(projectId, user)),
+  body: archiveProjectInputSchema,
+  maxBodyBytes: 1024,
+  handler: ({ params: { projectId }, body, user }) => withProjectErrors(() => archiveProject(projectId, user, { removeClone: body?.removeClone ?? false })),
 });

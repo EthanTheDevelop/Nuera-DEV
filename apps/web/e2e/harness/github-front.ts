@@ -6,7 +6,7 @@
  *                  · a STABLE app key per stack (persisted): JWTs signed with it are re-signed for
  *                    the inner fake, whose key changes at every start;
  *                  · installation tokens and pull requests persisted across restarts;
- *                  · branches, `pushed_at` and PR head SHAs read from the REAL bare repositories;
+ *                  · branches, `pushed_at`, `size` (Ko) and PR head SHAs read from the REAL bare repositories;
  *   /settings/apps/new, /organizations/:org/settings/apps/new
  *                  github.com « Create GitHub App » (GITHUB_WEB_URL): confirms at once and redirects
  *                  to the manifest's `redirect_url` with a one-time conversion code;
@@ -16,13 +16,31 @@
  *                  installation, checks/statuses/reviews of pull requests).
  */
 import { createSign, createVerify, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { addInstallation, startFakeGithub, type FakeGithub, type IssuedToken } from '../../src/server/github/test/fake-github';
 import { listBareBranches, readBareContents } from './fixture-repos';
 import type { FixtureAccount, FixtureRepoState } from './state';
+
+/** Size of a bare repository on disk, in kilobytes like GitHub's `size` (D03 « 84 Mo »). */
+export function bareSizeKb(bare: string): number {
+  let bytes = 0;
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) bytes += statSync(full).size;
+    }
+  };
+  try {
+    walk(bare);
+  } catch {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(bytes / 1024));
+}
 
 export const FULL_PERMISSIONS = { contents: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read', issues: 'read' };
 
@@ -265,6 +283,22 @@ export async function startFakeGithubFront(config: FakeGithubConfig): Promise<Fa
         }));
         text = JSON.stringify(json);
       }
+    }
+    // Repository size (Ko), read from the bare repository: D03 shows it next to the visibility.
+    if (method === 'GET' && (match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(apiPath)) && upstream.status === 200 && json && typeof json === 'object') {
+      const repo = repoOf(match[1]!, match[2]!);
+      if (repo) {
+        (json as { size?: number }).size = bareSizeKb(repo.bare);
+        text = JSON.stringify(json);
+      }
+    }
+    if (method === 'GET' && apiPath === '/installation/repositories' && upstream.status === 200 && json && typeof json === 'object') {
+      const list = (json as { repositories?: Array<{ name: string; owner?: { login?: string }; size?: number }> }).repositories ?? [];
+      for (const item of list) {
+        const repo = item.owner?.login ? repoOf(item.owner.login, item.name) : null;
+        if (repo) item.size = bareSizeKb(repo.bare);
+      }
+      text = JSON.stringify(json);
     }
     if (method === 'POST' && (match = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(apiPath)) && upstream.status === 201 && json && typeof json === 'object') {
       const repo = repoOf(match[1]!, match[2]!);

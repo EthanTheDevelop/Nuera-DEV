@@ -4,6 +4,7 @@ import {
   claudeBadge,
   formatAvailability,
   formatIn,
+  freedSpaceText,
   formatJournalDate,
   liveSessionsCaption,
   modelOptions,
@@ -154,6 +155,27 @@ describe('Serveur copy', () => {
     expect(removeWorktreesLabel(2)).toBe('Supprimer 2 worktrees');
     expect(removeWorktreesTitle(2)).toBe('Supprimer 2 worktrees inactifs ?');
     expect(removeWorktreesTitle(1)).toBe('Supprimer 1 worktree inactif ?');
+  });
+
+  it('shows measured sizes only when every one is known (D08 « · 2,4 Go », T8 « Libère 1,8 Go sur VPS-3. »)', () => {
+    const item = (sizeBytes: number | null) => ({
+      id: crypto.randomUUID(),
+      name: 'w',
+      branch: 'b',
+      projectId: 'p',
+      projectName: 'P',
+      lastActivityAt: '2026-10-01T10:00:00.000Z',
+      dirtyFiles: 0,
+      eligible: true,
+      excludedReason: null,
+      sizeBytes,
+    });
+    const GB = 1024 ** 3;
+    expect(staleWorktreesCaption({ staleDays: 30, items: [item(1.4 * GB), item(1 * GB), item(0)], unreadable: [] })).toBe('3 worktrees sans session depuis 30 jours · 2,4 Go');
+    expect(staleWorktreesCaption({ staleDays: 30, items: [item(1.4 * GB), item(null)], unreadable: [] })).toBe('2 worktrees sans session depuis 30 jours');
+    expect(freedSpaceText([item(0.8 * GB), item(1 * GB)], 'VPS-3')).toBe('Libère 1,8 Go sur VPS-3.');
+    expect(freedSpaceText([item(0.8 * GB), item(null)], 'VPS-3')).toBeNull();
+    expect(freedSpaceText([], 'VPS-3')).toBeNull();
   });
 });
 

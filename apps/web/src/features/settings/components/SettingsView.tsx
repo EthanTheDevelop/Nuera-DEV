@@ -54,12 +54,13 @@ export function SettingsView({ data }: { data: SettingsPageData }) {
 function SettingsPage() {
   const params = useSearchParams();
   const tab = parseSettingsTab(params.get('onglet'));
-  const { data, refresh, openLogin } = useSettings();
+  const { data, refresh, refreshLive, openLogin } = useSettings();
   const firstName = data.owner.name.trim().split(/\s+/)[0] ?? data.owner.name;
 
   useLiveEvent('claude.status', () => refresh());
   useLiveEvent('stream.reset', () => refresh());
-  useLiveEvent('session.status', () => refresh());
+  // A session status only moves the live sections (Services, inactive worktrees): targeted re-read.
+  useLiveEvent('session.status', () => refreshLive());
 
   const setTab = useCallback((next: SettingsTab, section?: string) => {
     writeUrl({ onglet: next === DEFAULT_SETTINGS_TAB ? null : next, action: null }, 'push', section ?? null);

@@ -6,8 +6,8 @@ import { claudeLoginTerminal, claudeStatusTerminal, useTerminalLauncher, type Te
 import { useOptionalShellData } from '@/components/shell';
 import { toast } from '@/components/ui';
 import { useNow } from '@/hooks/useNow';
-import { refreshClaudeStatusAction, updateSettingsAction } from '../actions';
-import type { ClaudeCliView, SettingsPageData, SettingsValues } from '../lib/types';
+import { loadLiveStatusAction, refreshClaudeStatusAction, updateSettingsAction } from '../actions';
+import type { ClaudeCliView, LiveStatusView, SettingsPageData, SettingsValues } from '../lib/types';
 
 /**
  * Shared state of Paramètres: the server snapshot, an optimistic copy of the settings (save on
@@ -34,6 +34,8 @@ export interface SettingsContextValue {
   /** Last « Actualiser » / « Vérifier » failure (French), null after a successful read. */
   claudeRefreshError: string | null;
   refresh: () => void;
+  /** Re-reads only the sections that follow the session statuses (no page refresh). */
+  refreshLive: () => void;
 }
 
 const Context = createContext<SettingsContextValue | null>(null);
@@ -44,8 +46,14 @@ export function useSettings(): SettingsContextValue {
   return value;
 }
 
-export function SettingsProvider({ data, children }: { data: SettingsPageData; children: ReactNode }) {
+export function SettingsProvider({ data: snapshotData, children }: { data: SettingsPageData; children: ReactNode }) {
   const router = useRouter();
+  // Live sections re-read after a session status change, until the next server snapshot replaces them.
+  const [live, setLive] = useState<{ snapshot: SettingsPageData; view: LiveStatusView } | null>(null);
+  const data = useMemo(
+    () => (live && live.snapshot === snapshotData ? { ...snapshotData, ...live.view } : snapshotData),
+    [live, snapshotData],
+  );
   const shell = useOptionalShellData();
   const serverName = data.settings.serverName || shell?.server.name || 'VPS-3';
   const now = useNow(30_000, Date.parse(data.now));
@@ -75,6 +83,31 @@ export function SettingsProvider({ data, children }: { data: SettingsPageData; c
   }, [router]);
   useEffect(() => () => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
+  }, []);
+
+  const snapshotRef = useRef(snapshotData);
+  useEffect(() => {
+    snapshotRef.current = snapshotData;
+  }, [snapshotData]);
+  const liveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLive = useRef(0);
+  const refreshLive = useCallback(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    if (liveTimer.current) return;
+    const wait = Math.max(0, lastLive.current + 1500 - Date.now());
+    liveTimer.current = setTimeout(() => {
+      liveTimer.current = null;
+      lastLive.current = Date.now();
+      const readFor = snapshotRef.current;
+      void loadLiveStatusAction()
+        .then((result) => {
+          if (result.ok && snapshotRef.current === readFor) setLive({ snapshot: readFor, view: result.data });
+        })
+        .catch(() => undefined); // the server does not answer: the sections keep their last state
+    }, wait);
+  }, []);
+  useEffect(() => () => {
+    if (liveTimer.current) clearTimeout(liveTimer.current);
   }, []);
 
   const save = useCallback(
@@ -162,8 +195,9 @@ export function SettingsProvider({ data, children }: { data: SettingsPageData; c
       refreshingClaude,
       claudeRefreshError,
       refresh,
+      refreshLive,
     }),
-    [data, settings, save, pending, errorFor, now, serverName, terminal, claude, openLogin, openStatus, refreshClaude, refreshingClaude, claudeRefreshError, refresh],
+    [data, settings, save, pending, errorFor, now, serverName, terminal, claude, openLogin, openStatus, refreshClaude, refreshingClaude, claudeRefreshError, refresh, refreshLive],
   );
 
   return (

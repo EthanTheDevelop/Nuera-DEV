@@ -3,6 +3,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import { Icon } from '@/components/icons';
 import {
+  Checkbox,
   Avatar,
   Badge,
   Banner,
@@ -635,7 +636,7 @@ function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             <SecretField autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} />
           </Field>
           <label htmlFor={checkboxId} className="flex min-h-11 cursor-pointer items-center gap-2.5 font-sans text-app-13 text-text">
-            <input id={checkboxId} type="checkbox" checked={closeOthers} onChange={(e) => setCloseOthers(e.target.checked)} className="size-[18px] accent-(--accent)" />
+            <Checkbox id={checkboxId} checked={closeOthers} onCheckedChange={setCloseOthers} />
             Fermer les autres accès ouverts
           </label>
           {error ? (
