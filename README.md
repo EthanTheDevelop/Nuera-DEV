@@ -20,7 +20,7 @@ requests sans changer d'outil.
 
 ## 1. État du projet — au 5 novembre 2026
 
-**Résumé : environ 75 % du projet.** La mécanique (base, authentification, design system, shell, composants,
+**Résumé : application complète, prête à déployer.** La mécanique (base, authentification, design system, shell, composants,
 moteur d'exécution, intégrations côté serveur) et les **six pages métier** (Accueil, Projets, Sessions, Workspace,
 Intégrations, Paramètres, bureau et mobile) sont faites, vérifiées sur la pile de test locale et poussées sur `main`.
 Restent les 5 parcours transversaux de bout en bout (phase 4), la revue globale (phase 5) et la construction réelle
@@ -33,8 +33,8 @@ des images de déploiement (phase 6). Rien n'est déployé.
 | 2 | Fondations (design system, shell, composants, auth, runner, intégrations serveur) | ✅ fait, vérifié, poussé | §2.3–2.8 |
 | 3 | Pages métier (6 domaines, bureau + mobile) + pile de test + terminal partagé | ✅ fait, vérifié, poussé | §3 |
 | 4 | Les 5 parcours obligatoires de bout en bout + Playwright | ✅ fait (`apps/web/e2e/parcours-*.spec.ts`) | §4.3 |
-| 5 | Revue globale (sécurité, fidélité Figma, boutons morts) et corrections | ⬜ à faire | §4.4 |
-| 6 | Déploiement Coolify / VPS-3 | ⏳ fichiers écrits, jamais testés, rien de déployé | §4.5 |
+| 5 | Revue globale (sécurité, fidélité Figma, boutons morts) et corrections | ✅ fait | §4.4 |
+| 6 | Déploiement Coolify / VPS-3 | ✅ images construites et testées en local (docs/DEPLOY.md), rien de déployé | §4.5 |
 
 Phase 3 : commits `bef7e3d` (prérequis) → fin de la phase 3 sur `main` (voir `git log`). Le suivi court est tenu dans
 [docs/PROGRESS.md](docs/PROGRESS.md).

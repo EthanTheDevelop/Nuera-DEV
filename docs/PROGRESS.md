@@ -11,8 +11,8 @@
 | 2 | Fondations : UI kit + shell, composants Nuera Dev, auth/sécurité, runner (Git/PTY/sessions), intégrations serveur | ✅ |
 | 3 | Domaines : Accueil, Projets, Workspace, Sessions, Intégrations, Paramètres (bureau + mobile) + pile de test + terminal | ✅ |
 | 4 | Parcours transversaux de bout en bout + tests Playwright (`e2e/parcours-1…5`) | ✅ |
-| 5 | Revue (sécurité, fidélité Figma, boutons morts), corrections | ⬜ |
-| 6 | Déploiement Coolify/VPS-3 prêt (Dockerfiles, compose, sauvegardes, DEPLOY.md) | ⏳ (fichiers prêts, non déployé) |
+| 5 | Revue (sécurité, fidélité Figma, boutons morts), corrections | ✅ |
+| 6 | Déploiement Coolify/VPS-3 prêt (Dockerfiles, compose, sauvegardes, DEPLOY.md) | ✅ images construites et testées en local, non déployé |
 
 ## Lots du jalon 2 (intégrés)
 
