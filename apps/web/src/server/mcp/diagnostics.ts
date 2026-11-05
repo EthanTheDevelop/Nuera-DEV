@@ -187,7 +187,8 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
   if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
   if (trigger === 'manual') {
     const map = (lastManualChecks.__nueraMcpLastManual ??= new Map());
-    if (Date.now() - (map.get(row.id) ?? 0) < 10_000) return getMcpServer(row.id);
+    // A replaced secret or address resets the status to `unknown`: that test always runs.
+    if (row.status !== 'unknown' && Date.now() - (map.get(row.id) ?? 0) < 10_000) return getMcpServer(row.id);
     map.set(row.id, Date.now());
   }
 

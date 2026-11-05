@@ -196,6 +196,27 @@ describe('diagnostics', () => {
     }
   });
 
+  it('runs the manual test right after a failed one when the secret has just been replaced', async () => {
+    const server = await startFakeMcp({ expectedAuthorization: 'Bearer lin_token_0123456789', tools: ['list_issues'] });
+    try {
+      const { createMcpServer, setProjectMcpServer, updateMcpServer } = await import('./registry');
+      const { checkMcpServer } = await import('./diagnostics');
+      const project = await createProject();
+      await createMcpServer({ name: 'linear', label: 'Linear', transport: 'http', url: server.url, authKind: 'bearer', bearerToken: 'lin_token_0123456789' });
+      await setProjectMcpServer({ projectId: project.id, serverIdOrName: 'linear', enabled: true });
+      expect((await checkMcpServer('linear')).status).toBe('connected');
+      server.state.expectedAuthorization = 'Bearer lin_rotated_0123456789';
+      // Within 10 s of the previous manual test: the same credential is not re-tested…
+      expect((await checkMcpServer('linear')).status).toBe('connected');
+      // …but a replaced secret is (otherwise « Reconnecter » would keep the stale state).
+      await updateMcpServer('linear', { bearerToken: 'lin_rotated_0123456789' });
+      expect((await checkMcpServer('linear')).status).toBe('connected');
+      expect(server.state.receivedHeaders.at(-1)?.authorization).toBe('Bearer lin_rotated_0123456789');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('reads OAuth and stdio servers through `claude mcp get` (runner), syncing the user scope first', async () => {
     const reach = await startFakeMcp({ expectedAuthorization: 'Bearer oauth-only', tools: [] });
     try {
