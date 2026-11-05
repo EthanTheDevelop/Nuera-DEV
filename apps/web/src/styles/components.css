@@ -1,0 +1,297 @@
+/* =============================================================================
+   Component-level CSS that Tailwind utilities cannot express cleanly:
+   the DS Button lift, hit areas, overlay enter/exit animations, skeleton shimmer.
+   Values come from tokens.css only. Every animation has a prefers-reduced-motion version.
+   ============================================================================= */
+
+@layer components {
+  /* ---------------------------------------------------------------------------
+     Button (DS « 06 · Bouton », component set 7:117)
+     « Deux éléments : un socle near-black et une face levée de 0.22em au-dessus. Au survol la face
+       monte à 0.38em, au clic elle redescend à 0.04em. Texte en Outfit 700, 15 px, rayon 12. »
+     .nu-btn = socle (Edge) ; the outer margin reserves the max lift so the box stays ≈ 54 px.
+     --------------------------------------------------------------------------- */
+  .nu-btn {
+    --btn-face: var(--paper);
+    --btn-label: var(--btn-edge);
+    --btn-lift: var(--btn-lift-rest);
+    position: relative;
+    display: inline-flex;
+    vertical-align: top;
+    flex: none;
+    width: fit-content; /* hug its label, even as a stretched flex item */
+    margin-top: var(--btn-lift-hover);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--btn-edge);
+    font-family: var(--font-sans);
+    font-size: var(--text-ui);
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--btn-label);
+    cursor: pointer;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .nu-btn__face {
+    position: relative;
+    display: inline-flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: 13px 26px; /* Figma Face: py 13 / px 26 → 47.75 px tall */
+    border: var(--btn-border-w) solid var(--btn-edge);
+    border-radius: var(--radius-md);
+    background: var(--btn-face);
+    white-space: nowrap;
+    transform: translateY(calc(-1 * var(--btn-lift)));
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+  @media (hover: hover) {
+    .nu-btn:hover {
+      --btn-lift: var(--btn-lift-hover);
+    }
+  }
+  .nu-btn:active {
+    --btn-lift: var(--btn-lift-pressed);
+  }
+  .nu-btn:active .nu-btn__face {
+    transition-duration: var(--dur-instant); /* « Retour au clic » */
+  }
+  .nu-btn:focus-visible {
+    outline: var(--focus-ring-w) solid var(--accent);
+    outline-offset: var(--focus-ring-offset);
+  }
+  .nu-btn--accent {
+    --btn-face: var(--accent);
+    --btn-label: var(--on-accent); /* paper on light; near-black inside a dark scope (= « On dark ») */
+  }
+  .nu-btn--on-dark {
+    --btn-face: var(--accent-on-dark);
+    --btn-label: var(--btn-edge);
+  }
+  /* Lacune 1 — prop tone="danger", ready but unused while the design keeps Accent for confirmations. */
+  .nu-btn--danger {
+    --btn-face: var(--danger);
+    --btn-label: var(--paper);
+  }
+  .nu-btn--block {
+    display: flex;
+    width: 100%;
+  }
+  /* Not designed: disabled = no lift + 40 % opacity (same rule as Bouton compact in W7). */
+  .nu-btn:disabled,
+  .nu-btn[aria-disabled='true'] {
+    --btn-lift: 0em;
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+  .nu-btn[aria-busy='true'] {
+    cursor: progress;
+  }
+  .nu-btn[aria-busy='true']:disabled {
+    opacity: 1;
+    --btn-lift: var(--btn-lift-rest);
+  }
+
+  /* ---------------------------------------------------------------------------
+     44 px hit area around controls drawn smaller (Bouton compact 36, Interrupteur 36 × 20,
+     links in tiles) — « Zone cliquable 44 px en code ».
+     --------------------------------------------------------------------------- */
+  .nu-hit {
+    position: relative;
+  }
+  .nu-hit::after {
+    content: '';
+    position: absolute;
+    inset-block: min(0px, calc((100% - var(--tap-min)) / 2));
+    inset-inline: min(0px, calc((100% - var(--tap-min)) / 2));
+  }
+
+  /* ---------------------------------------------------------------------------
+     Overlays (Radix data-state). Enter = --dur-base --ease-out, exit = half, no bounce.
+     Modal (Fenêtre) arrives from 90 % → 100 % (Nuera OS M3 note).
+     --------------------------------------------------------------------------- */
+  .nu-scrim[data-state='open'] {
+    animation: nu-fade-in var(--dur-base) var(--ease-out);
+  }
+  .nu-scrim[data-state='closed'] {
+    animation: nu-fade-out calc(var(--dur-base) / 2) var(--ease-in-out);
+  }
+  .nu-dialog[data-state='open'] {
+    animation: nu-dialog-in 300ms var(--ease-out);
+  }
+  .nu-dialog[data-state='closed'] {
+    animation: nu-dialog-out 200ms var(--ease-in-out);
+  }
+  .nu-drawer[data-state='open'] {
+    animation: nu-drawer-in var(--dur-base) var(--ease-out);
+  }
+  .nu-drawer[data-state='closed'] {
+    animation: nu-drawer-out calc(var(--dur-base) / 2) var(--ease-in-out);
+  }
+  .nu-sheet[data-state='open'] {
+    animation: nu-sheet-in var(--dur-base) var(--ease-emphasis);
+  }
+  .nu-sheet[data-state='closed'] {
+    animation: nu-sheet-out calc(var(--dur-base) / 2) var(--ease-in-out);
+  }
+  .nu-pop[data-state='open'] {
+    animation: nu-pop-in var(--dur-fast) var(--ease-out);
+  }
+  .nu-pop[data-state='closed'] {
+    animation: nu-fade-out calc(var(--dur-fast) / 2) var(--ease-in-out);
+  }
+  .nu-toast[data-state='open'] {
+    animation: nu-toast-in var(--dur-base) var(--ease-out);
+  }
+  .nu-toast[data-state='closed'] {
+    animation: nu-fade-out calc(var(--dur-base) / 2) var(--ease-in-out);
+  }
+  .nu-toast[data-swipe='move'] {
+    transform: translateX(var(--radix-toast-swipe-move-x));
+  }
+  .nu-toast[data-swipe='cancel'] {
+    transform: translateX(0);
+    transition: transform var(--dur-fast) var(--ease-out);
+  }
+  .nu-toast[data-swipe='end'] {
+    animation: nu-toast-swipe-out var(--dur-fast) var(--ease-out);
+  }
+
+  /* Spinner */
+  .nu-spin {
+    animation: nu-spin 900ms linear infinite;
+  }
+
+  /* Skeleton (T1): optional shimmer; static under reduced motion (« les silhouettes restent fixes »). */
+  .nu-skeleton {
+    position: relative;
+    overflow: hidden;
+  }
+  .nu-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, var(--skeleton-shimmer), transparent);
+    animation: nu-shimmer 1.6s var(--ease-steady) infinite;
+  }
+
+  /* Hide scrollbars on horizontal pill rails (mobile tabs, chips) while keeping native scroll. */
+  .nu-scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nu-scroll-x::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes nu-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes nu-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes nu-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes nu-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+@keyframes nu-dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes nu-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+@keyframes nu-drawer-out {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes nu-sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes nu-sheet-out {
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes nu-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@keyframes nu-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes nu-toast-swipe-out {
+  from {
+    transform: translateX(var(--radix-toast-swipe-end-x));
+  }
+  to {
+    transform: translateX(110%);
+  }
+}
+@keyframes nu-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* « Réglage réduire les animations du système : tout devient un fondu de 150 ms. » (Nuera OS motion rules) */
+@media (prefers-reduced-motion: reduce) {
+  .nu-btn__face {
+    transition: none;
+  }
+  .nu-dialog[data-state='open'],
+  .nu-drawer[data-state='open'],
+  .nu-sheet[data-state='open'],
+  .nu-pop[data-state='open'],
+  .nu-toast[data-state='open'],
+  .nu-scrim[data-state='open'] {
+    animation: nu-fade-in 150ms linear !important;
+  }
+  .nu-dialog[data-state='closed'],
+  .nu-drawer[data-state='closed'],
+  .nu-sheet[data-state='closed'],
+  .nu-pop[data-state='closed'],
+  .nu-toast[data-state='closed'],
+  .nu-scrim[data-state='closed'] {
+    animation: nu-fade-out 150ms linear !important;
+  }
+  .nu-skeleton::after {
+    display: none;
+  }
+  .nu-spin {
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

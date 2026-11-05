@@ -377,3 +377,72 @@
   --container-wide: 82.5rem;    /* 1320 px  → max-w-wide   */
   --container-vast: 97.5rem;    /* 1560 px  → max-w-vast   */
 }
+
+/* -----------------------------------------------------------------------------
+   (derived) INTERACTION & OVERLAY tokens — not drawn in Figma (only Rest states exist for
+   Bouton compact, nav items, rows, menus). Lacune 3: surface = surface-raised = paper in Light,
+   so a hover drawn with --surface-raised is invisible; these tints make hover/pressed visible
+   while staying derived from the role tokens (they flip inside tone="dark" scopes).
+   ----------------------------------------------------------------------------- */
+:root,
+[data-tone="dark"],
+.tone-dark {
+  --hover: color-mix(in srgb, var(--text) 6%, transparent);      /* ghost rows, menu items, icon buttons */
+  --pressed: color-mix(in srgb, var(--text) 11%, transparent);
+  --accent-hover: color-mix(in srgb, var(--accent) 86%, var(--near-black)); /* Principal hover */
+  --accent-pressed: color-mix(in srgb, var(--accent) 76%, var(--near-black));
+}
+
+:root {
+  --scrim: rgb(20 24 48 / 0.55);   /* Voile — near-black at 55 % (D03, D1, D2, W5, S4) */
+  --toast-gap: 12px;               /* stack gap between toasts (inference, = --space-3) */
+  --drawer-w: 480px;               /* D1/D2 drawer width */
+  --dialog-w: 640px;               /* D03/A1–A4 modal width */
+  --dialog-confirm-w: 520px;       /* T8 confirmation width */
+  --sheet-handle-w: 36px;          /* S4 Poignée 36 × 5 */
+  --skeleton-shimmer: color-mix(in srgb, var(--paper) 55%, transparent);
+}
+
+@theme inline {
+  --color-hover: var(--hover);
+  --color-pressed: var(--pressed);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-scrim: var(--scrim);
+}
+
+/* (derived) Text drawn ON a filled surface. --on-accent: label of accent-filled controls (Principal,
+   Accent button, counters) — paper on the light accent, near-black on the dark-scope accent #a6b9dd
+   (this is exactly the DS « On dark » pairing). --on-pale: initials/labels drawn in ink on pale tints. */
+:root {
+  --on-accent: var(--paper);
+  --on-pale: var(--ink);
+}
+[data-tone="dark"],
+.tone-dark {
+  --on-accent: var(--near-black);
+}
+
+@theme inline {
+  --color-on-accent: var(--on-accent);
+  --color-on-pale: var(--on-pale);
+}
+
+/* (derived) Lacune 2 « Pas de jeton danger-on-dark : les erreurs dans le terminal (mode Dark) utilisent
+   danger-pale. À créer à côté de warn-on-dark et success-on-dark. » → created with the value in use. */
+:root {
+  --danger-on-dark: #f8e6de;
+}
+@theme inline {
+  --color-danger-on-dark: var(--danger-on-dark);
+}
+
+/* (derived) Hover/pressed faces of paper controls (Bouton compact Secondaire, outline icon buttons). */
+:root {
+  --paper-hover: color-mix(in srgb, var(--ink) 5%, var(--paper));
+  --paper-pressed: color-mix(in srgb, var(--ink) 10%, var(--paper));
+}
+@theme inline {
+  --color-paper-hover: var(--paper-hover);
+  --color-paper-pressed: var(--paper-pressed);
+}

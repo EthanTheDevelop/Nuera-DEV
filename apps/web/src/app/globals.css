@@ -1,8 +1,13 @@
 @import 'tailwindcss';
 @import '../styles/tokens.css';
+@import '../styles/components.css';
 
-/* Theme preference « Sombre » (Paramètres · Préférences) flips the role tokens app-wide,
-   exactly like a tone="dark" section of the design system. */
+/* Theme preference (Paramètres · Préférences « Thème » : Clair / Sombre / Système), written on <html> as
+   data-theme by the root layout from the `nuera-theme` cookie, so the first paint is already right.
+   « Sombre » flips the role tokens app-wide, exactly like a tone="dark" section of the design system
+   (Figma defines only the Dark mode of the Color collection; no dark screen is drawn). On a dark page the
+   pale status tints become translucent and status texts take their on-dark values, otherwise badges and
+   banners would print light text on light pills. Light mode never sees these overrides. */
 :root[data-theme='dark'] {
   --bg: var(--ink);
   --text: var(--paper);
@@ -10,7 +15,37 @@
   --muted: var(--muted-on-dark);
   --border: var(--border-on-dark);
   --surface-raised: var(--surface-raised-dark);
+  --on-accent: var(--near-black);
+  --on-pale: var(--paper);
+  --accent-pale: color-mix(in srgb, var(--accent-on-dark) 20%, transparent);
+  --success: var(--success-on-dark);
+  --success-pale: color-mix(in srgb, var(--success-on-dark) 16%, transparent);
+  --warn: var(--warn-on-dark);
+  --warn-pale: color-mix(in srgb, var(--warn-on-dark) 16%, transparent);
+  --danger: var(--danger-on-dark); /* lacune 2 */
+  --danger-pale: color-mix(in srgb, var(--danger-on-dark) 16%, transparent);
   color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] {
+    --bg: var(--ink);
+    --text: var(--paper);
+    --accent: var(--accent-on-dark);
+    --muted: var(--muted-on-dark);
+    --border: var(--border-on-dark);
+    --surface-raised: var(--surface-raised-dark);
+    --on-accent: var(--near-black);
+    --on-pale: var(--paper);
+    --accent-pale: color-mix(in srgb, var(--accent-on-dark) 20%, transparent);
+    --success: var(--success-on-dark);
+    --success-pale: color-mix(in srgb, var(--success-on-dark) 16%, transparent);
+    --warn: var(--warn-on-dark);
+    --warn-pale: color-mix(in srgb, var(--warn-on-dark) 16%, transparent);
+    --danger: var(--danger-on-dark);
+    --danger-pale: color-mix(in srgb, var(--danger-on-dark) 16%, transparent);
+    color-scheme: dark;
+  }
 }
 
 @layer base {
@@ -23,6 +58,7 @@
 
   body {
     min-height: 100dvh;
+    background-color: var(--bg);
     font-family: var(--font-sans);
     font-size: var(--text-app-14);
     -webkit-font-smoothing: antialiased;
@@ -37,7 +73,12 @@
 
   ::selection {
     background-color: var(--accent-pale);
-    color: var(--ink);
+    color: var(--on-pale);
+  }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
   }
 }
 
