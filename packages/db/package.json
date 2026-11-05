@@ -13,8 +13,7 @@
     "migrate": "tsx src/cli/migrate.ts",
     "studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests",
-    "lint": "eslint src"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "drizzle-orm": "0.45.4",

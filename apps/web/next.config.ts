@@ -4,9 +4,20 @@ import type { NextConfig } from 'next';
 
 // Monorepo: the single .env lives at the repository root (see .env.example).
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-loadEnvConfig(repoRoot);
+// forceReload: @next/env caches Next's own first call (on apps/web, which has no .env), so without
+// it this call is a no-op and `next dev` starts without the root variables.
+loadEnvConfig(repoRoot, process.env.NODE_ENV !== 'production', undefined, true);
 
 const isProd = process.env.NODE_ENV === 'production';
+
+/** Browser redirects of the GitHub App flows go to github.com (a local fake in e2e: GITHUB_WEB_URL). */
+function githubWebOrigin(): string {
+  try {
+    return new URL(process.env.GITHUB_WEB_URL?.trim() || 'https://github.com').origin;
+  } catch {
+    return 'https://github.com';
+  }
+}
 
 /**
  * Content-Security-Policy. Scripts/styles are self-hosted (next/font self-hosts Google fonts).
@@ -23,7 +34,7 @@ const csp = [
   "manifest-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'self'",
-  "form-action 'self' https://github.com",
+  `form-action 'self' ${githubWebOrigin()}`,
   'object-src \'none\'',
 ].join('; ');
 
@@ -45,6 +56,8 @@ const nextConfig: NextConfig = {
   // Separate build dirs let several dev/e2e servers run side by side (NEXT_DIST_DIR=.next-e2e …).
   distDir: process.env.NEXT_DIST_DIR || '.next',
   reactStrictMode: true,
+  // `next dev` would otherwise write apps/web/AGENTS.md on every start.
+  agentRules: false,
   poweredByHeader: false,
   transpilePackages: ['@nuera/db', '@nuera/shared'],
   serverExternalPackages: ['postgres', 'web-push', 'shiki'],

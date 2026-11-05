@@ -12,8 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests",
-    "lint": "eslint src"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "zod": "4.6.7"

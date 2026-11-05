@@ -9,8 +9,7 @@
     "build": "node build.mjs",
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "lint": "eslint src test"
+    "test": "vitest run"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.18",
