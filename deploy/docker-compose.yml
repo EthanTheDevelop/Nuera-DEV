@@ -17,15 +17,21 @@ services:
       context: ..
       dockerfile: deploy/docker/web.Dockerfile
       target: migrate
+    image: nuera-dev-migrate:${NUERA_IMAGE_TAG:-latest}
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL requis}
     restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - nuera-internal
 
   web:
     build:
       context: ..
       dockerfile: deploy/docker/web.Dockerfile
       target: runtime
+    image: nuera-dev-web:${NUERA_IMAGE_TAG:-latest}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -39,8 +45,21 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # Traefik (Coolify) writes the client address in X-Real-IP: the only IP header trusted.
+      TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-real-ip}
+      NUERA_SERVER_STATUS_URL: ${NUERA_SERVER_STATUS_URL:-}
+      GITHUB_FALLBACK_TOKEN: ${GITHUB_FALLBACK_TOKEN:-}
     expose:
       - "3000"
+    # Web container: non-root (node), read-only root filesystem, no capability, no Docker socket.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     networks:
       - nuera-internal
@@ -49,6 +68,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/runner.Dockerfile
+    image: nuera-dev-runner:${NUERA_IMAGE_TAG:-latest}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -68,7 +88,7 @@ services:
         limits:
           cpus: "${RUNNER_CPUS:-6}"
           memory: ${RUNNER_MEMORY:-12g}
-    pids_limit: 4096
+          pids: 4096
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

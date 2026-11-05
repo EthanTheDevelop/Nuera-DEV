@@ -1,0 +1,40 @@
+# Contexte de build Docker (racine du dépôt) : uniquement les sources nécessaires aux images.
+**/node_modules
+**/.next
+**/.next-*
+**/dist
+**/*.tsbuildinfo
+**/next-env.d.ts
+**/coverage
+**/test-results
+**/playwright-report
+**/blob-report
+**/.playwright
+.git
+.data
+.data-*.log
+.local
+.design-refs
+.claude
+.vscode
+.idea
+**/*.log
+# Secrets : jamais dans une image.
+.env
+.env.*
+!.env.example
+deploy/.env*
+deploy/backups
+**/*.pem
+**/*.key
+# Inutiles à l'exécution.
+docs
+README.md
+CLAUDE.md
+apps/web/e2e
+# Tests (fixtures and specs are never shipped; CI runs typecheck/tests on the full tree).
+**/*.test.ts
+**/*.test.tsx
+**/test
+apps/web/playwright.config.ts
+**/vitest.config.ts

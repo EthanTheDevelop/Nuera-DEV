@@ -5,7 +5,11 @@
 
 FROM node:24-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+# Réseau de build derrière un proxy TLS d'entreprise (facultatif) : fournir son certificat racine en secret BuildKit,
+#   docker build --secret id=build_ca,src=/chemin/ca.crt …  (absent = rien à faire ; jamais copié dans l'image).
+ENV NODE_EXTRA_CA_CERTS=/run/secrets/build_ca
+RUN --mount=type=secret,id=build_ca,required=false \
+    corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /repo
 
 FROM base AS build
@@ -14,15 +18,17 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/runner/package.json apps/runner/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store --mount=type=secret,id=build_ca,required=false \
     pnpm install --frozen-lockfile --filter "@nuera/runner..."
 COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/runner ./apps/runner
-RUN pnpm --filter @nuera/runner build \
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store --mount=type=secret,id=build_ca,required=false \
+    pnpm --filter @nuera/runner build \
  && pnpm --filter @nuera/runner deploy --prod /out/runner \
  && cp -r apps/runner/dist /out/runner/dist \
- && cp -r apps/runner/bin /out/runner/bin
+ && cp -r apps/runner/bin /out/runner/bin \
+ && rm -rf /out/runner/src /out/runner/test /out/runner/build.mjs /out/runner/tsconfig.json /out/runner/vitest.config.ts
 
 FROM node:24-bookworm-slim AS runtime
 # git, tmux : sessions et dépôts ; bubblewrap + socat : bac à sable du CLI Claude Code ; procps : métriques.
@@ -30,6 +36,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git tmux ca-certificates curl procps bubblewrap socat tini less openssh-client locales \
  && rm -rf /var/lib/apt/lists/* \
+ && sed -i 's/^# *fr_FR.UTF-8 UTF-8/fr_FR.UTF-8 UTF-8/' /etc/locale.gen \
+ && locale-gen \
  && groupadd --gid 1001 nuera \
  && useradd --uid 1001 --gid nuera --create-home --home-dir /home/nuera --shell /bin/bash nuera \
  && mkdir -p /srv/dev /data \
@@ -42,7 +50,8 @@ USER nuera
 ENV NODE_ENV=production \
     HOME=/home/nuera \
     PATH=/home/nuera/.local/bin:/usr/local/bin:/usr/bin:/bin \
-    LANG=C.UTF-8 \
+    LANG=fr_FR.UTF-8 \
+    LC_ALL=fr_FR.UTF-8 \
     TERM=xterm-256color \
     NUERA_PROJECTS_ROOT=/srv/dev \
     NUERA_DATA_DIR=/data \
