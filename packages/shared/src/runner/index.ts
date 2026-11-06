@@ -12,4 +12,5 @@ export * from './preview';
 export * from './system';
 export * from './claude';
 export * from './composer';
+export * from './common-config';
 export * from './routes';
