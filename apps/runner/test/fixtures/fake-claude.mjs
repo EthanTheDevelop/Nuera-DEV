@@ -127,6 +127,43 @@ async function interactive() {
     mkdirSync(envDir, { recursive: true });
     const keys = ['CLAUDE_CONFIG_DIR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'];
     writeFileSync(path.join(envDir, `${sessionId}.json`), JSON.stringify(Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]))));
+    // What a real CLI would load at this launch (configuration commune): flags, settings rules and
+    // env, MCP servers, appended system prompt, user-level rules and skills of the config dir.
+    const read = (file) => {
+      try {
+        return file && existsSync(file) ? readFileSync(file, 'utf8') : null;
+      } catch {
+        return null;
+      }
+    };
+    const mcpFile = flag('--mcp-config');
+    let mcpServers = [];
+    try {
+      mcpServers = Object.keys(JSON.parse(read(mcpFile) ?? '{}').mcpServers ?? {});
+    } catch {
+      mcpServers = [];
+    }
+    const skillsDir = path.join(harnessDir, 'skills');
+    const skills = existsSync(skillsDir)
+      ? readdirSync(skillsDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && existsSync(path.join(skillsDir, entry.name, 'SKILL.md')))
+          .map((entry) => ({ name: entry.name, common: existsSync(path.join(skillsDir, entry.name, '.nuera-commun.json')) }))
+      : [];
+    const launchDir = path.join(harnessDir, 'nuera-fake-launch');
+    mkdirSync(launchDir, { recursive: true });
+    writeFileSync(
+      path.join(launchDir, `${sessionId}.json`),
+      JSON.stringify({
+        argv,
+        permissions: settings.permissions ?? {},
+        settingsEnv: settings.env ?? {},
+        mcpServers,
+        appendSystemPrompt: read(flag('--append-system-prompt-file')),
+        userRules: read(path.join(harnessDir, 'rules', 'nuera-commun.md')),
+        skills,
+        at: new Date().toISOString(),
+      }),
+    );
   }
   const base = { session_id: sessionId, transcript_path: transcript, cwd, permission_mode: flag('--permission-mode') ?? 'default' };
 

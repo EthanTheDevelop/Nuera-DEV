@@ -129,6 +129,8 @@ export async function buildRunner(config: RunnerConfig, options: BuildRunnerOpti
     heartbeatTimer = setInterval(() => void beat(), heartbeatMs);
     heartbeatTimer.unref?.();
     void services.claude.status().catch(() => undefined);
+    // Common Claude configuration of this server (rules, skills): written before the first session.
+    void services.commonConfig.sync('start').catch(() => undefined);
     // The lease lives on one connection: if it dies, another runner may take the server over.
     leaseWatch = setInterval(() => {
       void environment.checkLease().then((alive) => {
