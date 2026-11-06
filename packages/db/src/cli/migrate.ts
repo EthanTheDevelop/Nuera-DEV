@@ -9,7 +9,8 @@ if (!url) {
   process.exit(1);
 }
 
-runMigrations(url)
+// RUNNER_TOKEN (optional): its sha256 identifies the default server (environments.token_hash).
+runMigrations(url, undefined, { runnerToken: process.env.RUNNER_TOKEN })
   .then(() => {
     console.log('Migrations appliquées.');
   })

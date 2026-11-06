@@ -2,12 +2,14 @@ import { sql } from 'drizzle-orm';
 import {
   bigserial,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -34,7 +36,10 @@ export const sessions = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    worktreeId: uuid('worktree_id').references(() => worktrees.id, { onDelete: 'set null' }),
+    /** Server where the CLI, tmux, transcript and hook token live (that of the project). */
+    environmentId: uuid('environment_id').notNull(),
+    /** Worktree of the same server (composite foreign key below). */
+    worktreeId: uuid('worktree_id'),
     title: text('title').notNull(),
     status: text('status').$type<SessionStatus>().notNull().default('new'),
     backend: text('backend').$type<SessionBackend>().notNull().default('tmux'),
@@ -77,9 +82,24 @@ export const sessions = pgTable(
       .notNull(),
   },
   (t) => [
+    // Target of the composite foreign key (session_id, environment_id) of operations (migration 0005).
+    unique('sessions_id_environment_key').on(t.id, t.environmentId),
+    foreignKey({
+      name: 'sessions_project_env_fk',
+      columns: [t.projectId, t.environmentId],
+      foreignColumns: [projects.id, projects.environmentId],
+    }).onDelete('cascade'),
+    // ON DELETE SET NULL ("worktree_id") in the SQL of 0005: only the worktree is cleared, the
+    // server (NOT NULL) stays. Drizzle has no column list for SET NULL.
+    foreignKey({
+      name: 'sessions_worktree_env_fk',
+      columns: [t.worktreeId, t.environmentId],
+      foreignColumns: [worktrees.id, worktrees.environmentId],
+    }).onDelete('set null'),
     index('sessions_project_idx').on(t.projectId),
     index('sessions_status_idx').on(t.status),
     index('sessions_created_at_idx').on(t.createdAt),
+    index('sessions_environment_status_idx').on(t.environmentId, t.status),
   ],
 );
 

@@ -1,4 +1,6 @@
 export * from './auth';
+export * from './tenancy';
+export * from './github';
 export * from './projects';
 export * from './sessions';
 export * from './integrations';

@@ -2,15 +2,20 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { user } from './auth';
+import { githubSources } from './github';
+import { environments } from './tenancy';
 import type {
   CommandKind,
   CommandRunDetails,
@@ -25,12 +30,22 @@ import type {
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 
+/**
+ * A GitHub repository cloned on one server. Its space and server never change (moving a project =
+ * a new project, cloned again). Slug and path are physical, hence unique per server.
+ */
 export const projects = pgTable(
   'projects',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    /** URL-safe identifier, also used for tmux names and default folder name. */
-    slug: text('slug').notNull().unique(),
+    spaceId: uuid('space_id').notNull(),
+    /** Server holding the clone (immutable). Copied on every runtime row (worktrees, sessions…). */
+    environmentId: uuid('environment_id').notNull(),
+    /** GitHub source used for this repository (null = not bound yet). */
+    githubSourceId: uuid('github_source_id'),
+    createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }),
+    /** URL-safe identifier, also used for tmux names and default folder name (unique per server). */
+    slug: text('slug').notNull(),
     name: text('name').notNull(),
     description: text('description'),
     /** GitHub `owner/repo`. */
@@ -44,8 +59,8 @@ export const projects = pgTable(
     defaultBranch: text('default_branch').notNull().default('main'),
     /** Branch checked out in the primary clone. */
     currentBranch: text('current_branch'),
-    /** Absolute path of the primary clone on VPS-3 (e.g. /srv/dev/nuera-os). */
-    path: text('path').notNull().unique(),
+    /** Absolute path of the primary clone on its server (e.g. /srv/dev/nuera-os), unique per server. */
+    path: text('path').notNull(),
     status: text('status').$type<ProjectStatus>().notNull().default('cloning'),
     statusDetail: text('status_detail'),
     isFavorite: boolean('is_favorite').notNull().default(false),
@@ -73,9 +88,27 @@ export const projects = pgTable(
       .notNull(),
   },
   (t) => [
-    uniqueIndex('projects_github_full_name_active_idx')
-      .on(t.githubFullName)
+    // Target of the composite foreign keys (project_id, environment_id) of the runtime rows.
+    unique('projects_id_environment_key').on(t.id, t.environmentId),
+    // The server belongs to the project's space (and cannot be reassigned while it hosts projects).
+    foreignKey({
+      name: 'projects_env_space_fk',
+      columns: [t.environmentId, t.spaceId],
+      foreignColumns: [environments.id, environments.spaceId],
+    }),
+    // A project only uses a GitHub source of its own space (not checked while the source is null).
+    foreignKey({
+      name: 'projects_github_source_fk',
+      columns: [t.githubSourceId, t.spaceId],
+      foreignColumns: [githubSources.id, githubSources.spaceId],
+    }),
+    uniqueIndex('projects_environment_slug_idx').on(t.environmentId, t.slug),
+    uniqueIndex('projects_environment_path_idx').on(t.environmentId, t.path),
+    uniqueIndex('projects_environment_repo_active_idx')
+      .on(t.environmentId, t.githubFullName)
       .where(sql`${t.archivedAt} is null`),
+    index('projects_space_status_idx').on(t.spaceId, t.status),
+    index('projects_environment_status_idx').on(t.environmentId, t.status),
     index('projects_status_idx').on(t.status),
   ],
 );
@@ -107,6 +140,8 @@ export const worktrees = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
+    /** Server of the project (composite foreign key below). */
+    environmentId: uuid('environment_id').notNull(),
     /** Short name shown in the UI ("crm-core"). Primary clone uses the project slug. */
     name: text('name').notNull(),
     branch: text('branch').notNull(),
@@ -120,10 +155,22 @@ export const worktrees = pgTable(
     removedAt: ts('removed_at'),
   },
   (t) => [
+    // Target of the composite foreign keys (worktree_id, environment_id) of sessions, operations and
+    // command runs: a row only points to a worktree of its own server (migration 0005).
+    unique('worktrees_id_environment_key').on(t.id, t.environmentId),
+    foreignKey({
+      name: 'worktrees_project_env_fk',
+      columns: [t.projectId, t.environmentId],
+      foreignColumns: [projects.id, projects.environmentId],
+    }).onDelete('cascade'),
     uniqueIndex('worktrees_project_name_active_idx')
       .on(t.projectId, t.name)
       .where(sql`${t.removedAt} is null`),
-    uniqueIndex('worktrees_path_active_idx').on(t.path).where(sql`${t.removedAt} is null`),
+    // A folder is unique on its server.
+    uniqueIndex('worktrees_path_active_idx')
+      .on(t.environmentId, t.path)
+      .where(sql`${t.removedAt} is null`),
+    index('worktrees_environment_status_idx').on(t.environmentId, t.status),
   ],
 );
 
@@ -134,7 +181,10 @@ export const commandRuns = pgTable(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
-    worktreeId: uuid('worktree_id').references(() => worktrees.id, { onDelete: 'set null' }),
+    /** Server of the project (composite foreign key below). */
+    environmentId: uuid('environment_id').notNull(),
+    /** Worktree of the same server (composite foreign key below). */
+    worktreeId: uuid('worktree_id'),
     kind: text('kind').$type<CommandKind>().notNull(),
     command: text('command').notNull(),
     status: text('status').$type<CommandRunStatus>().notNull().default('running'),
@@ -148,10 +198,27 @@ export const commandRuns = pgTable(
     outputTail: text('output_tail'),
     /** Per-test results and failures (« Résultats des tests »), when the output could be parsed. */
     details: jsonb('details').$type<CommandRunDetails>(),
+    /** Account that started the command. */
+    actorUserId: text('actor_user_id').references(() => user.id, { onDelete: 'set null' }),
     startedAt: ts('started_at').defaultNow().notNull(),
     finishedAt: ts('finished_at'),
   },
-  (t) => [index('command_runs_project_kind_idx').on(t.projectId, t.kind, t.startedAt)],
+  (t) => [
+    foreignKey({
+      name: 'command_runs_project_env_fk',
+      columns: [t.projectId, t.environmentId],
+      foreignColumns: [projects.id, projects.environmentId],
+    }).onDelete('cascade'),
+    // ON DELETE SET NULL ("worktree_id") in the SQL of 0005: only the worktree is cleared, the
+    // server (NOT NULL) stays. Drizzle has no column list for SET NULL.
+    foreignKey({
+      name: 'command_runs_worktree_env_fk',
+      columns: [t.worktreeId, t.environmentId],
+      foreignColumns: [worktrees.id, worktrees.environmentId],
+    }).onDelete('set null'),
+    index('command_runs_project_kind_idx').on(t.projectId, t.kind, t.startedAt),
+    index('command_runs_environment_status_idx').on(t.environmentId, t.status),
+  ],
 );
 
 export const pullRequests = pgTable(
