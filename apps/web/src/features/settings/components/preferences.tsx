@@ -8,7 +8,7 @@ import { THEME_LABELS, THEME_PREFERENCES, type ThemePreference } from '@/lib/the
 import { relativeLong } from '../lib/copy';
 import { InlineError, SettingsRow, SettingsRows } from './parts';
 import { useSettings } from './SettingsContext';
-import { usePushSubscription, type PushState } from './usePushSubscription';
+import { SHARED_BROWSER_NOTICE, usePushSubscription, type PushState } from './usePushSubscription';
 
 const PushContext = createContext<PushState | null>(null);
 
@@ -102,6 +102,7 @@ export function PreferencesTile() {
           control={<PushSwitch labelledBy={pushTitle} describedBy={pushCaption} />}
         >
           {reason ? <p className="m-0 font-sans text-app-12 text-muted">{reason}</p> : null}
+          {push.subscribed && push.sharedWithOtherAccount ? <p className="m-0 font-sans text-app-12 text-muted">{SHARED_BROWSER_NOTICE}</p> : null}
           <InlineError>{push.error}</InlineError>
         </SettingsRow>
         <SettingsRow title="Thème" caption="Suit les modes clair et sombre du système de design" control={<ThemeSelect id={themeId} />} />

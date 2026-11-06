@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import type { PermissionMode } from '@nuera/db/schema';
 import { formatBytes } from '@nuera/shared/format';
 import { Icon } from '@/components/icons';
+import { ADMIN_NAV_ITEM, isAdminRole, NO_SERVER_DETAIL, NO_SERVER_LABEL } from '@/components/shell';
 import { Sheet, SheetContent } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { THEME_LABELS } from '@/lib/theme';
@@ -23,17 +24,21 @@ import {
   totalSize,
 } from '../lib/copy';
 import { SECTION_IDS, type SettingsTab } from '../lib/tabs';
+import { bypassBlocked } from './controls';
 import { MobileGroup, MobileRow } from './parts';
 import { PushSwitch, usePush, usePushDisabledReason } from './preferences';
+import { SHARED_BROWSER_NOTICE } from './usePushSubscription';
 import { LogsDrawer, StaleWorktreesDialog } from './server';
 import { useSettings } from './SettingsContext';
 
 /**
  * M08 — the phone overview: D08's tabs become overline groups on one scrolling page, dropdowns become
  * value rows opening a picker sheet, lists collapse into counts that drill down into the tab pages.
+ * Owner and administrators get an « Instance » group leading to Administration (docs/MULTICOMPTE.md
+ * §10: on the phone, Administration is reached from Paramètres and the profile menu).
  */
 export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, section?: string) => void }) {
-  const { data, claude, settings, serverName, openStatus, now } = useSettings();
+  const { data, claude, settings, serverName, openStatus, now, canEdit } = useSettings();
   const [picker, setPicker] = useState<'model' | 'mode' | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [cleanOpen, setCleanOpen] = useState(false);
@@ -63,6 +68,7 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
   // M08 « 2,4 Go » when every size is measured, else the count.
   const staleSize = data.worktrees.ok && stale ? totalSize(data.worktrees.data.items) : null;
   const claudeUnavailable = !claude && !data.claude.ok && data.claude.error.unavailable;
+  const hasServer = serverName !== null;
 
   return (
     <div className="flex flex-col gap-3">
@@ -70,20 +76,34 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
         <MobileRow
           icon="terminal"
           label="Compte Claude"
-          sublabel="Connexion par le CLI officiel"
-          badge={claudeBadge(claude, 'phone')}
+          sublabel={hasServer ? 'Connexion par le CLI officiel' : NO_SERVER_LABEL}
+          badge={hasServer ? claudeBadge(claude, 'phone') : { tone: 'neutral', label: 'Aucun serveur' }}
           onClick={() => onOpenTab('claude-code')}
         />
-        <MobileRow icon="reglages" label="Modèle par défaut" value={modelLabel(settings.defaultModel, data.seenModels)} onClick={() => setPicker('model')} />
-        <MobileRow icon="shield" label="Mode de permission" value={permissionModeShort(settings.defaultPermissionMode)} onClick={() => setPicker('mode')} />
         <MobileRow
-          icon="history"
-          label="Utilisation"
-          value="Ouvrir /status"
-          onClick={openStatus}
-          disabled={Boolean(claudeUnavailable)}
-          sublabel={claudeUnavailable ? `${serverName} ne répond pas` : undefined}
+          icon="reglages"
+          label="Modèle par défaut"
+          value={modelLabel(settings.defaultModel, data.seenModels)}
+          onClick={() => setPicker('model')}
+          disabled={!canEdit('defaultModel')}
         />
+        <MobileRow
+          icon="shield"
+          label="Mode de permission"
+          value={permissionModeShort(settings.defaultPermissionMode)}
+          onClick={() => setPicker('mode')}
+          disabled={!canEdit('defaultPermissionMode')}
+        />
+        {hasServer ? (
+          <MobileRow
+            icon="history"
+            label="Utilisation"
+            value="Ouvrir /status"
+            onClick={openStatus}
+            disabled={Boolean(claudeUnavailable)}
+            sublabel={claudeUnavailable ? `${serverName} ne répond pas` : undefined}
+          />
+        ) : null}
       </MobileGroup>
 
       <MobileGroup label="Sécurité">
@@ -95,21 +115,33 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
         />
         <MobileRow icon="monitor" label="Accès ouverts" value={account ? String(account.sessions.length) : null} onClick={() => onOpenTab('compte-et-securite', SECTION_IDS.sessions)} />
         <MobileRow icon="history" label="Journal de sécurité" onClick={() => onOpenTab('compte-et-securite', SECTION_IDS.journal)} />
+        <MobileRow
+          icon="git-commit"
+          label="Identité Git"
+          value={settings.gitAuthorName || settings.gitAuthorEmail ? 'Personnalisée' : 'Celle du compte'}
+          onClick={() => onOpenTab('compte-et-securite', SECTION_IDS.gitIdentity)}
+        />
       </MobileGroup>
 
-      <MobileGroup label={`Serveur ${serverName}`}>
-        <MobileRow icon="server" label="État" sublabel={stateSublabel} badge={serverBadge(health, unavailable)} onClick={() => onOpenTab('serveur', SECTION_IDS.services)} />
+      <MobileGroup label={hasServer ? `Serveur ${serverName}` : 'Serveur'}>
+        {hasServer ? (
+          <MobileRow icon="server" label="État" sublabel={stateSublabel} badge={serverBadge(health, unavailable)} onClick={() => onOpenTab('serveur', SECTION_IDS.services)} />
+        ) : (
+          <MobileRow icon="server" label={NO_SERVER_LABEL} sublabel={NO_SERVER_DETAIL} onClick={() => onOpenTab('serveur', SECTION_IDS.services)} />
+        )}
         <MobileRow icon="book" label="Journaux" onClick={() => setLogsOpen(true)} />
-        <MobileRow
-          icon="trash"
-          iconTone="danger"
-          label="Nettoyer les worktrees inactifs"
-          labelTone="danger"
-          value={stale === null ? null : staleSize !== null ? formatBytes(staleSize) : String(stale)}
-          onClick={() => setCleanOpen(true)}
-          disabled={stale === null || stale === 0}
-          sublabel={stale === 0 ? 'aucun worktree inactif' : stale === null ? 'worktrees illisibles' : undefined}
-        />
+        {hasServer ? (
+          <MobileRow
+            icon="trash"
+            iconTone="danger"
+            label="Nettoyer les worktrees inactifs"
+            labelTone="danger"
+            value={stale === null ? null : staleSize !== null ? formatBytes(staleSize) : String(stale)}
+            onClick={() => setCleanOpen(true)}
+            disabled={stale === null || stale === 0}
+            sublabel={stale === 0 ? 'aucun worktree inactif' : stale === null ? 'worktrees illisibles' : undefined}
+          />
+        ) : null}
       </MobileGroup>
 
       <MobileGroup label="Préférences">
@@ -121,13 +153,19 @@ export function MobileOverview({ onOpenTab }: { onOpenTab: (tab: SettingsTab, se
               <span id={pushTitle} className="font-sans text-app-15 text-text">
                 Notifications
               </span>
-              <span className="font-sans text-app-12 text-muted">{pushReason ?? push.error ?? 'Autorisations et fins de session'}</span>
+              <span className="font-sans text-app-12 text-muted">{pushReason ?? push.error ?? (push.subscribed && push.sharedWithOtherAccount ? SHARED_BROWSER_NOTICE : 'Autorisations et fins de session')}</span>
             </label>
             <PushSwitch id={pushSwitchId} labelledBy={pushTitle} />
           </div>
         </li>
         <MobileRow icon="reglages" label="Thème" value={THEME_LABELS[theme]} onClick={() => onOpenTab('preferences')} />
       </MobileGroup>
+
+      {isAdminRole(data.profile.role) ? (
+        <MobileGroup label="Instance">
+          <MobileRow icon={ADMIN_NAV_ITEM.icon} label={ADMIN_NAV_ITEM.label} sublabel={ADMIN_NAV_ITEM.description} href={ADMIN_NAV_ITEM.href} />
+        </MobileGroup>
+      ) : null}
 
       <PickerSheet kind={picker} onClose={() => setPicker(null)} onCustomModel={() => onOpenTab('claude-code')} />
       <LogsDrawer open={logsOpen} onOpenChange={setLogsOpen} />
@@ -148,7 +186,7 @@ function PickerSheet({ kind, onClose, onCustomModel }: { kind: 'model' | 'mode' 
     kind === 'model'
       ? modelOptions(settings.defaultModel, data.seenModels)
       : kind === 'mode'
-        ? permissionModeOptions(settings.blockBypassPermissions)
+        ? permissionModeOptions(bypassBlocked(settings))
         : [];
   const current = kind === 'model' ? (settings.defaultModel ?? CLI_DEFAULT) : settings.defaultPermissionMode;
 

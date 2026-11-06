@@ -3,8 +3,9 @@ import { apiRoute } from '@/server/http';
 import { listNotifications } from '@/server/notifications';
 
 /**
- * GET /api/notifications[?limit=&offset=&unread=1] — notification centre (bell, D01): unread first,
- * then most recent; `counts` gives the badge (unread, by severity); `nextOffset` paginates.
+ * GET /api/notifications[?limit=&offset=&unread=1] — notification centre of the signed-in account
+ * (bell, D01): unread first, then most recent; `counts` gives the badge (unread, by severity);
+ * `nextOffset` paginates. Only this account's notifications, whatever space they come from.
  */
 
 export const dynamic = 'force-dynamic';
@@ -16,9 +17,10 @@ const querySchema = z.object({
 });
 
 export const GET = apiRoute({
+  auth: 'user',
   query: querySchema,
-  handler: async ({ query }) =>
-    listNotifications({
+  handler: async ({ query, user }) =>
+    listNotifications(user.id, {
       ...(query.limit !== undefined ? { limit: query.limit } : {}),
       ...(query.offset !== undefined ? { offset: query.offset } : {}),
       unreadOnly: query.unread === '1' || query.unread === 'true',

@@ -3,13 +3,14 @@ import { apiRoute } from '@/server/http';
 import { getPushStatus, sendPush } from '@/server/push';
 
 /**
- * POST /api/push/test — sends a test notification to the owner's devices (M08 check that
+ * POST /api/push/test — sends a test notification to the devices of the signed-in account (never another account's) (M08 check that
  * « Notifications sur ce téléphone » works). Returns `{ sent, pruned, failed, skipped }`.
  */
 
 export const dynamic = 'force-dynamic';
 
 export const POST = apiRoute({
+  auth: 'user',
   rateLimit: { limit: 5, windowMs: 10 * 60_000 },
   handler: async ({ user }) => {
     const status = getPushStatus();
@@ -23,7 +24,7 @@ export const POST = apiRoute({
         severity: 'info',
         kind: 'server',
       },
-      { userId: user.id },
+      { userIds: [user.id] },
     );
   },
 });

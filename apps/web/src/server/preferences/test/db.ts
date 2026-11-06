@@ -1,17 +1,21 @@
 /**
  * Test-only helpers of the Paramètres lot: one PostgreSQL database per test file
- * (`nuera_settings_<suffix>`) on the local cluster of `pnpm db:local`, created and migrated on demand.
+ * (`nuera_w5_settings_<suffix>`) on the local cluster of `pnpm db:local`, created and migrated on demand.
  *
  *   NUERA_TEST_PG_ADMIN_URL   admin URL (default postgres://nuera:nuera@127.0.0.1:54329/postgres)
  */
 import { createDb } from '@nuera/db';
 import { runMigrations } from '@nuera/db/migrate';
-import { user } from '@nuera/db/schema';
 import { sql } from 'drizzle-orm';
+import type { RequestContext } from '@/server/tenancy/context';
+import { legacyOwnerContext, seedLegacyOwner, TEST_ENVIRONMENT_ID, TEST_SPACE_ID, truncateTenancy, type TestAccount } from '@/server/tenancy/test/fixtures';
 
 const ADMIN_URL = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
 
 export const TEST_USER_ID = 'settings-owner';
+
+/** Space and default server (« VPS-3 », RUNNER_URL / RUNNER_TOKEN) of the owner seeded by the reset below. */
+export { TEST_ENVIRONMENT_ID, TEST_SPACE_ID };
 
 function databaseUrl(name: string): string {
   const url = new URL(ADMIN_URL);
@@ -38,7 +42,7 @@ async function recreate(name: string): Promise<void> {
 
 export async function prepareTestDatabase(suffix: string): Promise<string> {
   if (!/^[a-z0-9_]{1,30}$/.test(suffix)) throw new Error('suffixe de base invalide');
-  const name = `nuera_settings_${suffix}`;
+  const name = `nuera_w5_settings_${suffix}`;
   const url = databaseUrl(name);
   const exists = await admin(async (db) => (await db.execute(sql`select 1 from pg_database where datname = ${name}`)).length > 0);
   if (!exists) await recreate(name);
@@ -53,14 +57,27 @@ export async function prepareTestDatabase(suffix: string): Promise<string> {
   return url;
 }
 
-export async function resetTables(): Promise<void> {
+/** Request context of the seeded owner (space TEST_SPACE_ID, server TEST_ENVIRONMENT_ID). */
+export function testContext(): RequestContext {
+  return legacyOwnerContext({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test' });
+}
+
+/**
+ * Empties the tables and seeds the owner again with its personal space and the default server
+ * (fixed ids TEST_SPACE_ID / TEST_ENVIRONMENT_ID): set them on every inserted project
+ * (`spaceId`, `environmentId`) and `environmentId` on worktrees, sessions, runs and operations.
+ */
+export async function resetTables(): Promise<TestAccount> {
   const { db } = await import('@/server/db');
   await db.execute(
-    sql.raw('truncate table audit_log, operations, permission_requests, session_events, sessions, worktrees, projects, app_settings, "user" restart identity cascade'),
+    sql.raw('truncate table audit_log, operations, permission_requests, session_events, sessions, worktrees, projects, app_settings, notifications, push_subscriptions restart identity cascade'),
   );
-  await db.insert(user).values({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test', twoFactorEnabled: true });
-  const { invalidateAppSettingsCache } = await import('@/server/settings');
-  invalidateAppSettingsCache();
+  // Accounts, spaces, servers and what hangs below them, plus the per-process caches.
+  await truncateTenancy();
+  const owner = await seedLegacyOwner({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test' });
+  const { invalidateSettingsCache } = await import('@/server/settings');
+  invalidateSettingsCache();
+  return owner;
 }
 
 export async function closeTestDb(): Promise<void> {

@@ -21,6 +21,7 @@ import {
   TileHeader,
   toast,
 } from '@/components/ui';
+import { roleLine, ROLE_LABELS } from '@/components/shell';
 import { authClient, passkeyErrorMessage, passkeysSupported } from '@/lib/auth-client';
 import { formatShortDate, plural } from '@nuera/shared/format';
 import { PASSWORD_RULES_TEXT } from '@/server/auth/password-policy';
@@ -38,8 +39,12 @@ import {
 import { accessPolicyText, backupCodesText, formatJournalDate, twoFactorCaption, webSessionCaption } from '../lib/copy';
 import { SECTION_IDS } from '../lib/tabs';
 import type { JournalEntry, JournalPage, PasskeyView, WebSessionView } from '../lib/types';
+import { GitIdentityTile } from './git-identity';
 import { InfoBox, SettingsRow, SettingsRows } from './parts';
 import { useSettings } from './SettingsContext';
+
+/** Mention required by docs/MULTICOMPTE.md §9: the instance journal shows sign-ins to the administrators. */
+export const ADMIN_JOURNAL_NOTICE = "Les administrateurs de Nuera Dev voient l'historique des connexions de chaque compte, adresses IP comprises.";
 
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -138,6 +143,7 @@ function JournalLines({ items, limit }: { items: JournalEntry[]; limit?: number 
       {shown.map((item) => (
         <li key={item.id} className="font-mono text-app-11 leading-[18px] break-words text-text">
           {formatJournalDate(item.at, now)} · {item.summary}
+          {item.by ? ` · par ${item.by}` : ''}
         </li>
       ))}
     </ul>
@@ -213,6 +219,7 @@ export function SecurityTab() {
         <TwoFactorTile />
         <PasskeysTile />
         <PasswordTile />
+        <GitIdentityTile />
       </div>
       <div className="flex min-w-0 flex-col gap-5">
         <AccessTile />
@@ -222,22 +229,26 @@ export function SecurityTab() {
   );
 }
 
+/**
+ * The signed-in account (and only it): « Propriétaire » keeps its Figma title for the owner; the
+ * others read « Administrateur » / « Membre ». The server line names the server of the space.
+ */
 function IdentityTile() {
-  const { data } = useSettings();
+  const { data, serverName } = useSettings();
   const twoFactor = data.account.ok ? data.account.data.twoFactor.enabled : null;
+  const role = ROLE_LABELS[data.profile.role];
   return (
-    <Card as="section" aria-label="Propriétaire" className="gap-3">
-      <TileHeader icon="lock" title="Propriétaire" />
+    <Card as="section" aria-label={role} className="gap-3">
+      <TileHeader icon="lock" title={role} />
       <div className="flex items-center gap-3">
-        <Avatar name={data.owner.name} size={40} />
+        <Avatar name={data.profile.name} size={40} />
         <div className="flex min-w-0 flex-col gap-0.5">
-          <p className="m-0 truncate font-sans text-app-15 font-semibold text-text">{data.owner.name}</p>
-          <p className="m-0 truncate font-sans text-app-13 text-muted">{data.owner.email}</p>
+          <p className="m-0 truncate font-sans text-app-15 font-semibold text-text">{data.profile.name}</p>
+          <p className="m-0 truncate font-sans text-app-13 text-muted">{data.profile.email}</p>
         </div>
       </div>
       <p className="m-0 font-sans text-app-12 text-muted">
-        {twoFactor === false ? 'Propriétaire · double facteur inactif' : 'Propriétaire · double facteur actif'} · un seul propriétaire, aucun
-        autre compte.
+        {`${roleLine(data.profile.role, twoFactor !== false)} · ${serverName ? `serveur ${serverName}` : 'aucun serveur attribué'}`}
       </p>
     </Card>
   );
@@ -273,7 +284,7 @@ function TwoFactorTile() {
           setOpen(next);
           if (!next) refresh();
         }}
-        account={data.owner.email}
+        account={data.profile.email}
       />
     </Card>
   );
@@ -324,7 +335,9 @@ function BackupCodesDialog({ open, onOpenChange, account }: { open: boolean; onO
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'nuera-dev-codes-de-secours.txt';
+    // One file per account: two accounts of one computer never overwrite each other's codes.
+    const local = account.split('@')[0]?.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 40) || 'compte';
+    link.download = `nuera-dev-codes-de-secours-${local}.txt`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -716,6 +729,7 @@ function JournalTile({ initial }: { initial: ReturnType<typeof useSettings>['dat
         <ErrorPanel title="Le journal n'a pas pu être lu" excerpt={initial.error.message} onRetry={refresh} retryLabel="Réessayer" />
       )}
       {error ? <p role="alert" className="m-0 font-sans text-app-12 text-danger">{error}</p> : null}
+      <p className="m-0 font-sans text-app-12 text-muted">{ADMIN_JOURNAL_NOTICE}</p>
       {cursor ? (
         <CompactButton variant="secondaire" className="self-start" onClick={more} loading={loading}>
           Afficher les événements précédents

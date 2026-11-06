@@ -11,7 +11,7 @@ Référence pour tous les lots : **réutiliser avant de créer**. Chaque composa
 | `shell/` | navigation, palette ⌘K, cloche, états globaux T5/T6/W7, `AppShell` | `@/components/shell` |
 | `dev/` | composites Nuera Dev (fil de session, autorisations, diff, cartes…) — **voir [`dev/README.md`](./dev/README.md)** | `@/components/dev` |
 
-Galeries (développement uniquement, propriétaire connecté — ou `NUERA_KIT_PUBLIC=1` sous `next dev`) :
+Galeries (développement uniquement, compte connecté — ou `NUERA_KIT_PUBLIC=1` sous `next dev`) :
 `/kit` (ce dossier) et `/kit/composites` (`dev/`).
 
 ## Règles communes
@@ -23,7 +23,7 @@ Galeries (développement uniquement, propriétaire connecté — ou `NUERA_KIT_P
   `text-on-pale` = texte posé sur un aplat accent / pâle (bascule aussi).
 - **Thème** : `<html data-theme="light|dark|system">` écrit au SSR depuis le cookie `nuera-theme`
   (`server/shell/theme.ts`), modifié par `useTheme()` (`hooks/useTheme.ts` → action serveur
-  `setThemePreferenceAction`, enregistre `app_settings.theme` + cookie).
+  `setThemePreferenceAction`, enregistre `user_preferences.theme` du compte + le cookie, seul lu une fois déconnecté).
 - **Cibles tactiles** : 44 px minimum ; les contrôles dessinés plus petits (bouton compact 36, interrupteur
   36 × 20, liens) portent la classe `nu-hit` (zone invisible de 44 px).
 - **Mouvement** : `prefers-reduced-motion` respecté partout (fondu de 150 ms, silhouettes fixes).
@@ -147,31 +147,41 @@ les hooks et composants ci-dessous.
 
 | Export | Props / rôle | Figma |
 |---|---|---|
-| `AppShell` | `data: ShellData`, `variant: 'sidebar'\|'rail'` — fournit `LiveEventsProvider`, la palette, `TooltipProvider` ; affiche **T5** à la place du contenu quand le runner ne répond pas (navigation conservée, Accueil en rouge), la bannière **T6** et la bannière de **connexion perdue** (variante `sidebar`). Variable CSS `--shell-bottom` = hauteur de la barre d'onglets (barres d'action collantes du téléphone). | shell D01–D08, D05 |
-| `Sidebar` | `activeSessions`, `serverUnavailable`, `server` (props de `ServerCard`), `user`, `onOpenSearch`, `active?` | `Dev · Barre latérale` 201:732 (248 px, ESPACE / CONFIGURATION, bulle Sessions) |
+| `AppShell` | `data: ShellData`, `variant: 'sidebar'\|'rail'` — fournit `LiveEventsProvider`, la palette, `TooltipProvider` ; affiche **T5** à la place du contenu quand le runner du serveur de l'espace ne répond pas (navigation conservée, Accueil en rouge), sauf sur les pages qui n'en ont pas besoin (`isRunnerIndependentPage` : `/administration`, Paramètres vue d'ensemble, Compte et sécurité, Préférences, `/parametres/notification` → `ServerUnavailableBanner` à la place) ; **jamais** sans serveur attribué (chaque page qui a besoin d'un runner affiche alors `NoServerAssigned`) ; la bannière **T6** et la bannière de **connexion perdue** (variante `sidebar`). Variable CSS `--shell-bottom` = hauteur de la barre d'onglets (barres d'action collantes du téléphone). | shell D01–D08, D05 |
+| `Sidebar` | `activeSessions`, `serverUnavailable`, `server` (props de `ServerCard`), `user: { name, role?, twoFactorEnabled }` (`role` owner/admin → groupe « INSTANCE » avec Administration ; la galerie l'omet), `onOpenSearch`, `active?` | `Dev · Barre latérale` 201:732 (248 px, ESPACE / CONFIGURATION, bulle Sessions) |
 | `SidebarRail` | `userName`, `serverUnavailable`, `active?` (« Sessions » dans le Workspace) | `Dev · Barre latérale repliée` 201:893 (72 px, libellés en aria-label + infobulle) |
 | `TabBar` | `activeSessions`, `serverUnavailable`, `border`, `active?` — masquée dans le Workspace et sur `/projets/nouveau` | `Dev · Barre d'onglets` 202:452 |
-| `ServerCard` | `name`, `location`, `availability`, `metrics`, `claudeState`, `lastContactAt` | `État du serveur` (VPS-3 · OVH Gravelines, CPU · RAM, Claude Code connecté) |
-| `UserCard`, `UserMenu` | `name`, `twoFactorEnabled` ; menu : Paramètres, Se déconnecter (`signOutAction` du lot auth) | `Utilisateur` |
+| `ServerCard` | `name`, `location`, `availability`, `metrics`, `claudeState`, `lastContactAt` — le serveur **de l'espace** (« VPS-3 » pour le serveur par défaut) ; sans serveur : « Aucun serveur attribué » | `État du serveur` (VPS-3 · OVH Gravelines, CPU · RAM, Claude Code connecté) |
+| `UserCard`, `UserMenu` | `name`, `role?` (« Propriétaire » de Figma · « Administrateur » · « Membre », `roleLine`), `twoFactorEnabled` ; menu : Paramètres, Administration (owner/admin), Se déconnecter (le formulaire envoie l'endpoint push de l'appareil) | `Utilisateur` |
 | `PageHeader` | `title`, `subtitle`, `actions` (bureau), `mobileAction` (44 px, téléphone) | `En-tête` D01–D08 / M01–M08 |
 | `NotificationBell`, `NotificationList` | `size: 'sm'\|'md'` — cloche + panneau (popover bureau, feuille téléphone), lecture via actions serveur | `Bouton · Notifications` D01 / M01 (panneau non dessiné) |
 | `CommandPalette` (`open`, `onOpenChange`, `groups?`, `providers?`), `useRegisterCommands(group)`, `useRegisterSearchProvider(provider)` | palette ⌘K / Ctrl K (cmdk), montée par `AppShell` : la navigation est toujours présente ; les fonctionnalités ajoutent, tant qu'elles sont montées, des groupes statiques (`{ id, heading, items: { id, label, description?, icon?, keywords?, href? \| perform? }[] }`) et des recherches asynchrones (`{ id, heading, minQueryLength?, search(query, signal) }`) — à mémoriser (`useMemo`) | « Rechercher… ⌘K » de la barre latérale |
 | `ServerUnavailable` | `serverName`, `lastContactAt`, `statusUrl?` (`NUERA_SERVER_STATUS_URL`), `providerName?`, `onRetry`, `retrying` | **T5** 236:5335 |
-| `ClaudeDisconnected`, `ClaudeDisconnectedBanner` | `state: 'disconnected'\|'wrong_method'\|'not_installed'`, `reconnectHref` (le shell passe `CLAUDE_RECONNECT_HREF`), `variant: 'card'` (pages qui exigent Claude) `\|'banner'`, `serverName?` (défaut : `app_settings.serverName` du shell) | **T6** 236:5372 |
+| `ClaudeDisconnected`, `ClaudeDisconnectedBanner` | `state: 'disconnected'\|'wrong_method'\|'not_installed'`, `reconnectHref` (le shell passe `CLAUDE_RECONNECT_HREF`), `variant: 'card'` (pages qui exigent Claude) `\|'banner'`, `serverName?` (défaut : nom du serveur de l'espace, `useServerName()`) | **T6** 236:5372 |
+| `ServerUnavailableBanner` | `serverName`, `lastContactAt`, `onRetry`, `retrying?` — « {serveur} ne répond pas » + « Réessayer maintenant », au-dessus des pages que T5 ne remplace pas | variante bandeau de T5 |
+| `NoServerAssigned` | `variant: 'card'\|'banner'`, `titleAs?` — « Aucun serveur attribué » (copie `NO_SERVER_*` de `status-text.ts`), jamais T5 | état du multi-comptes (sans Figma) |
 | `ConnectionLostBanner` | `nextRetryAt`, `onRetry`, `context: 'workspace'` (copie W7) `\|'page'`, `serverName?` (idem) — alerte annoncée une fois, le compte à rebours n'est que visuel | **W7** 231:4370 |
 | `ShellAvailability` | `variant: 'long'\|'short'` — « Mercredi 4 novembre 2026 · VPS-3 et Claude Code sont disponibles » / « Mer. 4 nov. · tout est disponible », en direct | en-tête D01 / M01 |
-| `useShellData()`, `useOptionalShellData()` | données du layout (`ShellData`, renouvelées à chaque `router.refresh()`) ; la variante optionnelle renvoie `null` hors des shells | — |
+| `useShellData()`, `useOptionalShellData()` | données du layout (`ShellData` : `user` avec `role`, `space`, `environment \| null`, `server`, `claude`, `sessions`, `notifications`, renouvelées à chaque `router.refresh()`) ; la variante optionnelle renvoie `null` hors des shells | — |
+| `useServerName()`, `useShellEnvironment()`, `useIsInstanceAdmin()` | nom du serveur de l'espace (`null` sans serveur ; `serverLabel()` donne « le serveur » en repli), serveur (`ShellEnvironment`), rôle owner/admin | — |
+| `navItemsFor(role)`, `ADMIN_NAV_ITEM`, `isAdminRole`, `isRunnerIndependentPage(chemin, onglet)`, `administrationGroup` (palette) | navigation selon le rôle, pages gardées sous bandeau plutôt que T5 | — |
 
 ### Temps réel — `hooks/useLiveEvents.tsx`
 
-Un seul `EventSource` par onglet sur `/api/stream/events` (relais web du flux global du runner).
+Un seul `EventSource` par onglet sur `/api/stream/events` : le relais web fusionne le flux global du runner **du serveur
+de l'espace** (identifiants `<environmentId>.<seq>`) et le **canal web du compte** (seq 0, sans `id:`), reçu même
+sans serveur.
 `useLiveEvents()` → `{ connection: 'connecting'|'open'|'reconnecting', runner: 'available'|'unavailable'|'unknown',
 lastSignalAt, lastRunnerContactAt, nextRetryAt, attempt, metrics, claude, activeSessionIds, notifications, retryNow(),
 subscribe(type, handler), markNotificationsRead(ids) }` ; `useLiveEvent(type, handler)` pour s'abonner à un type.
 
-Événements utilisés (`@nuera/shared/events`) : `heartbeat` (preuve de vie), `stream.error` (`RUNNER_UNAVAILABLE` →
-T5), `stream.reset`, `system.metrics` (carte serveur), `claude.status` (ligne Claude, T6), `session.status` (bulle
-Sessions : actives = `new`, `running`, `waiting_permission`, `waiting_input`), `notification.created` (cloche).
+Événements utilisés (`@nuera/shared/events`) : `stream.hello` (canal web, en premier : le compte du flux → garde
+d'identité), `heartbeat` (preuve de vie), `stream.error` (`RUNNER_UNAVAILABLE` → T5), `stream.reset` (dont un
+`Last-Event-ID` d'un autre serveur), `system.metrics` (carte serveur), `claude.status` (ligne Claude, T6),
+`session.status` (bulle Sessions : actives = `new`, `running`, `waiting_permission`, `waiting_input`),
+`notification.created` (cloche ; seul celui du canal web, seq 0, est lu) et `notification.read` (lue dans un autre
+onglet ou appareil). **Garde d'identité multi-onglets** (`identityVerdict`, `BroadcastChannel` « nuera-compte ») :
+un onglet dont le cookie désigne désormais un autre compte se recharge.
 Reconnexion : recul exponentiel 1 → 30 s (± 20 %) quand le navigateur ne joint plus l'application (W7) ;
 toutes les 10 s quand l'application signale le runner injoignable (T5) ; connexion muette 2,5 battements ⇒ perdue.
 Chaque nouvel `EventSource` reprend après le dernier id reçu (`?lastEventId=`, rejoué par le runner).
@@ -187,8 +197,11 @@ complète → page d'erreur du navigateur) : après 3 échecs, une sonde du flux
 
 ### Données serveur — `server/shell/`
 
-`getShellData(user)` (mise en cache par requête) : `app_settings` (nom, emplacement, limite de sessions),
-`runner.systemMetrics()` / `runner.claudeStatus()` (4 s max ; `RUNNER_UNAVAILABLE` ⇒ `availability: 'unavailable'`,
-dernier contact = dernier échantillon ou `uptime_daily.last_beat_at`), sessions actives (BD), 20 dernières
-notifications. Actions serveur : `setThemePreferenceAction`, `markNotificationsReadAction`,
-`markAllNotificationsReadAction` (toutes revérifient la session et l'`Origin` de la requête).
+`getShellData(ctx)` (mise en cache par requête) : compte (id, rôle), espace, serveur de l'espace (`environments` :
+nom, lieu, statut, plafond de sessions), `systemMetrics()` / `claudeStatus()` du runner **de ce serveur** (4 s max ;
+`RUNNER_UNAVAILABLE` ⇒ `availability: 'unavailable'`, dernier contact = dernier échantillon ou
+`uptime_daily.last_beat_at` sous `uptimeServiceKey()`), sans serveur aucun appel (`environment: null`), sessions
+actives de l'espace, 20 dernières notifications **du compte**. Actions serveur : `setThemePreferenceAction`,
+`markNotificationsReadAction`, `markAllNotificationsReadAction` (toutes revérifient la session et l'`Origin` ; les
+identifiants de notifications d'un autre compte sont ignorés). Garde du clic sur une notification d'un autre compte :
+`server/shell/notification-guard.ts` (page `/parametres/notification`).

@@ -55,7 +55,7 @@ function SettingsPage() {
   const params = useSearchParams();
   const tab = parseSettingsTab(params.get('onglet'));
   const { data, refresh, refreshLive, openLogin } = useSettings();
-  const firstName = data.owner.name.trim().split(/\s+/)[0] ?? data.owner.name;
+  const firstName = data.profile.name.trim().split(/\s+/)[0] ?? data.profile.name;
 
   useLiveEvent('claude.status', () => refresh());
   useLiveEvent('stream.reset', () => refresh());
@@ -107,8 +107,9 @@ function SettingsPage() {
         title="Paramètres"
         subtitle={
           <>
-            <span className="hidden nav:inline">Compte, sécurité, Claude Code et serveur. Un seul propriétaire, aucun autre compte.</span>
-            <span className="nav:hidden">{`Un seul propriétaire : ${firstName}`}</span>
+            {/* Several accounts now (docs/MULTICOMPTE.md §10): each sees and changes its own settings only. */}
+            <span className="hidden nav:inline">Compte, sécurité, Claude Code et serveur. Chaque compte a ses propres réglages.</span>
+            <span className="nav:hidden">{`Compte de ${firstName}`}</span>
           </>
         }
       />

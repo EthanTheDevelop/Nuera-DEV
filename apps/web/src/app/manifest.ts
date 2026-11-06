@@ -12,7 +12,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: '/',
     name: 'Nuera Dev',
     short_name: 'Nuera Dev',
-    description: "Retrouver, depuis n'importe quel appareil, les projets du VPS-3 et les sessions Claude Code qui y travaillent.",
+    description: "Retrouver, depuis n'importe quel appareil, les projets de votre serveur et les sessions Claude Code qui y travaillent.",
     lang: 'fr',
     dir: 'ltr',
     start_url: '/',

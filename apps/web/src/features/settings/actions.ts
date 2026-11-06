@@ -12,7 +12,6 @@ import {
   revokeWebSession,
 } from '@/server/auth/account';
 import { auth } from '@/server/auth/auth';
-import { requireUser } from '@/server/auth/session';
 import { toAppError } from '@/server/errors';
 import {
   getAccountView,
@@ -28,9 +27,10 @@ import {
   removeStaleWorktrees,
   updateSettings,
 } from '@/server/preferences';
-import { audit } from '@/server/security/audit';
 import { assertSameOriginHeaders } from '@/server/security/origin';
 import { assertRateLimit } from '@/server/security/rate-limit';
+import { requireContext } from '@/server/tenancy/context';
+import { auditIn } from '@/server/tenancy/scope';
 import type {
   AccountView,
   ClaudeCliView,
@@ -45,18 +45,20 @@ import type {
 } from './lib/types';
 
 /**
- * Server actions of Paramètres. Each one re-checks the owner session (requireUser) and the Origin of
- * the request; errors come back as data (`{ ok: false, error }`, French messages), because Next
- * hides thrown messages in production. Sensitive mutations are audited by the server modules.
+ * Server actions of Paramètres. Each one re-checks the session and resolves the request context
+ * (requireContext: the signed-in account, its space, its server) and the Origin of the request;
+ * nothing ever reaches another account's space or server. Errors come back as data
+ * (`{ ok: false, error }`, French messages), because Next hides thrown messages in production.
+ * Sensitive mutations are audited by the server modules.
  */
 
 export type ActionError = { code: string; message: string; detail?: string; untouched?: string; raw?: string };
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: ActionError };
 
 async function guard() {
-  const user = await requireUser();
+  const ctx = await requireContext();
   assertSameOriginHeaders(await headers());
-  return user;
+  return ctx;
 }
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -82,11 +84,17 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 // --- Réglages ----------------------------------------------------------------------------------
 
+/**
+ * Saves flat settings, each in its scope (instance, server, space, account). A refused key (« Réglage
+ * réservé aux administrateurs. »…) fails the action, even when other keys of the patch went through.
+ */
 export async function updateSettingsAction(patch: Record<string, unknown>): Promise<ActionResult<SettingsValues>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('settings:update', user.id, { limit: 60, windowMs: 60_000 });
-    return updateSettings(patch, user);
+    const ctx = await guard();
+    assertRateLimit('settings:update', ctx.user.id, { limit: 60, windowMs: 60_000 });
+    const result = await updateSettings(ctx, patch);
+    if (result.refused) throw result.refused;
+    return result.values;
   });
 }
 
@@ -94,9 +102,9 @@ export async function updateSettingsAction(patch: Record<string, unknown>): Prom
 
 export async function refreshClaudeStatusAction(): Promise<ActionResult<ClaudeCliView>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('settings:claude-status', user.id, { limit: 20, windowMs: 60_000 });
-    return getClaudeCli({ refresh: true });
+    const ctx = await guard();
+    assertRateLimit('settings:claude-status', ctx.user.id, { limit: 20, windowMs: 60_000 });
+    return getClaudeCli(ctx, { refresh: true });
   });
 }
 
@@ -135,9 +143,9 @@ export async function regenerateBackupCodesAction(password: string): Promise<Act
 
 export async function renamePasskeyAction(id: string, name: string): Promise<ActionResult<PasskeyView[]>> {
   return run(async () => {
-    const user = await guard();
+    const ctx = await guard();
     await renamePasskey(idSchema.parse(id), typeof name === 'string' ? name : '');
-    await audit({ action: 'auth.passkey_renamed', summary: `clé d'accès renommée : ${String(name).trim().slice(0, 60)}`, actorUserId: user.id, targetType: 'passkey', targetId: id });
+    await auditIn(ctx, { action: 'auth.passkey_renamed', summary: `clé d'accès renommée : ${String(name).trim().slice(0, 60)}`, targetType: 'passkey', targetId: id, environmentId: null });
     return getPasskeys();
   });
 }
@@ -173,9 +181,9 @@ export async function changePasswordAction(input: z.input<typeof changePasswordS
 
 export async function loadJournalAction(before?: number): Promise<ActionResult<JournalPage>> {
   return run(async () => {
-    await guard();
+    const ctx = await guard();
     const cursor = z.number().int().positive().optional().parse(before);
-    return getJournalPage({ limit: 20, ...(cursor ? { before: cursor } : {}) });
+    return getJournalPage(ctx, { limit: 20, ...(cursor ? { before: cursor } : {}) });
   });
 }
 
@@ -205,40 +213,40 @@ export async function reauthenticateAction(): Promise<void> {
  */
 export async function loadLiveStatusAction(): Promise<ActionResult<LiveStatusView>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('settings:live-status', user.id, { limit: 60, windowMs: 60_000 });
-    const [liveSessions, worktrees] = await Promise.all([load(() => getLiveSessions()), load(() => listStaleWorktrees())]);
+    const ctx = await guard();
+    assertRateLimit('settings:live-status', ctx.user.id, { limit: 60, windowMs: 60_000 });
+    const [liveSessions, worktrees] = await Promise.all([load(() => getLiveSessions(ctx)), load(() => listStaleWorktrees(ctx))]);
     return { liveSessions, worktrees };
   });
 }
 
 export async function loadStaleWorktreesAction(): Promise<ActionResult<StaleWorktreesView>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('settings:worktrees', user.id, { limit: 30, windowMs: 60_000 });
-    return listStaleWorktrees();
+    const ctx = await guard();
+    assertRateLimit('settings:worktrees', ctx.user.id, { limit: 30, windowMs: 60_000 });
+    return listStaleWorktrees(ctx);
   });
 }
 
 export async function removeStaleWorktreesAction(ids: string[]): Promise<ActionResult<RemoveWorktreesResult>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('settings:worktrees-remove', user.id, { limit: 10, windowMs: 60_000 });
-    return removeStaleWorktrees({ ids }, user);
+    const ctx = await guard();
+    assertRateLimit('settings:worktrees-remove', ctx.user.id, { limit: 10, windowMs: 60_000 });
+    return removeStaleWorktrees(ctx, { ids });
   });
 }
 
 export async function loadLogsAction(): Promise<ActionResult<{ operations: OperationLogItem[]; sessions: SessionLogItem[] }>> {
   return run(async () => {
-    await guard();
-    const [operations, sessions] = await Promise.all([listOperationLogs(40), listSessionLogs(40)]);
+    const ctx = await guard();
+    const [operations, sessions] = await Promise.all([listOperationLogs(ctx, 40), listSessionLogs(ctx, 40)]);
     return { operations, sessions };
   });
 }
 
 export async function loadOperationLogAction(id: string): Promise<ActionResult<{ log: string; raw: string | null }>> {
   return run(async () => {
-    await guard();
-    return getOperationLog(id);
+    const ctx = await guard();
+    return getOperationLog(ctx, id);
   });
 }

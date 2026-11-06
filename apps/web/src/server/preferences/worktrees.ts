@@ -6,17 +6,22 @@ import { z } from 'zod';
 import type { RemoveWorktreesResult, StaleWorktree, StaleWorktreesView } from '@/features/settings/lib/types';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { isRunnerUnavailable, runner, RunnerError } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
-import { getAppSettings } from '@/server/settings';
+import { getRunnerForEnvironment, isRunnerUnavailable, RunnerError } from '@/server/runner/client';
+import { getSpaceSettings } from '@/server/settings';
+import { requireEnvironment, type RequestContext } from '@/server/tenancy/context';
+import { auditIn, ofSpace } from '@/server/tenancy/scope';
 
 /**
- * « Worktrees inactifs » (D08 Maintenance, M08 « Nettoyer les worktrees inactifs », T8).
+ * « Worktrees inactifs » (D08 Maintenance, M08 « Nettoyer les worktrees inactifs », T8) of the
+ * account's server: the projects of its space on that server only.
  * A session worktree (never the primary clone) is inactive when nothing happened in it for
- * `app_settings.worktree_stale_days`: last session activity, else its last use, else its creation.
+ * `space_settings.worktree_stale_days`: last session activity, else its last use, else its creation.
  * Eligibility is computed on the server and re-checked right before removal: a worktree with
- * uncommitted changes (or unreadable git state) or a live session is excluded d'office.
+ * uncommitted changes (or unreadable git state) or a live session is excluded d'office. Only ids of
+ * that list are ever removed: any other id (another space, unknown) is skipped without a runner call.
  */
+
+type WorktreeContext = Pick<RequestContext, 'user' | 'space' | 'environment'>;
 
 const DAY_MS = 86_400_000;
 
@@ -65,7 +70,7 @@ function dateMs(value: string | null | undefined): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-async function lastSessionActivityByWorktree(worktreeIds: string[]): Promise<Map<string, Date>> {
+async function lastSessionActivityByWorktree(environmentId: string, worktreeIds: string[]): Promise<Map<string, Date>> {
   const map = new Map<string, Date>();
   if (worktreeIds.length === 0) return map;
   const rows = await db
@@ -74,7 +79,7 @@ async function lastSessionActivityByWorktree(worktreeIds: string[]): Promise<Map
       at: max(sql<string>`coalesce(${sessions.lastActivityAt}, ${sessions.endedAt}, ${sessions.updatedAt})`),
     })
     .from(sessions)
-    .where(and(isNotNull(sessions.worktreeId), inArray(sessions.worktreeId, worktreeIds)))
+    .where(and(eq(sessions.environmentId, environmentId), isNotNull(sessions.worktreeId), inArray(sessions.worktreeId, worktreeIds)))
     .groupBy(sessions.worktreeId);
   for (const row of rows) {
     if (!row.worktreeId || !row.at) continue;
@@ -85,12 +90,15 @@ async function lastSessionActivityByWorktree(worktreeIds: string[]): Promise<Map
   return map;
 }
 
-export async function listStaleWorktrees(now = new Date()): Promise<StaleWorktreesView> {
-  const settings = await getAppSettings();
+export async function listStaleWorktrees(ctx: WorktreeContext, now = new Date()): Promise<StaleWorktreesView> {
+  const { environment } = requireEnvironment(ctx);
+  const runner = getRunnerForEnvironment(environment.id);
+  const settings = await getSpaceSettings(ctx.space.id);
+  if (!settings) throw new AppError('NOT_FOUND', "L'espace de ce compte est introuvable.");
   const rows = await db
     .select({ id: projects.id, name: projects.name })
     .from(projects)
-    .where(and(isNull(projects.archivedAt), eq(projects.status, 'ready')));
+    .where(ofSpace(ctx, eq(projects.environmentId, environment.id), isNull(projects.archivedAt), eq(projects.status, 'ready')));
   const unreadable: string[] = [];
   const lists = await Promise.all(
     rows.map(async (project) => {
@@ -107,7 +115,7 @@ export async function listStaleWorktrees(now = new Date()): Promise<StaleWorktre
     }),
   );
   const flat = lists.flat();
-  const activity = await lastSessionActivityByWorktree(flat.map((item) => item.worktree.id));
+  const activity = await lastSessionActivityByWorktree(environment.id, flat.map((item) => item.worktree.id));
   const candidates: StaleCandidate[] = flat.map((item) => ({ ...item, lastSessionActivityAt: activity.get(item.worktree.id) ?? null }));
   return { staleDays: settings.worktreeStaleDays, items: selectStaleWorktrees(candidates, settings.worktreeStaleDays, now), unreadable };
 }
@@ -121,10 +129,12 @@ export const removeStaleWorktreesInputSchema = z.object({
  * an id that is no longer inactive or eligible is skipped with its reason. Never `force`: the runner
  * refuses a worktree that became dirty (WORKTREE_DIRTY). Branches are kept. Each removal is audited.
  */
-export async function removeStaleWorktrees(input: z.input<typeof removeStaleWorktreesInputSchema>, actor: { id: string }): Promise<RemoveWorktreesResult> {
+export async function removeStaleWorktrees(ctx: WorktreeContext, input: z.input<typeof removeStaleWorktreesInputSchema>): Promise<RemoveWorktreesResult> {
   const parsed = removeStaleWorktreesInputSchema.safeParse(input);
   if (!parsed.success) throw new AppError('VALIDATION', 'Choix de worktrees invalide.');
-  const current = await listStaleWorktrees();
+  const { environment } = requireEnvironment(ctx);
+  const runner = getRunnerForEnvironment(environment.id);
+  const current = await listStaleWorktrees(ctx);
   const byId = new Map(current.items.map((item) => [item.id, item]));
   const result: RemoveWorktreesResult = { removed: [], skipped: [] };
   for (const id of new Set(parsed.data.ids)) {
@@ -142,7 +152,7 @@ export async function removeStaleWorktrees(input: z.input<typeof removeStaleWork
     } catch (error) {
       if (isRunnerUnavailable(error)) {
         if (result.removed.length === 0) throw error;
-        result.skipped.push({ id, name: item.name, reason: 'le runner ne répond plus' });
+        result.skipped.push({ id, name: item.name, reason: `${environment.name} ne répond plus` });
         continue;
       }
       const reason =
@@ -155,12 +165,12 @@ export async function removeStaleWorktrees(input: z.input<typeof removeStaleWork
       continue;
     }
     result.removed.push({ id, name: item.name });
-    await audit({
+    await auditIn(ctx, {
       action: 'maintenance.worktree_removed',
       summary: `worktree inactif ${item.name} (${item.branch}) supprimé de ${item.projectName}, branche conservée`,
       targetType: 'worktree',
       targetId: id,
-      actorUserId: actor.id,
+      environmentId: environment.id,
       metadata: { projectId: item.projectId, branch: item.branch, lastActivityAt: item.lastActivityAt },
     });
   }

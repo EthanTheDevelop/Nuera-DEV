@@ -17,7 +17,9 @@ import { cn } from '@/lib/cn';
 import { Icon, type IconName } from '@/components/icons';
 import { useReturnFocus } from '@/components/ui/return-focus';
 import { Spinner } from '@/components/ui/Spinner';
-import { NAV_ITEMS } from './nav-items';
+import { isAdminRole, navItemsFor } from './nav-items';
+import { useOptionalShellData } from './ShellContext';
+import type { ShellRole } from './types';
 
 /* =================================================================================================
    Command palette (« Rechercher… ⌘K » of the sidebar — the palette itself is not drawn in Figma).
@@ -26,8 +28,8 @@ import { NAV_ITEMS } from './nav-items';
      useRegisterCommands({ id: 'projets', heading: 'Projets', items: [...] });
      useRegisterSearchProvider({ id: 'sessions', heading: 'Sessions', search: async (q, signal) => [...] });
 
-   Navigation entries (the 5 sections) are always present. Every item either navigates (`href`) or
-   runs `perform` — no item without an effect.
+   Navigation entries (the 5 sections, + « Administration » for the owner and administrators) are
+   always present. Every item either navigates (`href`) or runs `perform` — no item without an effect.
    ================================================================================================= */
 
 export interface CommandItem {
@@ -144,6 +146,38 @@ export interface CommandPaletteProps {
 }
 
 const NO_GROUPS: readonly CommandGroupDef[] = [];
+
+/** Navigation group of an account (role-aware: members never see « Administration »). */
+export function navigationGroup(role: ShellRole): CommandGroupDef {
+  return {
+    id: 'navigation',
+    heading: 'Navigation',
+    items: navItemsFor(role).map((item) => ({
+      id: `nav-${item.key}`,
+      label: item.label,
+      description: item.description,
+      icon: item.icon,
+      href: item.href,
+    })),
+  };
+}
+
+/** Tabs of /administration (docs/MULTICOMPTE.md §10), owner and administrators only. */
+export function administrationGroup(role: ShellRole): CommandGroupDef | null {
+  if (!isAdminRole(role)) return null;
+  return {
+    id: 'administration',
+    heading: 'Administration',
+    items: [
+      { id: 'admin-comptes', label: 'Comptes', description: 'inviter, désactiver, récupérer un compte', icon: 'clients', href: '/administration?onglet=comptes', keywords: ['administration', 'inviter', 'invitation'] },
+      { id: 'admin-serveurs', label: 'Serveurs', description: 'enregistrer, attribuer, retirer un serveur', icon: 'server', href: '/administration?onglet=serveurs', keywords: ['administration', 'runner'] },
+      { id: 'admin-instance', label: "Réglages de l'instance", description: 'accès web, invitations, mode sans autorisation', icon: 'reglages', href: '/administration?onglet=instance', keywords: ['administration'] },
+      { id: 'admin-journal', label: "Journal de l'instance", description: 'connexions et actions des administrateurs', icon: 'history', href: '/administration?onglet=journal', keywords: ['administration', 'audit'] },
+      { id: 'admin-inviter', label: 'Inviter un compte', description: "lien d'invitation à usage unique", icon: 'plus', href: '/administration?onglet=comptes&inviter=1', keywords: ['administration', 'invitation', 'compte'] },
+      { id: 'admin-ajout-serveur', label: 'Ajouter un serveur', description: 'adresse interne, jeton et accès base restreint', icon: 'plus', href: '/administration?onglet=serveurs&ajout=1', keywords: ['administration', 'serveur', 'runner'] },
+    ],
+  };
+}
 const NO_PROVIDERS: readonly CommandSearchProvider[] = [];
 
 /** The dialog. Mounted once by the shell; opened by ⌘K / Ctrl+K and the sidebar search field. */
@@ -160,21 +194,11 @@ export function CommandPalette({ open, onOpenChange, groups: extraGroups = NO_GR
   // Opened by ⌘K or the sidebar button (no Radix Trigger): give the focus back to where it was.
   const returnFocus = useReturnFocus();
 
-  const navigation: CommandGroupDef = useMemo(
-    () => ({
-      id: 'navigation',
-      heading: 'Navigation',
-      items: NAV_ITEMS.map((item) => ({
-        id: `nav-${item.key}`,
-        label: item.label,
-        description: item.description,
-        icon: item.icon,
-        href: item.href,
-      })),
-    }),
-    [],
-  );
-  const groups = [navigation, ...(registry?.groups ?? NO_GROUPS), ...extraGroups];
+  // Outside the shells (gallery) nobody is signed in: the 5 entries only.
+  const role: ShellRole = useOptionalShellData()?.user.role ?? 'member';
+  const navigation = useMemo(() => navigationGroup(role), [role]);
+  const administration = useMemo(() => administrationGroup(role), [role]);
+  const groups = [navigation, ...(administration ? [administration] : []), ...(registry?.groups ?? NO_GROUPS), ...extraGroups];
 
   const run = (item: CommandItem) => {
     onOpenChange(false);

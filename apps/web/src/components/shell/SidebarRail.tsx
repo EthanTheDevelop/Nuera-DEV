@@ -8,11 +8,14 @@ import { DevBadge } from '@/components/brand';
 import { Avatar } from '@/components/ui/Avatar';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { Tooltip } from '@/components/ui/Tooltip';
-import { activeNavKey, NAV_ITEMS, type NavItem, type NavKey } from './nav-items';
+import { activeNavKey, ADMIN_NAV_ITEM, isAdminRole, NAV_ITEMS, type NavItem, type NavKey } from './nav-items';
+import type { ShellRole } from './types';
 import { UserMenu } from './UserMenu';
 
 export interface SidebarRailProps {
   userName: string;
+  /** Owner and administrators get the « Administration » entry after a second separator. */
+  role?: ShellRole;
   /** T5: the Accueil entry turns red while the server does not answer. */
   serverUnavailable?: boolean;
   /** Override of the active entry (default: derived from the pathname — « Sessions » in the Workspace). */
@@ -25,8 +28,9 @@ export interface SidebarRailProps {
  * reste à un clic, la session prend la place. Libellés absents à l'écran, à porter en aria-label. »
  * near-black, padding 20 12 16, gap 8, items centred: DEV pill, 16 px spacer, 48 × 40 entries (icon 20),
  * 32 × 1 separator, flexible space, Avatar 36 (account menu). Labels are aria-labels + tooltips.
+ * Owner and administrators: a second separator and « Administration » (not in Figma).
  */
-export function SidebarRail({ userName, serverUnavailable, active: activeOverride, className }: SidebarRailProps) {
+export function SidebarRail({ userName, role = 'member', serverUnavailable, active: activeOverride, className }: SidebarRailProps) {
   const pathname = usePathname();
   const active = activeOverride !== undefined ? activeOverride : activeNavKey(pathname);
 
@@ -69,6 +73,12 @@ export function SidebarRail({ userName, serverUnavailable, active: activeOverrid
         <ul className="m-0 flex list-none flex-col gap-2 p-0">{NAV_ITEMS.filter((i) => i.group === 'ESPACE').map(renderItem)}</ul>
         <span aria-hidden className="h-px w-8 bg-hairline-on-dark" />
         <ul className="m-0 flex list-none flex-col gap-2 p-0">{NAV_ITEMS.filter((i) => i.group === 'CONFIGURATION').map(renderItem)}</ul>
+        {isAdminRole(role) ? (
+          <>
+            <span aria-hidden className="h-px w-8 bg-hairline-on-dark" />
+            <ul className="m-0 flex list-none flex-col gap-2 p-0">{renderItem(ADMIN_NAV_ITEM)}</ul>
+          </>
+        ) : null}
       </nav>
       <span className="flex-1" />
       <UserMenu side="right" align="end">

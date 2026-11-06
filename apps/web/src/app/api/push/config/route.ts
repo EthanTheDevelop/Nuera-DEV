@@ -9,5 +9,6 @@ import { getPushStatus } from '@/server/push';
 export const dynamic = 'force-dynamic';
 
 export const GET = apiRoute({
+  auth: 'user',
   handler: async () => getPushStatus(),
 });

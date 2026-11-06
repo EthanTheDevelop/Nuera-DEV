@@ -85,6 +85,31 @@ export function UnavailableNote({ children }: { children: ReactNode }) {
   );
 }
 
+/** « Aucun serveur ne vous est encore attribué. Un administrateur doit vous en attribuer un. » */
+export const NO_SERVER_NOTE = 'Aucun serveur ne vous est encore attribué. Un administrateur doit vous en attribuer un.';
+
+/** Inline state of a section that needs a server while none is assigned (never the T5 copy). */
+export function NoServerNote({ children = NO_SERVER_NOTE }: { children?: ReactNode }) {
+  return (
+    <p className="m-0 flex items-start gap-2 font-sans text-app-13 leading-[18px] text-muted">
+      <Icon name="server" size={16} className="mt-px shrink-0 text-accent" />
+      <span>{children}</span>
+    </p>
+  );
+}
+
+/** « Réglé par un administrateur. » — caption of a setting this account may read but not change. */
+export const ADMIN_SET_NOTE = 'Réglé par un administrateur.';
+
+export function AdminSetNote({ id }: { id?: string }) {
+  return (
+    <p id={id} className="m-0 flex items-center gap-1.5 font-sans text-app-12 text-muted">
+      <Icon name="lock" size={14} className="shrink-0" />
+      <span>{ADMIN_SET_NOTE}</span>
+    </p>
+  );
+}
+
 /**
  * M08 settings group (`--bg`, radius lg, px 16, no shadow/border) and its rows: 52 px (60 with a
  * sublabel), gap 12, leading 20 px accent icon, label Outfit Regular 15, sublabel 12 muted, trailing

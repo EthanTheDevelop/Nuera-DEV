@@ -7,17 +7,19 @@ import { Icon } from '@/components/icons';
 import { LogoNueraDev } from '@/components/brand';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { useShortcutLabel } from '@/hooks/usePlatform';
-import { activeNavKey, NAV_ITEMS, type NavItem, type NavKey } from './nav-items';
+import { activeNavKey, navItemsFor, type NavItem, type NavKey } from './nav-items';
 import { ServerCard, type ServerCardProps } from './ServerCard';
+import type { ShellRole } from './types';
 import { UserCard } from './UserCard';
 
 export interface SidebarProps {
   /** Active sessions (count pill on « Sessions », hidden at 0). */
   activeSessions: number;
-  /** T5: the Accueil entry turns red while the server does not answer. */
+  /** T5: the Accueil entry turns red while the server does not answer (never without a server). */
   serverUnavailable?: boolean;
   server: Omit<ServerCardProps, 'className'>;
-  user: { name: string; twoFactorEnabled: boolean };
+  /** `role` drives the « INSTANCE » group (owner / admin); the gallery omits it (Figma frame: owner, no INSTANCE). */
+  user: { name: string; role?: ShellRole; twoFactorEnabled: boolean };
   /** Opens the command palette (« Rechercher… ⌘K »). */
   onOpenSearch: () => void;
   /** Override of the active entry (default: derived from the pathname). */
@@ -25,17 +27,19 @@ export interface SidebarProps {
   className?: string;
 }
 
-const GROUPS = ['ESPACE', 'CONFIGURATION'] as const;
+const GROUPS = ['ESPACE', 'CONFIGURATION', 'INSTANCE'] as const;
 
 /**
  * `Dev · Barre latérale` (201:732): 248 px, full height, near-black, padding 20 16 16, gap 16 —
- * logo, search trigger, ESPACE / CONFIGURATION, flexible space, server card, user card.
+ * logo, search trigger, ESPACE / CONFIGURATION (+ INSTANCE: « Administration », owner and
+ * administrators only), flexible space, server card, user card.
  * Dark scope (`data-tone="dark"`): every role flips (accent = #a6b9dd, text = paper).
  */
 export function Sidebar({ activeSessions, serverUnavailable, server, user, onOpenSearch, active: activeOverride, className }: SidebarProps) {
   const pathname = usePathname();
   const active = activeOverride !== undefined ? activeOverride : activeNavKey(pathname);
   const shortcut = useShortcutLabel();
+  const items = navItemsFor(user.role ?? 'member');
 
   const renderItem = (item: NavItem) => {
     const isActive = item.key === active;
@@ -97,16 +101,20 @@ export function Sidebar({ activeSessions, serverUnavailable, server, user, onOpe
       </button>
 
       <nav aria-label="Sections" className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1">
-        {GROUPS.map((group) => (
-          <div key={group} className="flex flex-col">
-            <p className="m-0 pb-2 pl-3 font-mono text-app-10 font-medium text-accent opacity-60">{group}</p>
-            <ul className="m-0 flex list-none flex-col p-0">{NAV_ITEMS.filter((i) => i.group === group).map(renderItem)}</ul>
-          </div>
-        ))}
+        {GROUPS.map((group) => {
+          const entries = items.filter((i) => i.group === group);
+          if (entries.length === 0) return null;
+          return (
+            <div key={group} className="flex flex-col">
+              <p className="m-0 pb-2 pl-3 font-mono text-app-10 font-medium text-accent opacity-60">{group}</p>
+              <ul className="m-0 flex list-none flex-col p-0">{entries.map(renderItem)}</ul>
+            </div>
+          );
+        })}
       </nav>
 
       <ServerCard {...server} />
-      <UserCard name={user.name} twoFactorEnabled={user.twoFactorEnabled} />
+      <UserCard name={user.name} role={user.role ?? 'owner'} twoFactorEnabled={user.twoFactorEnabled} />
     </aside>
   );
 }

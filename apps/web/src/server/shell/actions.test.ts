@@ -4,9 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   headers: new Headers(),
   cookies: [] as Array<{ name: string; value: string }>,
-  marked: [] as string[][],
-  markedAll: 0,
-  themes: [] as string[],
+  marked: [] as Array<{ userId: string; ids: string[] }>,
+  markedAll: [] as string[],
+  themes: [] as Array<{ userId: string; theme: string }>,
   signedIn: true,
 }));
 
@@ -18,24 +18,24 @@ vi.mock('next/headers', () => ({
 vi.mock('@/server/auth/session', () => ({
   requireUser: async () => {
     if (!state.signedIn) throw new Error('NEXT_REDIRECT /connexion');
-    return { id: 'u1', name: 'Owner', email: 'owner@example.test', image: null, twoFactorEnabled: true, authSessionId: 's1' };
+    return { id: 'u1', name: 'Owner', email: 'owner@example.test', image: null, twoFactorEnabled: true, authSessionId: 's1', role: 'member', disabledAt: null };
   },
 }));
 
 vi.mock('@/server/notifications', () => ({
-  markNotificationsRead: async (ids: string[]) => {
-    state.marked.push(ids);
+  markNotificationsRead: async (userId: string, ids: string[]) => {
+    state.marked.push({ userId, ids });
     return ids.length;
   },
-  markAllNotificationsRead: async () => {
-    state.markedAll += 1;
+  markAllNotificationsRead: async (userId: string) => {
+    state.markedAll.push(userId);
     return 3;
   },
 }));
 
 vi.mock('@/server/settings', () => ({
-  updateAppSettings: async (patch: { theme: string }) => {
-    state.themes.push(patch.theme);
+  updateUserPreferences: async (userId: string, patch: { theme: string }) => {
+    state.themes.push({ userId, theme: patch.theme });
     return {};
   },
 }));
@@ -49,15 +49,15 @@ beforeEach(() => {
   state.headers = new Headers({ origin: 'https://dev.example.test', host: 'dev.example.test' });
   state.cookies = [];
   state.marked = [];
-  state.markedAll = 0;
+  state.markedAll = [];
   state.themes = [];
   state.signedIn = true;
 });
 
 describe('shell server actions', () => {
-  it('saves the theme and mirrors it in the cookie read by the root layout', async () => {
+  it("saves the theme in the signed-in account's preferences and mirrors it in the cookie", async () => {
     await expect(setThemePreferenceAction('dark')).resolves.toEqual({ ok: true, theme: 'dark' });
-    expect(state.themes).toEqual(['dark']);
+    expect(state.themes).toEqual([{ userId: 'u1', theme: 'dark' }]);
     expect(state.cookies).toEqual([{ name: 'nuera-theme', value: 'dark' }]);
   });
 
@@ -66,11 +66,12 @@ describe('shell server actions', () => {
     expect(state.themes).toEqual([]);
   });
 
-  it('marks notifications read (validated ids only)', async () => {
+  it("marks the signed-in account's notifications read (validated ids only)", async () => {
     await expect(markNotificationsReadAction([ID])).resolves.toEqual({ updated: 1 });
     await expect(markNotificationsReadAction(['not-a-uuid'])).resolves.toEqual({ updated: 0 });
     await expect(markAllNotificationsReadAction()).resolves.toEqual({ updated: 3 });
-    expect(state.marked).toEqual([[ID]]);
+    expect(state.marked).toEqual([{ userId: 'u1', ids: [ID] }]);
+    expect(state.markedAll).toEqual(['u1']);
   });
 
   it('refuses a mutation coming from another origin (CSRF)', async () => {
@@ -80,12 +81,12 @@ describe('shell server actions', () => {
     await expect(markAllNotificationsReadAction()).rejects.toMatchObject({ code: 'FORBIDDEN' });
     expect(state.themes).toEqual([]);
     expect(state.marked).toEqual([]);
-    expect(state.markedAll).toBe(0);
+    expect(state.markedAll).toEqual([]);
   });
 
-  it('requires the signed-in owner first', async () => {
+  it('requires a signed-in account first', async () => {
     state.signedIn = false;
     await expect(markAllNotificationsReadAction()).rejects.toThrow('NEXT_REDIRECT');
-    expect(state.markedAll).toBe(0);
+    expect(state.markedAll).toEqual([]);
   });
 });

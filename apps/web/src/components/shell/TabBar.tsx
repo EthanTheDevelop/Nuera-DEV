@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
 import { Icon } from '@/components/icons';
 import { StatusDot } from '@/components/ui/StatusDot';
-import { activeNavKey, hidesTabBar, NAV_ITEMS, type NavKey } from './nav-items';
+import { hidesTabBar, NAV_ITEMS, tabBarActiveKey, type NavKey } from './nav-items';
 
 export interface TabBarProps {
   activeSessions: number;
@@ -22,12 +22,13 @@ export interface TabBarProps {
  * latérale. Absente du Workspace, qui prend tout l'écran. Cible de 78 × 56 px, au-dessus du minimum de 44. »
  * bg surface, 1 px top border, 56 px row of 5 equal tabs + safe-area-inset-bottom. Icon holder 44 × 24
  * (active accent-pale), icon 20, label Outfit 11 (active SemiBold accent, inactive Medium muted);
- * Sessions counter at (30, −2). Hidden in the Workspace and on /projets/nouveau (M03).
+ * Sessions counter at (30, −2). Hidden in the Workspace and on /projets/nouveau (M03). Always the 5
+ * Figma tabs: /administration highlights « Paramètres » (the phone reaches it from there).
  */
 export function TabBar({ activeSessions, serverUnavailable, border = true, active: activeOverride, className }: TabBarProps) {
   const pathname = usePathname();
   if (hidesTabBar(pathname)) return null;
-  const active = activeOverride !== undefined ? activeOverride : activeNavKey(pathname);
+  const active = activeOverride !== undefined ? activeOverride : tabBarActiveKey(pathname);
   return (
     <nav
       aria-label="Navigation principale"
