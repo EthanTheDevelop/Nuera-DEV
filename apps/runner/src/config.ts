@@ -56,6 +56,12 @@ export interface RunnerConfig {
   gitRemoteBase: string;
   /** Periodic jobs (server heartbeat, background fetch, uptime). Off in tests. */
   schedulerEnabled: boolean;
+  /**
+   * Automatic resumption after the usage limit: delay after the reset time the CLI gave
+   * (NUERA_AUTO_RESUME_MARGIN_SECONDS, 120) and, reset unknown, interval of the retries
+   * (NUERA_AUTO_RESUME_RETRY_SECONDS, 1800) during 6 h. Shortened by the tests only.
+   */
+  autoResume?: { marginMs: number; retryMs: number };
   version: string;
 }
 
@@ -91,6 +97,8 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.string().default('info'),
   NUERA_GIT_REMOTE_BASE: z.string().default('https://github.com/'),
   NUERA_SCHEDULER: z.string().optional(),
+  NUERA_AUTO_RESUME_MARGIN_SECONDS: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(0).max(3600).default(120)),
+  NUERA_AUTO_RESUME_RETRY_SECONDS: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(1).max(6 * 3600).default(1800)),
 });
 
 /**
@@ -161,6 +169,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     logLevel: e.LOG_LEVEL,
     gitRemoteBase: remoteBase,
     schedulerEnabled: e.NUERA_SCHEDULER ? e.NUERA_SCHEDULER !== '0' : mode !== 'test',
+    autoResume: { marginMs: e.NUERA_AUTO_RESUME_MARGIN_SECONDS * 1000, retryMs: e.NUERA_AUTO_RESUME_RETRY_SECONDS * 1000 },
     version: readVersion(),
   };
 }
