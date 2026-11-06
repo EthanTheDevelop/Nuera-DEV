@@ -26,7 +26,7 @@ import { usePreview, type PreviewController, type PreviewViewport, type ServerSt
 /**
  * « Aperçu » (not designed in Figma; built with the design-system primitives): live preview of the
  * worktree's dev server, served from the preview origin (never the application's). Three placements:
- * the context panel tab (`?panneau=apercu`), the main view (`?vue=apercu`, « Agrandir ») and the
+ * the context panel tab (`?panneau=apercu`), the main view (`?vue=apercu`, « Inverser » : the conversation moves to the side column) and the
  * phone tab (`?onglet=apercu`).
  */
 
@@ -172,12 +172,12 @@ function DesktopToolbar({ preview, variant }: { preview: PreviewController; vari
         <ServerStatus preview={preview} className="flex-1" />
         <ServerButton preview={preview} />
         {main ? (
-          <CompactButton variant="secondaire" icon="messages" onClick={() => ws.url.set({ vue: null, panneau: 'apercu' })}>
-            Revenir à la conversation
+          <CompactButton variant="secondaire" icon="panel-right" onClick={() => ws.url.set({ vue: null, panneau: 'apercu' })}>
+            Inverser
           </CompactButton>
         ) : (
-          <CompactButton variant="discret" onClick={() => ws.url.set({ vue: 'apercu', panneau: 'modifications' })}>
-            Agrandir
+          <CompactButton variant="discret" icon="panel-right" onClick={() => ws.url.set({ vue: 'apercu', panneau: 'apercu' })}>
+            Inverser
           </CompactButton>
         )}
       </div>

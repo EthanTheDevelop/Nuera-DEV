@@ -76,13 +76,14 @@ test('Aperçu · démarrer le serveur, voir le site, changer de page, recharger 
     await expect.poll(async () => (await page.locator('iframe[title^="Aperçu du site"]').boundingBox())?.width).toBe(390);
     await region.getByRole('radio', { name: 'Bureau' }).click();
 
-    // « Agrandir »: the preview becomes the main view, on the same page; back to the conversation.
-    await region.getByRole('button', { name: 'Agrandir' }).click();
+    // « Inverser »: the preview becomes the main view and the conversation (with its composer) moves to the side.
+    await region.getByRole('button', { name: 'Inverser' }).click();
     await expect(page).toHaveURL(/vue=apercu/);
-    await expect(page.getByRole('region', { name: 'Session Claude Code' })).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Session Claude Code' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Session Claude Code' }).getByRole('textbox').first()).toBeVisible();
     await expect.poll(() => previewFrame(page)?.url(), { timeout: 30_000 }).toBe(`${PREVIEW_ORIGIN}/devis?id=3`);
     await expect(page.getByRole('region', { name: 'Aperçu du site' })).toHaveCount(1);
-    await page.getByRole('region', { name: 'Aperçu du site' }).getByRole('button', { name: 'Revenir à la conversation' }).click();
+    await page.getByRole('region', { name: 'Aperçu du site' }).getByRole('button', { name: 'Inverser' }).click();
     await expect(page).not.toHaveURL(/vue=apercu/);
     await expect(page.getByRole('region', { name: 'Session Claude Code' })).toBeVisible();
     await expect.poll(() => previewFrame(page)?.url(), { timeout: 30_000 }).toBe(`${PREVIEW_ORIGIN}/devis?id=3`);

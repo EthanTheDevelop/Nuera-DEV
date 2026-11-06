@@ -31,7 +31,7 @@ l'URL d'entrée à usage unique. La page prévisualisée publie son chemin (`pos
 le champ de chemin et « Recharger » (`contentWindow.location.replace`) suivent la page affichée. Pas de rechargement
 à chaud (aucun WebSocket ne traverse un route handler) : « Recharger après chaque modification de Claude » (préférence
 du navigateur, activée par défaut) recharge après chaque outil d'écriture terminé (`ctl.claudeWrites`). Bureau :
-onglet du panneau, « Agrandir » (`?vue=apercu`, une seule iframe à la fois), largeur Bureau / Téléphone (390 px,
+onglet du panneau, « Inverser » (`?vue=apercu` : le rendu au centre, la conversation et la saisie dans la colonne de droite ; une seule iframe à la fois), largeur Bureau / Téléphone (390 px,
 préférence du navigateur). Téléphone : onglet « Aperçu », barre compacte (état, Recharger, menu ⋯ : démarrer/arrêter,
 nouvel onglet, rechargement automatique), compositeur gardé dessous.
 

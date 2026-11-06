@@ -30,8 +30,9 @@ function useEscapeInterrupts() {
 }
 
 /**
- * D05 desktop composition (1440): header, session column (or the « Aperçu » enlarged, `?vue=apercu`)
- * + 460 px context panel, or W4 review.
+ * D05 desktop composition (1440): header, session column + 460 px context panel, or W4 review.
+ * `?vue=apercu` (« Inverser ») swaps them: the preview in the middle, the conversation and composer in the
+ * 460 px column, so the owner keeps prompting while looking at the site.
  */
 export function DesktopWorkspace() {
   const ws = useWorkspace();
@@ -45,8 +46,20 @@ export function DesktopWorkspace() {
           <ReviewMode />
         ) : (
           <>
-            {ws.url.view === 'apercu' ? <PreviewPanel variant="main" /> : <SessionColumn />}
-            {panelShown ? <ContextPanel /> : null}
+            {ws.url.view === 'apercu' ? (
+              // « Inverser » : le rendu au centre, la conversation (et la saisie) à droite, à la place du panneau.
+              <>
+                <PreviewPanel variant="main" />
+                <div className="flex w-[460px] min-w-0 shrink-0 border-l border-border">
+                  <SessionColumn compact />
+                </div>
+              </>
+            ) : (
+              <>
+                <SessionColumn />
+                {panelShown ? <ContextPanel /> : null}
+              </>
+            )}
           </>
         )}
       </div>
