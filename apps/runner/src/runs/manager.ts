@@ -261,6 +261,26 @@ export class RunManager {
     return this.dto(row, row.details?.report ?? null);
   }
 
+  /**
+   * Port of the dev server of a run, for the « Aperçu » relay: the run must be one of THIS server
+   * (unknown or foreign id → the same 404 as `get`), of kind `dev`, alive in this runner process
+   * (not being stopped) and with a port detected in its output. Nothing else is ever proxied.
+   */
+  async previewTarget(runId: string): Promise<{ port: number; worktreeId: string | null }> {
+    const live = this.live.get(runId);
+    if (!live) {
+      const row = await getRunRow(this.deps.db, this.deps.environment.id, runId);
+      if (row.kind !== 'dev') throw new RunnerError('CONFLICT', "Ce lancement n'est pas un serveur de développement.", { reason: 'PREVIEW_NOT_DEV' });
+      throw new RunnerError('CONFLICT', 'Le serveur de développement est arrêté.', { reason: 'PREVIEW_NOT_RUNNING' });
+    }
+    if (live.row.kind !== 'dev') throw new RunnerError('CONFLICT', "Ce lancement n'est pas un serveur de développement.", { reason: 'PREVIEW_NOT_DEV' });
+    if (live.stopping) throw new RunnerError('CONFLICT', 'Le serveur de développement est arrêté.', { reason: 'PREVIEW_NOT_RUNNING' });
+    if (!live.row.port) {
+      throw new RunnerError('CONFLICT', "Le port du serveur de développement n'apparaît pas encore dans sa sortie.", { reason: 'PREVIEW_NO_PORT' });
+    }
+    return { port: live.row.port, worktreeId: live.row.worktreeId };
+  }
+
   /** Output kept for a new subscriber (live buffer or the stored tail). */
   async outputTail(runId: string): Promise<string> {
     const live = this.live.get(runId);

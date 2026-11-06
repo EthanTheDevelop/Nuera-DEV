@@ -162,6 +162,16 @@ export const RUNNER_ERROR_REASONS = [
   'ENVIRONMENT_STARTING',
   /** The server is suspended or retired: no new session, clone, run nor shell terminal (reading and stopping stay possible). */
   'ENVIRONMENT_DISABLED',
+  /** Aperçu: the run is not a dev server (`kind` other than `dev`). */
+  'PREVIEW_NOT_DEV',
+  /** Aperçu: the dev server of the run is not running any more (or never ran in this runner process). */
+  'PREVIEW_NOT_RUNNING',
+  /** Aperçu: no port detected yet in the dev server's output. */
+  'PREVIEW_NO_PORT',
+  /** Aperçu: nothing answers on the detected port (loopback). */
+  'PREVIEW_UNREACHABLE',
+  /** Aperçu: request or response body over the limit. */
+  'PREVIEW_TOO_LARGE',
 ] as const;
 export type RunnerErrorReason = (typeof RUNNER_ERROR_REASONS)[number];
 
