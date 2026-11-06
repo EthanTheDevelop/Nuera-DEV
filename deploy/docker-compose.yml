@@ -1,7 +1,12 @@
-# Nuera Dev — Docker Compose pour Coolify (déploiement sur VPS-3).
-# - Seul le service `web` reçoit un domaine (dev.nuera.studio) dans Coolify.
-# - `runner` n'expose aucun port public : il n'est joignable que par `web` sur le réseau interne.
+# Nuera Dev — Docker Compose de la ressource Coolify principale : migrate, web et le serveur par défaut (`runner`,
+# nommé « VPS-3 » par défaut dans l'interface).
+# - Seul le service `web` reçoit un domaine dans Coolify.
+# - `runner` ne publie aucun port : il n'est joignable que sur les réseaux Docker internes (`nuera-internal`, et le
+#   réseau prédéfini de Coolify quand l'option est activée), jeton RUNNER_TOKEN exigé sur chaque route.
 # - PostgreSQL est une ressource Coolify distincte (non exposée) : renseigner DATABASE_URL.
+# - Ne jamais renommer ces services ni ces volumes : la mise à jour multi-comptes reprend tels quels le service
+#   `runner` et ses volumes comme serveur par défaut. Chaque serveur supplémentaire est une ressource Coolify séparée
+#   (deploy/docker-compose.runner.yml).
 # Voir docs/DEPLOY.md pour la procédure complète.
 
 name: nuera-dev
@@ -20,6 +25,8 @@ services:
     image: nuera-dev-migrate:${NUERA_IMAGE_TAG:-latest}
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL requis}
+      # Default server's token: migrate records its SHA-256 fingerprint (never the token itself).
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?RUNNER_TOKEN requis}
     restart: "no"
     security_opt:
       - no-new-privileges:true
@@ -38,6 +45,7 @@ services:
     environment:
       <<: *common-env
       APP_URL: ${APP_URL:-https://dev.nuera.studio}
+      # Default server; the other servers' addresses and tokens live in the database (Administration › Serveurs).
       RUNNER_URL: http://runner:4100
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET requis}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY requis}
@@ -48,9 +56,18 @@ services:
       # Traefik (Coolify) writes the client address in X-Real-IP: the only IP header trusted.
       TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-real-ip}
       NUERA_SERVER_STATUS_URL: ${NUERA_SERVER_STATUS_URL:-}
-      # "false" : double authentification facultative (compte unique partagé).
-      NUERA_REQUIRE_2FA: ${NUERA_REQUIRE_2FA:-true}
+      # Optional fallback PAT: only for the default server's space, never served to an MCP server.
       GITHUB_FALLBACK_TOKEN: ${GITHUB_FALLBACK_TOKEN:-}
+      # Private hosts the outbound-request (SSRF) guard still lets through, comma-separated; empty = none.
+      NUERA_PRIVATE_HOSTS: ${NUERA_PRIVATE_HOSTS:-}
+      # Hosts (or host:port) allowed for a server's internal URL (Administration › Serveurs), comma-separated; empty = any.
+      NUERA_RUNNER_HOSTS: ${NUERA_RUNNER_HOSTS:-}
+      # CONNECTION LIMIT of each restricted runner role nuera_env_… (4 to 500; empty = 20, at least NUERA_DB_POOL_MAX + 3).
+      NUERA_RUNNER_DB_CONNECTION_LIMIT: ${NUERA_RUNNER_DB_CONNECTION_LIMIT:-}
+      # Extra Web Push service hosts (host or *.domain), comma-separated; empty = FCM, Mozilla, WNS and Apple only.
+      NUERA_PUSH_HOSTS: ${NUERA_PUSH_HOSTS:-}
+      # Web clock of the integration checks (every 15 min per space); "off" is for tests only.
+      NUERA_WEB_SCHEDULER: ${NUERA_WEB_SCHEDULER:-on}
     expose:
       - "3000"
     # Web container: non-root (node), read-only root filesystem, no capability, no Docker socket.
@@ -76,6 +93,10 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *common-env
+      # Restricted PostgreSQL role of the default server (docs/DEPLOY.md §14); empty = DATABASE_URL. Once set, the
+      # entrypoint replaces DATABASE_URL with it before any long-lived process of the container starts.
+      RUNNER_DATABASE_URL: ${RUNNER_DATABASE_URL:-}
+      NUERA_DB_POOL_MAX: ${NUERA_DB_POOL_MAX:-5}
       # Public URL (links, notifications) and internal URL for runner → web callbacks (/api/internal/*).
       APP_URL: ${APP_URL:-https://dev.nuera.studio}
       NUERA_WEB_INTERNAL_URL: http://web:3000
@@ -97,6 +118,7 @@ services:
     networks:
       - nuera-internal
 
+# Default server's data (clones and worktrees, session runtime, Claude Code CLI and its login): never renamed.
 volumes:
   nuera-projects:
   nuera-runner-data:

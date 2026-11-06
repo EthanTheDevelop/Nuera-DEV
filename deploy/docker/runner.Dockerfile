@@ -64,5 +64,8 @@ VOLUME ["/srv/dev", "/data", "/home/nuera"]
 EXPOSE 4100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
   CMD curl -fsS -H "Authorization: Bearer ${RUNNER_TOKEN}" http://127.0.0.1:4100/v1/health >/dev/null || exit 1
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/runner-entrypoint.sh"]
+# Le point d'entrée démarre en PID 1, nettoie l'environnement (RUNNER_DATABASE_URL remplace DATABASE_URL), puis
+# cède le PID 1 à tini, qui le relance comme enfant : l'environnement de tini (/proc/1/environ, lisible par les
+# sessions) ne contient alors plus le DSN de l'instance. Même image pour le serveur par défaut et les autres.
+ENTRYPOINT ["/usr/local/bin/runner-entrypoint.sh"]
 CMD ["node", "dist/index.mjs"]
