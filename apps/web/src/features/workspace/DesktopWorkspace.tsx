@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { CommitDialog } from './commit/CommitDialog';
 import { SessionHeader } from './header/SessionHeader';
 import { ContextPanel } from './panel/ContextPanel';
+import { PanelResizer, useSideColumnWidth } from './PanelResizer';
 import { PreviewPanel } from './preview/PreviewPanel';
 import { ReviewMode } from './review/ReviewMode';
 import { SessionColumn } from './session/SessionColumn';
@@ -32,12 +33,13 @@ function useEscapeInterrupts() {
 /**
  * D05 desktop composition (1440): header, session column + 460 px context panel, or W4 review.
  * `?vue=apercu` (« Inverser ») swaps them: the preview in the middle, the conversation and composer in the
- * 460 px column, so the owner keeps prompting while looking at the site.
+ * right column, so the owner keeps prompting while looking at the site.
  */
 export function DesktopWorkspace() {
   const ws = useWorkspace();
   useEscapeInterrupts();
   const panelShown = ws.url.panel !== 'ferme';
+  const side = useSideColumnWidth();
   return (
     <div className="flex h-dvh min-h-0 w-full min-w-0 flex-col bg-surface-raised">
       <SessionHeader />
@@ -50,14 +52,22 @@ export function DesktopWorkspace() {
               // « Inverser » : le rendu au centre, la conversation (et la saisie) à droite, à la place du panneau.
               <>
                 <PreviewPanel variant="main" />
-                <div className="flex w-[460px] min-w-0 shrink-0 border-l border-border">
+                <PanelResizer width={side.width} onChange={side.update} onReset={side.reset} />
+                <div className="flex min-w-0 shrink-0" style={{ width: side.width }}>
                   <SessionColumn compact />
                 </div>
               </>
             ) : (
               <>
                 <SessionColumn />
-                {panelShown ? <ContextPanel /> : null}
+                {panelShown ? (
+                  <>
+                    <PanelResizer width={side.width} onChange={side.update} onReset={side.reset} />
+                    <div className="flex min-w-0 shrink-0" style={{ width: side.width }}>
+                      <ContextPanel />
+                    </div>
+                  </>
+                ) : null}
               </>
             )}
           </>

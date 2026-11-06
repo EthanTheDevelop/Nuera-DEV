@@ -67,6 +67,37 @@ export function AppShell({ data, variant, globals, children }: AppShellProps) {
   );
 }
 
+const COLLAPSE_KEY = 'nuera.shell.collapsed.';
+
+/**
+ * Desktop: the logo folds the 248 px bar into the 72 px rail and back. Remembered per layout
+ * (the pages and the Workspace each keep their own choice) by the browser; default = the layout's own.
+ */
+function useCollapsedNav(variant: 'sidebar' | 'rail') {
+  const [collapsed, setCollapsed] = useState(variant === 'rail');
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(COLLAPSE_KEY + variant);
+      // eslint-disable-next-line react/set-state-in-effect -- the stored choice is only readable after mount (SSR renders the default)
+      if (stored === '1' || stored === '0') setCollapsed(stored === '1');
+    } catch {
+      // storage blocked: keep the layout's default
+    }
+  }, [variant]);
+  const toggle = useCallback(() => {
+    setCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(COLLAPSE_KEY + variant, next ? '1' : '0');
+      } catch {
+        // storage blocked: the choice lasts for this page only
+      }
+      return next;
+    });
+  }, [variant]);
+  return { collapsed, toggle };
+}
+
 function ShellFrame({ variant, globals, children }: { variant: AppShellProps['variant']; globals?: ReactNode; children: ReactNode }) {
   const data = useShellData();
   const live = useLiveEvents();
@@ -75,6 +106,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
   const desktop = useIsDesktopNav();
   const palette = useCommandPaletteControl();
   const [retrying, setRetrying] = useState(false);
+  const nav = useCollapsedNav(variant);
 
   const { open: paletteOpen, setOpen: setPaletteOpen } = palette;
   const togglePalette = useCallback(() => setPaletteOpen(!paletteOpen), [paletteOpen, setPaletteOpen]);
@@ -124,9 +156,10 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
         Aller au contenu
       </a>
 
-      {variant === 'sidebar' ? (
+      {!nav.collapsed ? (
         <Sidebar
           className="hidden nav:flex"
+          onToggleCollapse={nav.toggle}
           activeSessions={activeSessions}
           serverUnavailable={unavailable}
           onOpenSearch={() => palette.setOpen(true)}
@@ -141,7 +174,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
           }}
         />
       ) : (
-        <SidebarRail className="hidden nav:flex" userName={data.user.name} role={data.user.role} serverUnavailable={unavailable} />
+        <SidebarRail className="hidden nav:flex" userName={data.user.name} role={data.user.role} serverUnavailable={unavailable} onToggleCollapse={nav.toggle} />
       )}
 
       <main
