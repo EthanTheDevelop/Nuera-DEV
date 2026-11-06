@@ -24,6 +24,8 @@ export interface SidebarProps {
   onOpenSearch: () => void;
   /** Override of the active entry (default: derived from the pathname). */
   active?: NavKey | null;
+  /** Desktop: the logo folds the bar into the 72 px rail (instead of linking to Accueil). */
+  onToggleCollapse?: () => void;
   className?: string;
 }
 
@@ -35,7 +37,7 @@ const GROUPS = ['ESPACE', 'CONFIGURATION', 'INSTANCE'] as const;
  * administrators only), flexible space, server card, user card.
  * Dark scope (`data-tone="dark"`): every role flips (accent = #a6b9dd, text = paper).
  */
-export function Sidebar({ activeSessions, serverUnavailable, server, user, onOpenSearch, active: activeOverride, className }: SidebarProps) {
+export function Sidebar({ activeSessions, serverUnavailable, server, user, onOpenSearch, active: activeOverride, onToggleCollapse, className }: SidebarProps) {
   const pathname = usePathname();
   const active = activeOverride !== undefined ? activeOverride : activeNavKey(pathname);
   const shortcut = useShortcutLabel();
@@ -83,9 +85,22 @@ export function Sidebar({ activeSessions, serverUnavailable, server, user, onOpe
         className,
       )}
     >
-      <Link href="/" aria-label="Nuera Dev · Accueil" className="flex self-start rounded-sm pl-2">
-        <LogoNueraDev />
-      </Link>
+      {onToggleCollapse ? (
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-label="Replier le menu"
+          aria-expanded="true"
+          title="Replier le menu"
+          className="flex cursor-pointer self-start rounded-sm pl-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <LogoNueraDev />
+        </button>
+      ) : (
+        <Link href="/" aria-label="Nuera Dev · Accueil" className="flex self-start rounded-sm pl-2">
+          <LogoNueraDev />
+        </Link>
+      )}
 
       <button
         type="button"

@@ -20,6 +20,8 @@ export interface SidebarRailProps {
   serverUnavailable?: boolean;
   /** Override of the active entry (default: derived from the pathname — « Sessions » in the Workspace). */
   active?: NavKey | null;
+  /** Desktop: the badge unfolds the full 248 px bar (instead of linking to Accueil). */
+  onToggleCollapse?: () => void;
   className?: string;
 }
 
@@ -30,7 +32,7 @@ export interface SidebarRailProps {
  * 32 × 1 separator, flexible space, Avatar 36 (account menu). Labels are aria-labels + tooltips.
  * Owner and administrators: a second separator and « Administration » (not in Figma).
  */
-export function SidebarRail({ userName, role = 'member', serverUnavailable, active: activeOverride, className }: SidebarRailProps) {
+export function SidebarRail({ userName, role = 'member', serverUnavailable, active: activeOverride, onToggleCollapse, className }: SidebarRailProps) {
   const pathname = usePathname();
   const active = activeOverride !== undefined ? activeOverride : activeNavKey(pathname);
 
@@ -65,9 +67,22 @@ export function SidebarRail({ userName, role = 'member', serverUnavailable, acti
         className,
       )}
     >
-      <Link href="/" aria-label="Nuera Dev · Accueil" className="flex rounded-sm">
-        <DevBadge />
-      </Link>
+      {onToggleCollapse ? (
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-label="Déplier le menu"
+          aria-expanded="false"
+          title="Déplier le menu"
+          className="flex cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <DevBadge />
+        </button>
+      ) : (
+        <Link href="/" aria-label="Nuera Dev · Accueil" className="flex rounded-sm">
+          <DevBadge />
+        </Link>
+      )}
       <span aria-hidden className="h-4 w-2 shrink-0" />
       <nav aria-label="Sections" className="flex flex-col items-center gap-2">
         <ul className="m-0 flex list-none flex-col gap-2 p-0">{NAV_ITEMS.filter((i) => i.group === 'ESPACE').map(renderItem)}</ul>
