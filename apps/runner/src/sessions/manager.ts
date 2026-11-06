@@ -44,6 +44,7 @@ import {
 import { sanitizeStatusLine, statusFingerprint } from './statusline';
 import { planFromTodoWrite, toolOutcome, toolSummary, toolTarget } from './tool-meta';
 import { TranscriptTailer, transcriptsRoot, validateTranscriptPath } from './transcript';
+import { startupScreenAction } from './startup-screens';
 
 type SessionRow = typeof sessions.$inferSelect;
 type PermissionRow = typeof permissionRequests.$inferSelect;
@@ -854,6 +855,39 @@ export class SessionManager {
   private watchTerminal(live: LiveSession, terminal: Terminal): void {
     live.detachExit = terminal.onExit((code) => {
       void this.onTerminalExit(live, terminal, code);
+    });
+    this.answerStartupScreens(live, terminal);
+  }
+
+  /**
+   * Tant que la session n'est pas prête (avant le premier hook) et pendant 3 min au plus : valide le
+   * choix du thème, la confiance dans le dossier et les écrans « Press Enter to continue » du CLI
+   * (`startup-screens.ts`). Une réponse par apparition d'écran ; jamais la connexion du compte.
+   */
+  private answerStartupScreens(live: LiveSession, terminal: Terminal): void {
+    const state = { timer: null as ReturnType<typeof setTimeout> | null, lastScreen: '', answers: 0 };
+    const deadline = Date.now() + 3 * 60_000;
+    const stop = () => {
+      if (state.timer) clearTimeout(state.timer);
+      off();
+    };
+    const check = () => {
+      state.timer = null;
+      if (live.ready || live.stopping || !terminal.alive || this.live.get(live.id) !== live || Date.now() > deadline || state.answers >= 8) {
+        stop();
+        return;
+      }
+      const screen = terminal.screenText();
+      const action = startupScreenAction(screen);
+      if (!action || screen === state.lastScreen) return;
+      state.lastScreen = screen;
+      state.answers += 1;
+      terminal.write(action.keys);
+      this.deps.logger.info({ sessionId: live.id, screen: action.kind }, action.label);
+    };
+    const off = terminal.onOutput(() => {
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = setTimeout(check, 400);
     });
   }
 
