@@ -217,6 +217,39 @@ describe.skipIf(!available)('contraintes du modèle multi-comptes', () => {
     await expect(sql`delete from "user" where id = ${owner.userId}`).rejects.toThrow(/spaces_owner_user_id_user_id_fk/);
   });
 
+  it('serveur partagé (0008) : le compte principal a sa ligne, un autre compte y est ajouté, ses projets aussi', async () => {
+    // The primary account of each assigned server has its row, written by the trigger.
+    const links = await sql<{ environment_id: string; space_id: string }[]>`select environment_id, space_id from environment_spaces order by created_at`;
+    expect(links).toEqual(
+      expect.arrayContaining([
+        { environment_id: owner.environmentId!, space_id: owner.spaceId },
+        { environment_id: member.environmentId!, space_id: member.spaceId },
+      ]),
+    );
+    const guest = await seedMember(db, { email: 'invite@example.test', name: 'Invité', environment: false });
+    // Not linked: a project of the guest on the owner's server is refused.
+    await expect(insertProject({ spaceId: guest.spaceId, environmentId: owner.environmentId!, repo: 'nuera-studio/partage' })).rejects.toThrow(
+      /projects_env_space_fk/,
+    );
+    await sql`insert into environment_spaces (environment_id, space_id) values (${owner.environmentId!}, ${guest.spaceId})`;
+    // Both accounts of one server may track the same repository (their own folders, unique slugs and paths).
+    await insertProject({ spaceId: owner.spaceId, environmentId: owner.environmentId!, slug: 'partage', path: '/srv/dev/partage', repo: 'nuera-studio/partage' });
+    await insertProject({ spaceId: guest.spaceId, environmentId: owner.environmentId!, slug: 'partage-2', path: '/srv/dev/espace-x/partage', repo: 'nuera-studio/partage' });
+    await expect(
+      insertProject({ spaceId: guest.spaceId, environmentId: owner.environmentId!, slug: 'partage-3', path: '/srv/dev/espace-x/partage-3', repo: 'nuera-studio/partage' }),
+    ).rejects.toThrow(/projects_environment_repo_active_idx/);
+    await expect(insertProject({ spaceId: guest.spaceId, environmentId: owner.environmentId!, slug: 'partage', path: '/srv/dev/autre' })).rejects.toThrow(
+      /projects_environment_slug_idx/,
+    );
+    // The guest cannot leave the server while it still has projects there.
+    await expect(sql`delete from environment_spaces where environment_id = ${owner.environmentId!} and space_id = ${guest.spaceId}`).rejects.toThrow(
+      /projects_env_space_fk/,
+    );
+    await sql`delete from projects where space_id = ${guest.spaceId}`;
+    await sql`delete from environment_spaces where environment_id = ${owner.environmentId!} and space_id = ${guest.spaceId}`;
+    await sql`delete from projects where slug = 'partage' and space_id = ${owner.spaceId}`;
+  });
+
   it('une notification non lue par destinataire et par clé', async () => {
     await sql`insert into notifications (user_id, space_id, kind, title, dedup_key) values (${owner.userId}, ${owner.spaceId}, 'server', 'A', 'claude:auth')`;
     await expect(

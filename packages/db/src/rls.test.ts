@@ -61,6 +61,7 @@ const RUNNER_TABLES = [
   'command_runs',
   'uptime_daily',
   'space_settings',
+  'environment_spaces',
 ];
 
 /**
@@ -300,6 +301,29 @@ describe.skipIf(!available)('rôles restreints des runners (RLS)', () => {
     }
     await expect(runnerB`insert into environments (name) values ('Intrus')`).rejects.toThrow(/permission denied/);
     await expect(runnerB`delete from environments`).rejects.toThrow(/permission denied/);
+  });
+
+  it('serveur partagé (0008) : lit les comptes de son serveur et leurs réglages, sans pouvoir en ajouter', async () => {
+    const guest = await seedMember(db, { email: 'invite@example.test', environment: false });
+    await sql`insert into environment_spaces (environment_id, space_id) values (${member.environmentId!}, ${guest.spaceId})`;
+    try {
+      const linked = await runnerB<{ space_id: string }[]>`select space_id from environment_spaces`;
+      expect(linked.map((row) => row.space_id).sort()).toEqual([member.spaceId, guest.spaceId].sort());
+      expect(await runnerA`select space_id from environment_spaces`).toEqual([{ space_id: owner.spaceId }]);
+      expect((await runnerB<{ space_id: string }[]>`select space_id from space_settings`).map((row) => row.space_id).sort()).toEqual(
+        [member.spaceId, guest.spaceId].sort(),
+      );
+      expect(await runnerA`select space_id from space_settings`).toEqual([{ space_id: owner.spaceId }]);
+      await expect(runnerB`insert into environment_spaces (environment_id, space_id) values (${member.environmentId!}, ${owner.spaceId})`).rejects.toThrow(
+        /permission denied/,
+      );
+      await expect(runnerB`delete from environment_spaces where space_id = ${guest.spaceId}`).rejects.toThrow(/permission denied/);
+      await expect(runnerB`update environment_spaces set space_id = ${owner.spaceId}`).rejects.toThrow(/permission denied/);
+      const [none] = await unbound<{ count: string }[]>`select count(*) from environment_spaces`;
+      expect(none?.count).toBe('0');
+    } finally {
+      await sql`delete from environment_spaces where space_id = ${guest.spaceId}`;
+    }
   });
 
   it("met à jour l'état de ses projets, jamais leur espace ni leur serveur", async () => {
@@ -576,6 +600,7 @@ describe.skipIf(!available)('rôles restreints des runners (RLS)', () => {
     expect(tableGrants.map((row) => `${row.object}:${row.privilege}`).sort()).toEqual(
       [
         ...WORK_TABLES.flatMap(({ name }) => [`${name}:INSERT`, `${name}:SELECT`]),
+        'environment_spaces:SELECT',
         'projects:SELECT',
         'session_events_id_seq:USAGE',
         'space_settings:SELECT',

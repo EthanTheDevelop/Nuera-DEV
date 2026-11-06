@@ -15,7 +15,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { user } from './auth';
 import { githubSources } from './github';
-import { environments } from './tenancy';
+import { environmentSpaces } from './tenancy';
 import type {
   CommandKind,
   CommandRunDetails,
@@ -90,11 +90,11 @@ export const projects = pgTable(
   (t) => [
     // Target of the composite foreign keys (project_id, environment_id) of the runtime rows.
     unique('projects_id_environment_key').on(t.id, t.environmentId),
-    // The server belongs to the project's space (and cannot be reassigned while it hosts projects).
+    // The server works for the project's space (and the space cannot leave it while it hosts projects).
     foreignKey({
       name: 'projects_env_space_fk',
       columns: [t.environmentId, t.spaceId],
-      foreignColumns: [environments.id, environments.spaceId],
+      foreignColumns: [environmentSpaces.environmentId, environmentSpaces.spaceId],
     }),
     // A project only uses a GitHub source of its own space (not checked while the source is null).
     foreignKey({
@@ -104,8 +104,9 @@ export const projects = pgTable(
     }),
     uniqueIndex('projects_environment_slug_idx').on(t.environmentId, t.slug),
     uniqueIndex('projects_environment_path_idx').on(t.environmentId, t.path),
+    // Per account of the server (lot P1): two accounts of one server may each track the same repository.
     uniqueIndex('projects_environment_repo_active_idx')
-      .on(t.environmentId, t.githubFullName)
+      .on(t.environmentId, t.spaceId, t.githubFullName)
       .where(sql`${t.archivedAt} is null`),
     index('projects_space_status_idx').on(t.spaceId, t.status),
     index('projects_environment_status_idx').on(t.environmentId, t.status),

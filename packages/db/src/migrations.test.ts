@@ -58,6 +58,7 @@ const EXPECTED_TABLES = [
   'instance_config_versions',
   'instance_config_proposals',
   'space_claude_overrides',
+  'environment_spaces',
   'session_claude_config',
 ];
 
@@ -82,7 +83,7 @@ describe('fichiers de migration', () => {
     expect(first).toEqual({ idx: 0, version: '7', when: 1793852411456, tag: '0000_material_hiroim', breakpoints: true });
   });
 
-  it("enchaîne 0001 → 0007 dans l'ordre, avec des dates croissantes", () => {
+  it("enchaîne 0001 → 0008 dans l'ordre, avec des dates croissantes", () => {
     const entries = readJournal();
     expect(entries.map((entry) => entry.tag)).toEqual([
       '0000_material_hiroim',
@@ -93,6 +94,7 @@ describe('fichiers de migration', () => {
       '0005_runner_scope',
       '0006_session_usage_limit',
       '0007_instance_claude_config',
+      '0008_shared_servers',
     ]);
     entries.forEach((entry, index) => {
       expect(entry.idx).toBe(index);
@@ -137,6 +139,11 @@ describe('fichiers de migration', () => {
     expect(common.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
     expect(common).not.toMatch(/DROP COLUMN|ALTER TABLE "(sessions|projects|environments|worktrees)" ADD COLUMN/i);
     expect(common).not.toMatch(/GRANT/i);
+    // 0008: the restricted runner role only READS the accounts of its own server.
+    const shared = readFileSync(path.join(MIGRATIONS_FOLDER, '0008_shared_servers.sql'), 'utf8');
+    expect(shared.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
+    expect(shared).not.toMatch(/DROP COLUMN|ADD COLUMN/i);
+    expect(shared.match(/GRANT [^;]+/gi)).toEqual(['GRANT SELECT ON "environment_spaces" TO "nuera_runner"']);
   });
 });
 
@@ -267,6 +274,7 @@ describe.skipIf(!available)('migrations Drizzle sur une base neuve', () => {
       order by relname`;
     expect(rows.map((row) => row.relname)).toEqual([
       'command_runs',
+      'environment_spaces',
       'environments',
       'operations',
       'permission_requests',

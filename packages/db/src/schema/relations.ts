@@ -4,7 +4,7 @@ import { githubSources } from './github';
 import { mcpServers, projectMcpServers } from './integrations';
 import { commandRuns, projectEnvVars, projects, pullRequests, worktrees } from './projects';
 import { permissionRequests, sessionEvents, sessions } from './sessions';
-import { environments, invitations, spaceMembers, spaceSettings, spaces, userPreferences } from './tenancy';
+import { environmentSpaces, environments, invitations, spaceMembers, spaceSettings, spaces, userPreferences } from './tenancy';
 
 export const userRelations = relations(user, ({ one, many }) => ({
   sessions: many(session),
@@ -21,8 +21,14 @@ export const spaceRelations = relations(spaces, ({ one, many }) => ({
   members: many(spaceMembers),
   settings: one(spaceSettings),
   environments: many(environments),
+  environmentLinks: many(environmentSpaces),
   githubSources: many(githubSources),
   projects: many(projects),
+}));
+
+export const environmentSpaceRelations = relations(environmentSpaces, ({ one }) => ({
+  environment: one(environments, { fields: [environmentSpaces.environmentId], references: [environments.id] }),
+  space: one(spaces, { fields: [environmentSpaces.spaceId], references: [spaces.id] }),
 }));
 
 export const spaceMemberRelations = relations(spaceMembers, ({ one }) => ({
@@ -40,6 +46,7 @@ export const userPreferencesRelations = relations(userPreferences, ({ one }) => 
 
 export const environmentRelations = relations(environments, ({ one, many }) => ({
   space: one(spaces, { fields: [environments.spaceId], references: [spaces.id] }),
+  spaceLinks: many(environmentSpaces),
   projects: many(projects),
 }));
 
