@@ -239,8 +239,9 @@ double, push, audit, disponibilité) et vérifie chaque rattachement. `0000` n'e
 |---|---|---|
 | Instance (`app_settings`) | durée d'inactivité et durée maximale des accès web, validité des invitations, blocage forcé du mode sans autorisations | owner/admin |
 | Serveur (`environments`) | nom, lieu (admin) ; sessions parallèles et mémoire par session (propriétaire de l'espace, plafond fixé par l'admin) | voir colonne |
-| Espace (`space_settings`) | modèle, effort, mode d'autorisation par défaut, blocage du mode sans autorisations (effectif = instance OU espace), attente d'une autorisation, Remote Control par défaut, worktrees inactifs | propriétaire de l'espace |
+| Espace (`space_settings`) | modèle, effort, mode d'autorisation par défaut, blocage du mode sans autorisations (effectif = instance OU espace), attente d'une autorisation, Remote Control par défaut, worktrees inactifs, reprise automatique après la limite d'utilisation et son instruction (lot Z1) | propriétaire de l'espace |
 | Utilisateur (`user_preferences`) | thème, langue, identité Git | chacun |
+| Session (`sessions.auto_resume`) | reprise automatique après la limite pour cette session seule (null = défaut de l'espace) | qui peut piloter la session |
 
 `projects_root` disparaît des réglages (sans effet). `PATCH /api/settings` garde ses clés plates et route chacune vers
 sa portée ; une clé d'instance modifiée par un membre → 403 « Réglage réservé aux administrateurs. ».
@@ -670,3 +671,36 @@ sa portée ; une clé d'instance modifiée par un membre → 403 « Réglage ré
 3. **Déconnexion depuis la garde du clic** (`app/(shell)/parametres/notification`, `app/(auth)/deconnexion`) :
    « Se déconnecter » mène à `/deconnexion?suivant=<garde>` puis `/connexion?suivant=<garde>` ; chemin interne
    revalidé à chaque étape (`safeRedirectPath`), `/connexion` seul sinon.
+
+### Lot Z1 (reprise automatique après la limite d'utilisation)
+
+1. **Détection** (runner, `apps/runner/src/sessions/usage-limit.ts`) : uniquement ce que le CLI officiel expose —
+   hook `StopFailure` `error: rate_limit`, avis du CLI écrit dans son journal (bloc `isApiErrorMessage` / modèle
+   `<synthetic>`) ou affiché à l'écran (« 5-hour limit reached ∙ resets 3pm »), `rate_limits.*.resets_at` de la
+   *status line*. Heure de levée : fenêtre de la *status line* utilisée à 100 %, sinon l'heure de l'avis, sinon la
+   prochaine levée de la fenêtre ; aucune autre estimation (P3). Enregistré dans `sessions.usage_limit` (jsonb,
+   `UsageLimit` de `@nuera/shared/runner`), publié dans `session.status` et `SessionDto` (`limit`).
+2. **Calendrier** : levée + 2 min (`NUERA_AUTO_RESUME_MARGIN_SECONDS`, 120), au plus 5 tentatives ; levée inconnue :
+   un essai toutes les 30 min (`NUERA_AUTO_RESUME_RETRY_SECONDS`) pendant 6 h, libellé « nouvel essai ». À l'heure,
+   l'instruction de reprise est tapée dans le CLI vivant, ou la conversation est rouverte (`claude --resume`) quand le
+   CLI a disparu. Tentative écrite avant d'être tapée (jamais deux fois après un redémarrage) ; minuteries
+   réarmées au démarrage du runner. Capacité atteinte ou autorisation en attente : nouvel essai 5 min plus tard.
+3. **Annulation** : instruction du propriétaire (Nuera Dev ou terminal brut), arrêt, archivage (le web efface
+   `usage_limit` avec l'archive), option coupée. Un tour terminé normalement après une reprise efface la limite.
+4. **Réglages** : défaut de l'espace `space_settings.auto_resume_after_limit` (désactivé) et
+   `auto_resume_instruction` (null = « Continue là où tu t'es arrêté. »), Paramètres › Claude Code ; choix propre à la
+   session `sessions.auto_resume` (null = défaut de l'espace), écrit par le web après que le runner du serveur de la
+   session a reçu la valeur effective (`POST /v1/sessions/:id/auto-resume`). La valeur effective part aussi dans les
+   options de lancement (`launch.autoResume`) à chaque démarrage et reprise.
+5. **Web** : `POST /api/sessions/[sessionId]/auto-resume` (`{ enabled: true | false | null }` ou `{ resumeNow: true }`,
+   portée de l'espace, Origin, Zod ; journal `session.auto_resume_changed` / `session.auto_resume_now`) ; la route
+   interne `notify` journalise `session.auto_resume_scheduled` / `session.auto_resume_fired` dans l'espace (une fois
+   par arrêt, clé de déduplication) ; notifications `session_usage_limit` et `session_auto_resumed`. Bandeau du
+   Workspace, badge de l'en-tête, menu « … » et feuille d'actions du téléphone, cartes et lignes de Sessions, Accueil
+   (« Limite atteinte · reprise à 15 h 02 », « levée à 15 h 00 »).
+6. **Base** : migration `0006_session_usage_limit` (colonnes ajoutées, `GRANT UPDATE ("usage_limit", "auto_resume")`
+   au rôle restreint `nuera_runner`, la RLS de `sessions` s'applique déjà).
+
+Écarts : pas de maquette Figma (bandeau `Dev · Bandeau` Alerte, textes sobres) ; la limite hebdomadaire est traitée
+comme la limite de 5 h (même calendrier) ; « Reprendre maintenant » tape l'instruction comme le propriétaire (la limite
+peut encore être là : le CLI le redit).
