@@ -1,5 +1,5 @@
 import 'server-only';
-import { appSettings, environments, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
+import { appSettings, environments, instanceClaudePolicy, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
 import type { EnvironmentStatus, InstanceRole, PermissionMode, SpaceRole, ThemePreference } from '@nuera/db/schema';
 import { and, eq, gte, isNull, ne } from 'drizzle-orm';
 import { DEFAULT_AUTO_RESUME_INSTRUCTION } from '@nuera/shared/runner';
@@ -325,7 +325,10 @@ export interface EffectiveSessionPolicy {
   /** The instance forces the block (the space setting is then read-only: « Réglé par un administrateur »). */
   blockBypassForcedByInstance: boolean;
   permissionWaitSeconds: number;
+  /** The space's model, else the instance's « Par défaut » one; the instance's when « Imposé ». */
   defaultModel: string | null;
+  /** The common configuration imposes the model (the space setting is read-only). */
+  modelLockedByInstance: boolean;
   defaultEffort: string | null;
   /** Never `bypassPermissions` while the block is effective (falls back to `manual`). */
   defaultPermissionMode: PermissionMode;
@@ -337,16 +340,36 @@ export interface EffectiveSessionPolicy {
   autoResumeInstruction: string;
 }
 
+/**
+ * Model of the common Claude configuration (lot K1): « Par défaut » = used when the space has none,
+ * « Imposé » = every session starts with it (the space setting is then read-only).
+ */
+export async function getInstanceModelPolicy(): Promise<{ model: string | null; locked: boolean }> {
+  try {
+    const [row] = await db
+      .select({ model: instanceClaudePolicy.defaultModel, enforcement: instanceClaudePolicy.modelEnforcement })
+      .from(instanceClaudePolicy)
+      .where(eq(instanceClaudePolicy.id, 'instance'))
+      .limit(1);
+    return { model: row?.model ?? null, locked: row?.enforcement === 'locked' && Boolean(row?.model) };
+  } catch {
+    return { model: null, locked: false };
+  }
+}
+
+export const MODEL_LOCKED_MESSAGE = "Modèle imposé par l'administration de l'instance (configuration Claude commune).";
+
 /** What a session launched in this space gets (passed to the runner as launch options). */
 export async function getEffectiveSessionPolicy(spaceId: string): Promise<EffectiveSessionPolicy> {
-  const [instance, space] = await Promise.all([getInstanceSettings(), getSpaceSettings(spaceId)]);
+  const [instance, space, model] = await Promise.all([getInstanceSettings(), getSpaceSettings(spaceId), getInstanceModelPolicy()]);
   if (!space) throw new AppError('NOT_FOUND');
   const block = instance.forceBlockBypassPermissions || space.blockBypassPermissions;
   return {
     blockBypassPermissions: block,
     blockBypassForcedByInstance: instance.forceBlockBypassPermissions,
     permissionWaitSeconds: space.permissionWaitSeconds,
-    defaultModel: space.defaultModel,
+    defaultModel: model.locked ? model.model : (space.defaultModel ?? model.model),
+    modelLockedByInstance: model.locked,
     defaultEffort: space.defaultEffort,
     defaultPermissionMode: block && space.defaultPermissionMode === 'bypassPermissions' ? 'manual' : space.defaultPermissionMode,
     remoteControlByDefault: space.remoteControlByDefault,
@@ -767,6 +790,7 @@ async function applyGroup(group: Exclude<FlatGroup, 'ignored'>, actor: SettingsP
       if (!actor.environmentId) throw new AppError('CONFLICT', NO_ENVIRONMENT);
       return (await applyEnvironmentLimits(actor.environmentId, patch, actor)).changed;
     case 'space':
+      if ('defaultModel' in patch && (await getInstanceModelPolicy()).locked) throw new AppError('FORBIDDEN', MODEL_LOCKED_MESSAGE);
       return (await applySpace(actor.spaceId, patch, actor)).changed;
     case 'user':
       return (await applyUser(actor.userId, patch)).changed;
@@ -789,12 +813,13 @@ export interface SettingsView {
 }
 
 export async function getSettingsView(actor: SettingsPatchActor): Promise<SettingsView> {
-  const [instance, space, environment, preferences, spaceRole] = await Promise.all([
+  const [instance, space, environment, preferences, spaceRole, model] = await Promise.all([
     getInstanceSettings(),
     getSpaceSettings(actor.spaceId),
     actor.environmentId ? getEnvironmentSettings(actor.environmentId) : Promise.resolve(null),
     getUserPreferences(actor.userId),
     spaceRoleOf(actor.spaceId, actor.userId),
+    getInstanceModelPolicy(),
   ]);
   if (!space || !spaceRole || !preferences) throw new AppError('NOT_FOUND');
   // A server of another space is « no server » for this account.
@@ -813,7 +838,7 @@ export async function getSettingsView(actor: SettingsPatchActor): Promise<Settin
           : route.group === 'environmentLimits'
             ? limits
             : route.group === 'space'
-              ? spaceOwner && !(key === 'blockBypassPermissions' && instance.forceBlockBypassPermissions)
+              ? spaceOwner && !(key === 'blockBypassPermissions' && instance.forceBlockBypassPermissions) && !(key === 'defaultModel' && model.locked)
               : true;
   }
   return {

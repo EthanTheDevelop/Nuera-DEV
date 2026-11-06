@@ -23,6 +23,7 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, { icon: 
   integration_expired: { icon: 'plug', tone: 'danger' },
   integration_error: { icon: 'plug', tone: 'danger' },
   claude_disconnected: { icon: 'terminal', tone: 'warn' },
+  claude_config: { icon: 'reglages', tone: 'accent' },
   server: { icon: 'server', tone: 'warn' },
   security: { icon: 'lock', tone: 'accent' },
 };

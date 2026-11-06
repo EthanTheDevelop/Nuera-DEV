@@ -150,7 +150,28 @@ export interface WorkspaceData {
   environment: { id: string; name: string };
   /** « Aperçu »: origin of the preview host, or why the preview is off (PREVIEW_HOST empty…). */
   preview: { enabled: true; origin: string } | { enabled: false; reason: string };
+  /** Configuration Claude commune received at the last start / resume (null: none recorded or unreadable). */
+  commonConfig?: WorkspaceCommonConfig | null;
   generatedAt: string;
+}
+
+/** What the session received from the common configuration (lot K1), and whether it changed since. */
+export interface WorkspaceCommonConfig {
+  applied: {
+    revision: number;
+    summary: string;
+    appliedAt: string;
+    rules: Array<{ id: string; title: string; version: number; locked: boolean }>;
+    skills: Array<{ id: string; name: string; version: number; locked: boolean }>;
+    mcp: Array<{ id: string; name: string; label: string; admins: boolean; locked: boolean }>;
+    permissions: { allow: number; ask: number; deny: number };
+    env: string[];
+    model: { value: string | null; locked: boolean };
+    skipped: Array<{ name: string; reason: string }>;
+  } | null;
+  /** Changed since the session started: applies at its next start / resume. */
+  changedSince: boolean;
+  currentRevision: number;
 }
 
 // ---------------------------------------------------------------------------------------------

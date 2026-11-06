@@ -23,6 +23,7 @@ import { headerMeta, sessionDurationMs } from '../lib/thread';
 import { useSessionMenu } from './SessionActions';
 import { SessionSwitcherPopover } from './SessionSwitcher';
 import { useAutoResume } from '../session/UsageLimitBanner';
+import { CommonConfigChip } from './CommonConfigChip';
 
 function Chip({ icon, children, muted, title }: { icon: IconName; children: ReactNode; muted?: boolean; title?: string }) {
   return (
@@ -108,6 +109,7 @@ export function SessionHeader() {
               </Chip>
             </>
           ) : null}
+          <CommonConfigChip />
           <span className="shrink-0 font-mono text-app-11 whitespace-nowrap text-muted" title={session.tmuxName ? `tmux ${session.tmuxName}` : undefined}>
             {meta}
           </span>

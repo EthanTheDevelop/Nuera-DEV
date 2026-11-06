@@ -111,6 +111,14 @@ export async function resolveSessionMcpHeaders(input: {
   if (!LIVE_SESSION_STATUSES.includes(session.status)) {
     throw new AppError('FORBIDDEN', "Cette session n'est pas en cours : aucun accès n'est délivré.");
   }
+  // Configuration Claude commune: an instance server applied to the account of the session's space
+  // takes the name (the session config left the space server of that name out). Outside the audience
+  // (a member asking for an administrators-only server), it is never served.
+  const { effectiveForSpace } = await import('@/server/claude-config/effective');
+  const { instanceMcpHeaders } = await import('@/server/claude-config/instance-mcp');
+  const common = await effectiveForSpace(session.spaceId);
+  const instance = await instanceMcpHeaders({ effective: common.effective, serverName: input.serverName, serverUrl: input.serverUrl ?? null });
+  if (instance) return instance;
   const server = await getMcpServerRow({ spaceId: session.spaceId, idOrName: input.serverName });
   if (!server || !server.isEnabled) throw new AppError('FORBIDDEN', 'Serveur MCP désactivé.');
   const [activation] = await db

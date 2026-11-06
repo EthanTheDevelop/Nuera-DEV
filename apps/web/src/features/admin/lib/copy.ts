@@ -11,6 +11,7 @@ export const ADMIN_TABS = [
   { value: 'comptes', label: 'Comptes' },
   { value: 'serveurs', label: 'Serveurs' },
   { value: 'instance', label: 'Instance' },
+  { value: 'claude', label: 'Claude' },
   { value: 'journal', label: 'Journal' },
 ] as const;
 
