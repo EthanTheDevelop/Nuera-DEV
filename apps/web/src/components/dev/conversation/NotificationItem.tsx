@@ -12,6 +12,7 @@ import { LiveTime, type DateInput } from '../status/LiveTime';
  */
 export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, { icon: IconName; tone: PastilleTone }>> = {
   permission_request: { icon: 'shield', tone: 'warn' },
+  session_attention: { icon: 'terminal', tone: 'warn' },
   session_finished: { icon: 'check', tone: 'success' },
   session_failed: { icon: 'alert', tone: 'danger' },
   session_interrupted: { icon: 'alert', tone: 'warn' },

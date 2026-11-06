@@ -6,6 +6,7 @@ import { SystemMetricsSchema } from '../runner/system';
 import {
   CliStatusSchema,
   PermissionRequestDtoSchema,
+  SessionAttentionSchema,
   SessionEventItemSchema,
 } from '../runner/sessions';
 import { IsoDateSchema, SessionStatusSchema, UuidSchema } from '../runner/common';
@@ -45,6 +46,8 @@ export const SessionStatusEventSchema = z.object({
   pendingPermissionId: UuidSchema.nullable(),
   remoteControlUrl: z.string().nullable(),
   queuedInstructions: z.number().int(),
+  /** Interactive screen of the CLI waiting for an answer in the terminal (see SessionDto). Absent from older runners. */
+  attention: SessionAttentionSchema.nullable().optional(),
 });
 export type SessionStatusEvent = z.infer<typeof SessionStatusEventSchema>;
 

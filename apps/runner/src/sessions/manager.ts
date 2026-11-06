@@ -4,7 +4,15 @@ import os from 'node:os';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import pidusage from 'pidusage';
 import { permissionRequests, projects, sessionEvents, sessions, worktrees, type Database } from '@nuera/db';
-import { LIVE_SESSION_STATUSES, type CliStatus, type PermissionRequestDto, type SessionDto, type SessionLaunchOptions } from '@nuera/shared/runner';
+import {
+  LIVE_SESSION_STATUSES,
+  type CliStatus,
+  type PermissionRequestDto,
+  type SessionAttention,
+  type SessionAttentionKind,
+  type SessionDto,
+  type SessionLaunchOptions,
+} from '@nuera/shared/runner';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
@@ -41,6 +49,7 @@ import {
   writeSessionFiles,
   type LaunchFile,
 } from './runtime-files';
+import { AUTO_ANSWERED_KINDS, detectScreen, type ScreenDetection } from './screen-attention';
 import { sanitizeStatusLine, statusFingerprint } from './statusline';
 import { planFromTodoWrite, toolOutcome, toolSummary, toolTarget } from './tool-meta';
 import { TranscriptTailer, transcriptsRoot, validateTranscriptPath } from './transcript';
@@ -105,6 +114,91 @@ interface LiveSession {
   planCurrent: string | null;
   /** Set once the process is gone and the final status is being written. */
   finalizing?: Promise<void>;
+  /** Last status written for this session (menu fallback skips a permission waiting in the terminal). */
+  status: SessionStatus;
+  /** Interactive screens of the CLI (theme picker, login, trust…) read on its terminal. */
+  screen: ScreenWatch;
+}
+
+/** State of the screen detection of one live session ({@link SessionManager.evaluateScreen}). */
+interface ScreenWatch {
+  /** Debounced evaluation after terminal output. */
+  timer: ReturnType<typeof setTimeout> | null;
+  /** First output not evaluated yet (bounds the debounce while the CLI keeps drawing). */
+  firstPendingAt: number | null;
+  /** What the visible screen shows (null: nothing blocks the CLI). */
+  detection: ScreenDetection | null;
+  /** When the current kind was first seen. */
+  since: number;
+  /** Exposed state (DTO, `session.status`), set after the auto-answer or the menu grace. */
+  attention: SessionAttention | null;
+  /** A screen that hooks showed Claude has moved past (text left on screen): ignored until it changes. */
+  dismissed: string | null;
+  /** Auto-answers (theme, « Press Enter to continue ») of the current kind. */
+  autoAttempts: number;
+  lastAutoAt: number;
+  autoLogged: Set<SessionAttentionKind>;
+  /** A prompt was submitted in this CLI process: nothing is answered automatically any more. */
+  promptSeen: boolean;
+  lastHookAt: number;
+  /** The owner was notified for the current episode. */
+  notified: boolean;
+  offOutput: (() => void) | null;
+}
+
+function newScreenWatch(): ScreenWatch {
+  return {
+    timer: null,
+    firstPendingAt: null,
+    detection: null,
+    since: Date.now(),
+    attention: null,
+    dismissed: null,
+    autoAttempts: 0,
+    lastAutoAt: 0,
+    autoLogged: new Set(),
+    promptSeen: false,
+    lastHookAt: 0,
+    notified: false,
+    offOutput: null,
+  };
+}
+
+/** Screen evaluation after terminal output: debounce, bounded while the CLI keeps drawing. */
+const SCREEN_DEBOUNCE_MS = 300;
+const SCREEN_MAX_WAIT_MS = 1500;
+/** A selection menu nobody recognises is reported after this long without any hook. */
+const MENU_GRACE_MS = 6000;
+/** Enter sent at most this often, and at most {@link AUTO_ANSWER_MAX} times per screen kind. */
+const AUTO_ANSWER_SPACING_MS = 1200;
+const AUTO_ANSWER_MAX = 3;
+
+/** System line of the conversation when the runner answers a cosmetic screen itself. */
+const AUTO_ANSWER_LABEL: Partial<Record<SessionAttentionKind, string>> = {
+  theme: 'Thème du terminal choisi automatiquement',
+  continue: "Écran d'information de Claude Code validé automatiquement",
+};
+
+/** Notification body (« … · Nuera OS · touchez pour répondre »). */
+const ATTENTION_NOTICE: Record<SessionAttentionKind, string> = {
+  login: "Claude Code n'est pas connecté sur ce serveur",
+  trust: 'Autorisez ce dossier dans le terminal',
+  bypass_warning: 'Confirmez le mode sans autorisation dans le terminal',
+  remote_control: 'Répondez à la question Remote Control dans le terminal',
+  mcp_servers: 'Approuvez ou refusez les serveurs MCP du projet dans le terminal',
+  theme: 'Choisissez le thème du terminal',
+  continue: 'Appuyez sur Entrée dans le terminal',
+  menu: 'Un menu du CLI attend votre choix',
+};
+
+/** Session notification « <titre> attend une réponse dans le terminal ». */
+export function attentionNotificationCopy(input: { sessionTitle: string; projectName: string | null; kind: SessionAttentionKind }): { title: string; body: string } {
+  const flat = (text: string, max: number) => {
+    const one = text.replace(/\s+/g, ' ').trim();
+    return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
+  };
+  const parts = [ATTENTION_NOTICE[input.kind], input.projectName ? flat(input.projectName, 80) : null, 'touchez pour répondre'].filter(Boolean);
+  return { title: `${flat(input.sessionTitle, 140)} attend une réponse dans le terminal`, body: parts.join(' · ') };
 }
 
 export interface SessionManagerDeps {
@@ -330,6 +424,7 @@ export class SessionManager {
       cliStatus: (row.cliStatus as CliStatus | null) ?? null,
       pendingPermission: pending ? this.permissionDto(pending, worktree?.path ?? null) : null,
       queuedInstructions: live?.queue.length ?? 0,
+      attention: live?.screen.attention ?? null,
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
       exitCode: row.exitCode,
@@ -384,6 +479,8 @@ export class SessionManager {
       .where(this.ownSession(sessionId))
       .returning();
     if (!row) throw new RunnerError('NOT_FOUND', 'Session introuvable.');
+    const live = this.live.get(sessionId);
+    if (live) live.status = row.status;
     await this.publishStatus(row);
     return row;
   }
@@ -410,6 +507,7 @@ export class SessionManager {
       pendingPermissionId: pending?.id ?? null,
       remoteControlUrl: row.remoteControlUrl,
       queuedInstructions: live?.queue.length ?? 0,
+      attention: live?.screen.attention ?? null,
     };
     this.deps.bus.publish('session.status', data, { channels: [GLOBAL, sessionChannel(row.id)] });
   }
@@ -650,7 +748,7 @@ export class SessionManager {
     const live = this.live.get(sessionId);
     if (!live || live.stopping) throw new RunnerError('CONFLICT', "La session n'est plus active.", { reason: 'SESSION_NOT_LIVE' });
     if (live.pending.size > 0) throw new RunnerError('CONFLICT', "Répondez d'abord à la demande d'autorisation.", { reason: 'SESSION_BUSY_PERMISSION' });
-    if (!live.ready || live.queue.length > 0) {
+    if (!live.ready || live.queue.length > 0 || (await this.screenBlocks(live))) {
       live.queue.push(...texts);
       if (live.ready && !live.delivering) void this.deliverQueue(live);
       await this.publishStatus(await this.row(sessionId));
@@ -768,6 +866,8 @@ export class SessionManager {
       pendingCli: null,
       toolSeq: 0,
       planCurrent: null,
+      status: row.status,
+      screen: newScreenWatch(),
     };
     live.turn = await this.countTurns(sessionId);
     // Final checks and registration with no await in between: two launches of different sessions
@@ -838,7 +938,7 @@ export class SessionManager {
     }
 
     live.readyTimer = setTimeout(() => {
-      if (live.ready || !this.live.has(sessionId)) return;
+      if (live.ready || !this.live.has(sessionId) || live.screen.attention) return;
       void this.deps.store.queue.run(sessionId, async () => {
         await this.setSession(sessionId, { currentActivity: 'Action requise dans le terminal (dialogue du CLI, confiance du dossier…)' });
       });
@@ -855,6 +955,150 @@ export class SessionManager {
     live.detachExit = terminal.onExit((code) => {
       void this.onTerminalExit(live, terminal, code);
     });
+    live.screen.offOutput?.();
+    live.screen.offOutput = terminal.onOutput(() => this.scheduleScreen(live));
+    this.scheduleScreen(live);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Interactive screens of the CLI (screen-attention.ts)
+  // -------------------------------------------------------------------------------------------
+
+  /** Evaluates the screen once the CLI stops drawing for a moment (at most every 1,5 s while it draws). */
+  private scheduleScreen(live: LiveSession, delayMs = SCREEN_DEBOUNCE_MS): void {
+    const watch = live.screen;
+    const now = Date.now();
+    watch.firstPendingAt ??= now;
+    if (watch.timer) clearTimeout(watch.timer);
+    const wait = Math.max(0, Math.min(delayMs, watch.firstPendingAt + Math.max(delayMs, SCREEN_MAX_WAIT_MS) - now));
+    watch.timer = setTimeout(() => {
+      watch.timer = null;
+      watch.firstPendingAt = null;
+      this.evaluateScreen(live);
+    }, wait);
+    watch.timer.unref?.();
+  }
+
+  private stopScreenWatch(live: LiveSession): void {
+    if (live.screen.timer) clearTimeout(live.screen.timer);
+    live.screen.timer = null;
+    live.screen.offOutput?.();
+    live.screen.offOutput = null;
+  }
+
+  /**
+   * Reads the visible screen: answers a cosmetic screen (theme, « Press Enter to continue »)
+   * before the first prompt, reports any other one (`attention`) — a menu nobody recognises only
+   * after {@link MENU_GRACE_MS} without a hook — and clears the state once the screen is gone.
+   */
+  private evaluateScreen(live: LiveSession): void {
+    const terminal = live.terminal;
+    if (this.live.get(live.id) !== live || live.stopping || !terminal?.alive) return;
+    const watch = live.screen;
+    const now = Date.now();
+    const found = detectScreen(terminal.viewportText());
+    if (!found) {
+      watch.detection = null;
+      watch.dismissed = null;
+      if (watch.attention) this.setAttention(live, null);
+      // Instructions held while a screen was shown (or answered) leave now.
+      else this.resumeQueue(live);
+      return;
+    }
+    if (!watch.detection || watch.detection.kind !== found.kind) {
+      watch.since = now;
+      watch.autoAttempts = 0;
+    }
+    watch.detection = found;
+    if (found.fingerprint === watch.dismissed) return;
+
+    if (AUTO_ANSWERED_KINDS.has(found.kind) && !watch.promptSeen && watch.autoAttempts < AUTO_ANSWER_MAX) {
+      if (now - watch.lastAutoAt >= AUTO_ANSWER_SPACING_MS) {
+        watch.autoAttempts += 1;
+        watch.lastAutoAt = now;
+        // Enter accepts the highlighted default: nothing but the look of the terminal changes.
+        terminal.write('\r');
+        this.deps.logger.info({ sessionId: live.id, screen: found.kind, attempt: watch.autoAttempts }, 'écran du CLI validé automatiquement');
+        const label = AUTO_ANSWER_LABEL[found.kind];
+        if (label && !watch.autoLogged.has(found.kind)) {
+          watch.autoLogged.add(found.kind);
+          void this.deps.store.queue
+            .run(live.id, async () => {
+              if (this.live.get(live.id) !== live) return;
+              await this.deps.store.append(live.id, 'system', { message: label, at: nowIso() });
+            })
+            .catch((error: unknown) => this.deps.logger.warn({ err: error, sessionId: live.id }, 'ligne système non écrite'));
+        }
+      }
+      this.scheduleScreen(live, AUTO_ANSWER_SPACING_MS + 300);
+      return;
+    }
+
+    if (found.kind === 'menu') {
+      // A permission dialog is shown by its own card (hook, or « Répondre dans le terminal »).
+      if (live.pending.size > 0 || live.status === 'waiting_permission') return;
+      const quietFor = now - Math.max(watch.since, watch.lastHookAt);
+      if (quietFor < MENU_GRACE_MS) {
+        this.scheduleScreen(live, MENU_GRACE_MS - quietFor + 50);
+        return;
+      }
+    }
+
+    const current = watch.attention;
+    if (current && current.kind === found.kind && current.text === found.text) return;
+    this.setAttention(live, { kind: found.kind, text: found.text, since: current && current.kind === found.kind ? current.since : new Date(watch.since).toISOString() });
+  }
+
+  /** Publishes the new state; notifies the owner once per episode; resumes the queue once cleared. */
+  private setAttention(live: LiveSession, next: SessionAttention | null): void {
+    const watch = live.screen;
+    const started = !watch.attention && next;
+    watch.attention = next;
+    void this.deps.store.queue
+      .run(live.id, async () => {
+        if (this.live.get(live.id) !== live) return;
+        await this.publishStatus(await this.row(live.id));
+      })
+      .catch((error: unknown) => this.deps.logger.warn({ err: error, sessionId: live.id }, 'état du terminal non publié'));
+    if (started && !watch.notified) {
+      watch.notified = true;
+      void this.notifyAttention(live, next.kind).catch(() => undefined);
+    }
+    if (!next) {
+      watch.notified = false;
+      this.resumeQueue(live);
+    }
+  }
+
+  /** Types the held instructions once the screen is clear (after a longer quiet: screens chain). */
+  private resumeQueue(live: LiveSession): void {
+    if (live.ready && live.queue.length > 0 && !live.delivering && !live.stopping) void this.deliverQueue(live, 1200);
+  }
+
+  private async notifyAttention(live: LiveSession, kind: SessionAttentionKind): Promise<void> {
+    const [names] = await this.deps.db
+      .select({ title: sessions.title, project: projects.name })
+      .from(sessions)
+      .innerJoin(projects, eq(projects.id, sessions.projectId))
+      .where(this.ownSession(live.id))
+      .limit(1)
+      .catch(() => []);
+    const copy = attentionNotificationCopy({ sessionTitle: names?.title ?? live.title, projectName: names?.project ?? null, kind });
+    await this.notify(live, { kind: 'session_attention', severity: 'warning', ...copy, dedupKey: `session:${live.id}:attention` });
+  }
+
+  /**
+   * Whether typing now would land in an interactive screen (or one being answered): the mirror is
+   * read up to the last byte received first. Instructions then wait in the queue.
+   */
+  private async screenBlocks(live: LiveSession): Promise<boolean> {
+    const terminal = live.terminal;
+    if (!terminal?.alive) return false;
+    await Promise.race([terminal.flushed(), new Promise((r) => setTimeout(r, 500))]);
+    this.evaluateScreen(live);
+    const watch = live.screen;
+    if (Date.now() - watch.lastAutoAt < AUTO_ANSWER_SPACING_MS) return true;
+    return Boolean(watch.detection?.blocks && watch.detection.fingerprint !== watch.dismissed);
   }
 
   private async onTerminalExit(live: LiveSession, terminal: Terminal, code: number | null): Promise<void> {
@@ -891,6 +1135,8 @@ export class SessionManager {
     this.live.delete(live.id);
     if (live.readyTimer) clearTimeout(live.readyTimer);
     if (live.cliWriteTimer) clearTimeout(live.cliWriteTimer);
+    this.stopScreenWatch(live);
+    live.screen.attention = null;
     live.tailer?.stop();
     for (const p of live.pending.values()) {
       clearTimeout(p.timer);
@@ -973,8 +1219,9 @@ export class SessionManager {
     if (live.pending.size > 0 || (await this.row(sessionId)).status === 'waiting_permission') {
       throw new RunnerError('CONFLICT', "Répondez d'abord à la demande d'autorisation.", { reason: 'SESSION_BUSY_PERMISSION' });
     }
-    // Not ready yet, or earlier instructions still being typed: keep the order.
-    if (!live.ready || live.queue.length > 0) {
+    // Not ready yet, earlier instructions still being typed, or the CLI shows an interactive screen
+    // (theme picker, trust, login…): queued, typed once its prompt is back — never into the screen.
+    if (!live.ready || live.queue.length > 0 || (await this.screenBlocks(live))) {
       live.queue.push(clean);
       if (live.ready && !live.delivering) void this.deliverQueue(live);
       await this.publishStatus(await this.row(sessionId));
@@ -1016,12 +1263,18 @@ export class SessionManager {
   }
 
   /** Types the queued instructions once the CLI is ready (never throws: the queue is kept on failure). */
-  private async deliverQueue(live: LiveSession): Promise<void> {
+  private async deliverQueue(live: LiveSession, quietMs = 400): Promise<void> {
     if (!live.terminal || live.delivering) return;
     live.delivering = true;
     try {
-      await this.waitQuiet(live.terminal);
+      await this.waitQuiet(live.terminal, quietMs, Math.max(4000, quietMs * 4));
       while (live.queue.length > 0 && this.live.get(live.id) === live && !live.stopping) {
+        // An interactive screen appeared: the queue waits until it is gone (setAttention resumes it).
+        if (await this.screenBlocks(live)) {
+          // Re-read soon: a clear screen resumes the queue (resumeQueue).
+          this.scheduleScreen(live, AUTO_ANSWER_SPACING_MS + 300);
+          return;
+        }
         const next = live.queue[0]!;
         try {
           await this.paste(live, next);
@@ -1239,9 +1492,25 @@ export class SessionManager {
     const event = str(payload.hook_event_name) ?? '';
     // Noted on receipt (before queueing): an interrupt is settled only when nothing followed it.
     if (event === 'PermissionRequest' || isActivityHook(event, payload)) live.lastActiveAt = Date.now();
+    this.noteHookForScreen(live, event, payload);
     if (event === 'PermissionRequest') return this.onPermissionRequest(live, payload, signal);
     await this.deps.store.queue.run(live.id, () => this.onEvent(live, event, payload));
     return null;
+  }
+
+  /**
+   * Hooks show the CLI past any interactive screen: what is still drawn is old text (dismissed
+   * until the screen changes), and nothing is answered automatically after the first prompt.
+   */
+  private noteHookForScreen(live: LiveSession, event: string, p: Json): void {
+    const watch = live.screen;
+    watch.lastHookAt = Date.now();
+    if (event === 'UserPromptSubmit') watch.promptSeen = true;
+    if (event !== 'SessionStart' && (event === 'PermissionRequest' || isActivityHook(event, p))) {
+      if (watch.detection) watch.dismissed = watch.detection.fingerprint;
+      if (watch.attention) this.setAttention(live, null);
+    }
+    this.scheduleScreen(live);
   }
 
   private async onEvent(live: LiveSession, event: string, p: Json): Promise<void> {
@@ -1324,7 +1593,8 @@ export class SessionManager {
     const row = await this.row(live.id);
     const status: SessionStatus = live.queue.length > 0 ? 'running' : row.status === 'waiting_permission' ? row.status : row.status === 'new' ? 'new' : 'waiting_input';
     await this.setSession(live.id, { ...patch, status, currentActivity: null });
-    if (!wasReady && live.queue.length > 0) void this.deliverQueue(live);
+    // A new CLI draws its first screens right after start-up (theme, trust…): a longer quiet first.
+    if (!wasReady && live.queue.length > 0) void this.deliverQueue(live, 1200);
   }
 
   private async onPrompt(live: LiveSession, p: Json): Promise<void> {
@@ -1861,8 +2131,13 @@ export class SessionManager {
         pendingCli: null,
         toolSeq: 0,
         planCurrent: null,
+        status: row.status,
+        screen: newScreenWatch(),
       };
       live.turn = await this.countTurns(row.id);
+      // A CLI that already took an instruction is past its first-run screens: nothing is answered
+      // automatically there (a /theme typed by hand in the terminal stays the owner's).
+      live.screen.promptSeen = live.turn > 0;
       this.live.set(row.id, live);
       this.watchTerminal(live, terminal);
       live.pid = await tmux.pid(terminal, tmuxName);
@@ -1892,6 +2167,7 @@ export class SessionManager {
       const live = this.live.get(row.id);
       if (live?.terminal === terminal) {
         live?.detachExit?.();
+        if (live) this.stopScreenWatch(live);
         live?.tailer?.stop();
         this.live.delete(row.id);
       }
@@ -1914,6 +2190,7 @@ export class SessionManager {
       live.tailer?.stop();
       if (live.readyTimer) clearTimeout(live.readyTimer);
       if (live.cliWriteTimer) clearTimeout(live.cliWriteTimer);
+      this.stopScreenWatch(live);
       if (live.pendingCli) await this.flushCliStatus(live).catch(() => undefined);
       if (live.backend === 'tmux') {
         live.detachExit?.();

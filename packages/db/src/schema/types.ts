@@ -146,6 +146,8 @@ export type McpStatus = 'connected' | 'needs_auth' | 'expired' | 'error' | 'disa
 
 export type NotificationKind =
   | 'permission_request'
+  /** The CLI shows an interactive screen (login, trust…) waiting for an answer in its terminal. */
+  | 'session_attention'
   | 'session_finished'
   | 'session_failed'
   | 'session_interrupted'

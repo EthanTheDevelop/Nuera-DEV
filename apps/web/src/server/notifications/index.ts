@@ -38,6 +38,7 @@ import { publishUserEvent } from './user-events';
 
 export const NOTIFICATION_KINDS = [
   'permission_request',
+  'session_attention',
   'session_finished',
   'session_failed',
   'session_interrupted',

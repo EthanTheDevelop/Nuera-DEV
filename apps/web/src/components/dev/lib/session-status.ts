@@ -70,6 +70,25 @@ export function sessionStatusMeta(status: SessionStatus): SessionStatusMeta {
 }
 
 /**
+ * The CLI shows an interactive screen (login, trust, menu…) that waits for an answer in its
+ * terminal (`SessionDto.attention`, runner screen detection). Not drawn in Figma: Alerte tone, like
+ * « Autorisation demandée », since the owner has to act.
+ */
+export const ATTENTION_STATUS_META: SessionStatusMeta = {
+  label: 'Attend une réponse',
+  shortLabel: 'Attend une réponse',
+  badge: 'warn',
+  dot: 'warn',
+  cardLabel: 'warn',
+  live: true,
+};
+
+/** Status shown for a session: « Attend une réponse » wins over the stored status while the CLI waits. */
+export function sessionDisplayMeta(status: SessionStatus, attention?: boolean): SessionStatusMeta {
+  return attention && status !== 'archived' ? ATTENTION_STATUS_META : META[status];
+}
+
+/**
  * Header / switcher badge label: `En cours · 7 min`, `Terminée · 18 min`, `Autorisation demandée`.
  * `durationMs` = elapsed time while live, total duration once ended (W2, W3, W6).
  */
@@ -97,7 +116,8 @@ export interface SessionActionPreset {
  * Default primary action of a session card (`Dev · Carte de session`): one action per card,
  * Principal only when the session waits for the owner.
  */
-export function defaultSessionAction(status: SessionStatus, resumable = false): SessionActionPreset {
+export function defaultSessionAction(status: SessionStatus, resumable = false, attention = false): SessionActionPreset {
+  if (attention && META[status].live !== false && status !== 'archived') return { label: 'Répondre', variant: 'primary' };
   switch (status) {
     case 'waiting_permission':
       return { label: 'Répondre', variant: 'primary' };

@@ -12,6 +12,7 @@ import type { Logger } from 'pino';
 export interface NotifyPayload {
   kind:
     | 'permission_request'
+    | 'session_attention'
     | 'session_finished'
     | 'session_failed'
     | 'session_interrupted'

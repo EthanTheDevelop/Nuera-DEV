@@ -229,6 +229,26 @@ export class Terminal {
     return lines.join('\n');
   }
 
+  /**
+   * Visible rows of the mirror only (no scrollback): what the CLI shows right now (screen
+   * detection of the session manager). Not for logs.
+   */
+  viewportText(): string {
+    const mirror = this.mirror;
+    if (!mirror) return '';
+    const buffer = mirror.buffer.active;
+    const lines: string[] = [];
+    for (let i = 0; i < mirror.rows; i += 1) lines.push(buffer.getLine(buffer.baseY + i)?.translateToString(true) ?? '');
+    return lines.join('\n');
+  }
+
+  /** Resolves once the mirror has parsed every chunk received so far (its writes are asynchronous). */
+  flushed(): Promise<void> {
+    const mirror = this.mirror;
+    if (!mirror) return Promise.resolve();
+    return new Promise((resolve) => mirror.write('', resolve));
+  }
+
   kill(signal?: string): void {
     if (!this.alive) return;
     try {

@@ -317,6 +317,33 @@ export const SessionWorktreeSpecSchema = z.discriminatedUnion('mode', [
 export const ModelNameSchema = z.string().trim().regex(/^[A-Za-z0-9._:[\]-]{1,80}$/, { message: 'Modèle invalide.' });
 export const EffortSchema = z.string().trim().regex(/^[a-z]{2,16}$/, { message: "Niveau d'effort invalide." });
 
+// ---------------------------------------------------------------------------------------------
+// Interactive screen of the CLI waiting for an answer in its terminal (runner screen detection)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Screens of the official CLI that block the session until someone answers in its terminal:
+ * `login` (« Select login method », « Not logged in · Please run /login »), `trust` (workspace trust
+ * dialog), `bypass_warning` (« Bypass Permissions mode » warning), `remote_control` (« Enable Remote
+ * Control? (y/n) »), `mcp_servers` (project `.mcp.json` approval), `theme` (first-run theme picker)
+ * and `continue` (« Press Enter to continue »), both answered by the runner unless that failed,
+ * `menu` (any other selection menu left unanswered). An unknown kind (newer runner) reads as `menu`.
+ */
+export const SESSION_ATTENTION_KINDS = ['login', 'trust', 'bypass_warning', 'remote_control', 'mcp_servers', 'theme', 'continue', 'menu'] as const;
+export const SessionAttentionKindSchema = z.enum(SESSION_ATTENTION_KINDS).catch('menu');
+export type SessionAttentionKind = (typeof SESSION_ATTENTION_KINDS)[number];
+
+export const SESSION_ATTENTION_TEXT_MAX = 400;
+
+export const SessionAttentionSchema = z.object({
+  kind: SessionAttentionKindSchema,
+  /** Relevant excerpt of the screen (ANSI and frames removed, secrets masked), ≤ 400 characters. */
+  text: z.string().max(2000),
+  /** When the screen was first seen. */
+  since: IsoDateSchema,
+});
+export type SessionAttention = z.infer<typeof SessionAttentionSchema>;
+
 export const CreateSessionRequestSchema = z.object({
   /** Optional pre-generated id (also the Claude conversation id). */
   sessionId: UuidSchema.optional(),
@@ -362,6 +389,11 @@ export const SessionDtoSchema = z.object({
   pendingPermission: PermissionRequestDtoSchema.nullable(),
   /** Instructions accepted but not yet typed into the CLI (waiting for it to be ready). */
   queuedInstructions: z.number().int(),
+  /**
+   * The CLI shows an interactive screen that waits for an answer in its terminal (null: none, or the
+   * session is not live). Absent from older runners. Instructions stay queued meanwhile.
+   */
+  attention: SessionAttentionSchema.nullable().optional(),
   errorCode: z.string().nullable(),
   errorMessage: z.string().nullable(),
   exitCode: z.number().int().nullable(),

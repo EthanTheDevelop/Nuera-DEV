@@ -17,6 +17,13 @@
 //   Échap —, fail, final). Edits really change the worktree, so diffs exist;
 // - `/status` and `/usage` print a status block (claude-status terminals), `mcp login` waits for a code;
 // - the process exits when its terminal closes or its parent disappears (no orphan after a kill).
+//
+// First-run screens (screen detection of the runner): `FAKE_CLAUDE_ONBOARDING=theme,continue,trust,menu`
+// in the session env, or `<CLAUDE_CONFIG_DIR>/nuera-fake-onboarding.json` `{ "steps": [...] }` (consumed
+// by the next launch, like the real first run), shows those screens AFTER the SessionStart hook and
+// before the prompt: `theme` (theme picker, Enter accepts), `continue` (« Press Enter to continue… »),
+// `trust` (workspace trust: 1/Enter accepts, 2/Échap exits), `menu` (an unknown numbered menu). While
+// a screen is shown every keystroke goes to it: a pasted instruction is lost, as with the real CLI.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -173,6 +180,8 @@ async function interactive() {
 
   // A key typed in the terminal while the fake permission dialog is shown.
   let keyWaiter = null;
+  // Every chunk typed while a first-run screen is shown (the screen swallows it).
+  let screenWaiter = null;
   // Cancels the step in progress on Échap (like the real CLI: no hook at all follows an interrupt).
   let cancelStep = null;
   const nextKey = () =>
@@ -202,8 +211,96 @@ async function interactive() {
   out(`Fake Claude Code ${resumeId ? '(reprise)' : ''}\r\n`);
   await hook('SessionStart', { source: resumeId ? 'resume' : 'startup', model: 'claude-fake-1' });
   await statusLine();
+  await firstRunScreens();
   prompt();
   markReady();
+
+  function onboardingSteps() {
+    const known = new Set(['theme', 'continue', 'trust', 'menu']);
+    let steps = (process.env.FAKE_CLAUDE_ONBOARDING ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+    const file = harnessDir ? path.join(harnessDir, 'nuera-fake-onboarding.json') : null;
+    if (!steps.length && file && existsSync(file)) {
+      try {
+        steps = JSON.parse(readFileSync(file, 'utf8')).steps ?? [];
+      } catch {
+        steps = [];
+      }
+      try {
+        unlinkSync(file);
+      } catch {
+        // already consumed
+      }
+    }
+    return steps.filter((step) => known.has(step));
+  }
+
+  const nextScreenKey = () =>
+    new Promise((resolve) => {
+      screenWaiter = resolve;
+    });
+
+  // Screens drawn like the official CLI (Ink): full redraw, menu cursor `❯`.
+  const SCREENS = {
+    theme: [
+      '╭──────────────────────────────────────────╮',
+      '│ ✻ Welcome to Claude Code                 │',
+      '╰──────────────────────────────────────────╯',
+      '',
+      " Let's get started.",
+      '',
+      ' Choose the text style that looks best with your terminal',
+      ' To change this later, run /theme',
+      '',
+      ' ❯ 1. Dark mode ✔',
+      '   2. Light mode',
+      '   3. Dark mode (colorblind-friendly)',
+      '   4. Light mode (colorblind-friendly)',
+    ],
+    continue: [
+      ' Security notes:',
+      '',
+      ' 1. Claude can make mistakes',
+      '    You should always review responses, especially when running code.',
+      '',
+      ' Press Enter to continue…',
+    ],
+    trust: [
+      ' Accessing workspace:',
+      '',
+      ` ${cwd}`,
+      '',
+      ' Quick safety check: Is this a project you created or one you trust?',
+      " Claude Code'll be able to read, edit, and execute files here.",
+      '',
+      ' ❯ 1. Yes, I trust this folder',
+      '   2. No, exit',
+      '',
+      ' Enter to confirm · Esc to cancel',
+    ],
+    menu: [
+      " Use Claude Code's terminal setup?",
+      '',
+      ' ❯ 1. Yes, use recommended settings',
+      '   2. No, maybe later with /terminal-setup',
+      '',
+      ' Enter to confirm · Esc to skip',
+    ],
+  };
+
+  async function firstRunScreens() {
+    for (const step of onboardingSteps()) {
+      out(`\u001b[2J\u001b[H${SCREENS[step].join('\r\n')}\r\n`);
+      for (;;) {
+        const key = await nextScreenKey();
+        if (step === 'trust' && (key === '2' || key === 'esc')) {
+          out('\r\n');
+          process.exit(1);
+        }
+        if (key === 'enter' || (step !== 'continue' && /^[1-9]$/.test(key))) break;
+      }
+      out('\u001b[2J\u001b[H');
+    }
+  }
 
   let toolCounter = 0;
   const nextToolId = () => `toolu_${++toolCounter}_${Math.random().toString(36).slice(2, 8)}`;
@@ -711,6 +808,16 @@ async function interactive() {
     };
 
     process.stdin.on('data', (chunk) => {
+      if (screenWaiter) {
+        // A first-run screen takes every keystroke; a bracketed paste is swallowed whole.
+        const key = chunk.includes('\r') || chunk.includes('\n') ? 'enter' : chunk === '\u001b' ? 'esc' : chunk.startsWith('\u001b') ? null : chunk.trim().slice(0, 1);
+        if (key) {
+          const resolve = screenWaiter;
+          screenWaiter = null;
+          resolve(key);
+        }
+        return;
+      }
       if (keyWaiter && !chunk.startsWith('\u001b')) {
         const resolve = keyWaiter;
         keyWaiter = null;

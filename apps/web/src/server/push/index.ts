@@ -538,7 +538,7 @@ export async function sendPush(payload: PushPayload, options: SendPushOptions): 
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const topic = topicOf(payload.tag);
-  const urgency = payload.severity === 'danger' || payload.kind === 'permission_request' ? 'high' : 'normal';
+  const urgency = payload.severity === 'danger' || payload.kind === 'permission_request' || payload.kind === 'session_attention' ? 'high' : 'normal';
 
   const env = options.env ?? process.env;
   const delivered: string[] = [];
