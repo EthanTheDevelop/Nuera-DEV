@@ -215,6 +215,7 @@ function PhoneToolbar({ preview }: { preview: PreviewController }) {
       <div className="flex min-w-0 items-center gap-1">
         <ServerStatus preview={preview} className="flex-1 pl-1" />
         <IconButton icon="refresh" label="Recharger" onClick={() => preview.reload()} disabled={preview.state !== 'online'} />
+        <IconButton icon="external" label="Ouvrir dans un nouvel onglet" onClick={() => void preview.openInNewTab()} disabled={preview.state !== 'online'} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <IconButton icon="more" label="Actions de l'aperçu" />
@@ -229,9 +230,6 @@ function PhoneToolbar({ preview }: { preview: PreviewController }) {
                 Démarrer le serveur
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem icon="external" disabled={preview.state !== 'online'} onSelect={() => void preview.openInNewTab()}>
-              Ouvrir dans un nouvel onglet
-            </DropdownMenuItem>
             <DropdownMenuItem
               icon={preview.autoReload ? 'check' : 'refresh'}
               onSelect={() => preview.setAutoReload(!preview.autoReload)}
