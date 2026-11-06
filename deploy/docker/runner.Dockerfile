@@ -31,11 +31,14 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store --mount=type=secret,id=b
  && rm -rf /out/runner/src /out/runner/test /out/runner/build.mjs /out/runner/tsconfig.json /out/runner/vitest.config.ts
 
 FROM node:24-bookworm-slim AS runtime
-# git, tmux : sessions et dépôts ; bubblewrap + socat : bac à sable du CLI Claude Code ; procps : métriques.
+# git, tmux : sessions et dépôts ; bubblewrap + socat : bac à sable du CLI Claude Code ; procps : métriques ;
+# build-essential + python3 : modules natifs des projets (node-gyp) ; corepack : pnpm et yarn des projets.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git tmux ca-certificates curl procps bubblewrap socat tini less openssh-client locales \
+      build-essential python3 \
  && rm -rf /var/lib/apt/lists/* \
+ && corepack enable \
  && sed -i 's/^# *fr_FR.UTF-8 UTF-8/fr_FR.UTF-8 UTF-8/' /etc/locale.gen \
  && locale-gen \
  && groupadd --gid 1001 nuera \
@@ -53,6 +56,8 @@ ENV NODE_ENV=production \
     LANG=fr_FR.UTF-8 \
     LC_ALL=fr_FR.UTF-8 \
     TERM=xterm-256color \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    COREPACK_HOME=/home/nuera/.cache/node/corepack \
     NUERA_PROJECTS_ROOT=/srv/dev \
     NUERA_DATA_DIR=/data \
     NUERA_SESSION_BACKEND=tmux \
