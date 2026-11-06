@@ -22,7 +22,7 @@ export function ContextPanel() {
   const count = ws.changedCount ?? 0;
 
   return (
-    <aside aria-label="Panneau contextuel" className="flex h-full w-[400px] shrink-0 flex-col border-l border-border bg-bg min-[1280px]:w-[460px]">
+    <aside aria-label="Panneau contextuel" className="flex h-full w-full min-w-0 flex-col bg-bg">
       <Tabs
         value={panel}
         onValueChange={(next) => ws.url.set({ panneau: next })}

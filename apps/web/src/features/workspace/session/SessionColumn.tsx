@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { ConnectionLostBanner } from '@/components/shell';
 import { Banner, CompactButton, SegmentedControl } from '@/components/ui';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
@@ -42,8 +43,10 @@ export function SessionColumn({ compact = false }: { compact?: boolean } = {}) {
   const ws = useWorkspace();
   const live = useOptionalLiveEvents();
   const model = useModelLabel();
-  // Beside the enlarged preview (`?vue=apercu`) the column always shows the conversation.
-  const view = ws.url.view === 'apercu' ? 'conversation' : ws.url.view;
+  // Beside the enlarged preview (`?vue=apercu`) the column keeps its own Conversation / Terminal brut
+  // choice: switching it never undoes the swap.
+  const [sideView, setSideView] = useState<'conversation' | 'terminal'>('conversation');
+  const view = compact ? sideView : ws.url.view === 'apercu' ? 'conversation' : ws.url.view;
 
   return (
     <section aria-label="Session Claude Code" className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -51,7 +54,7 @@ export function SessionColumn({ compact = false }: { compact?: boolean } = {}) {
         <SegmentedControl
           aria-label="Vue"
           value={view}
-          onValueChange={(next) => ws.url.set({ vue: next === 'conversation' ? null : next })}
+          onValueChange={(next) => (compact ? setSideView(next === 'terminal' ? 'terminal' : 'conversation') : ws.url.set({ vue: next === 'conversation' ? null : next }))}
           items={[
             { value: 'conversation', label: 'Conversation', icon: 'messages' },
             { value: 'terminal', label: 'Terminal brut', icon: 'terminal' },
