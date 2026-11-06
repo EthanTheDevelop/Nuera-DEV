@@ -15,6 +15,8 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, { icon: 
   session_finished: { icon: 'check', tone: 'success' },
   session_failed: { icon: 'alert', tone: 'danger' },
   session_interrupted: { icon: 'alert', tone: 'warn' },
+  session_usage_limit: { icon: 'clock', tone: 'warn' },
+  session_auto_resumed: { icon: 'refresh', tone: 'success' },
   operation_failed: { icon: 'alert', tone: 'danger' },
   operation_succeeded: { icon: 'check', tone: 'success' },
   integration_expiring: { icon: 'plug', tone: 'warn' },

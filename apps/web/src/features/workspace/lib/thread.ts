@@ -69,6 +69,11 @@ export function applyStatusEvent(session: WorkspaceSession, event: SessionStatus
     errorMessage: event.errorMessage,
     cliStatus: event.cliStatus ?? session.cliStatus,
     queuedInstructions: event.queuedInstructions,
+    // Older runners do not carry the limit: keep the last known one.
+    limit: event.limit !== undefined ? event.limit : session.limit,
+    // Composer chips: the mode the CLI reports and the model of the next launch (newer runners).
+    permissionMode: event.permissionMode ?? session.permissionMode,
+    model: event.model === undefined ? session.model : event.model,
   };
 }
 

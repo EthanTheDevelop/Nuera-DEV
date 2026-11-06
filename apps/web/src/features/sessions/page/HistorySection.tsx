@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { formatDuration } from '@nuera/shared/format';
-import { HistoryRow, HistoryTableHeader, LiveTime, SEP, historyStatusMeta, joinParts } from '@/components/dev';
+import { HistoryRow, HistoryTableHeader, LiveTime, SEP, historyStatusMeta, joinParts, usageLimitLabel } from '@/components/dev';
 import { Icon } from '@/components/icons';
 import {
   Badge,
@@ -251,6 +251,7 @@ export function HistorySection({ filters, history, projects, actions }: HistoryS
                       resumable={item.resumable}
                       startedAt={item.startedAt ?? item.createdAt}
                       durationMs={item.durationMs}
+                      statusNote={usageLimitLabel(item.limit)}
                       className="border-b-0 pr-7"
                     />
                     <Icon name="chevron" size={18} className="pointer-events-none absolute top-1/2 right-0 -translate-y-1/2 text-muted" />
@@ -312,6 +313,7 @@ function DesktopRow({ item, actions }: { item: SessionListItem; actions: Session
         resumable={item.resumable}
         startedAt={item.startedAt ?? item.createdAt}
         durationMs={item.durationMs}
+        statusNote={usageLimitLabel(item.limit)}
         action={mainAction(item, actions)}
         className={cn('min-w-0 flex-1 border-b-0', GRID)}
       />

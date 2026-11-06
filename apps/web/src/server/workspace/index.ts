@@ -37,3 +37,4 @@ export {
   permissionAuditSummary,
 } from './permissions';
 export { getSessionTerminal, interruptSession, sendInstruction } from './session-actions';
+export { COMPOSER_AUDIT_ACTIONS, getComposerPalette, setSessionModel, setSessionPermissionMode, uploadAttachment } from './composer';

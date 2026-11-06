@@ -7,6 +7,7 @@ import { useWorkspace } from '../WorkspaceContext';
 import { Thread } from '../thread/Thread';
 import { ComposerArea } from './ComposerArea';
 import { SessionTerminal } from './SessionTerminal';
+import { UsageLimitBanner } from './UsageLimitBanner';
 import { cn } from '@/lib/cn';
 
 /** Model actually used, as the CLI reports it (status line), else the one asked at launch, else « défaut du CLI ». */
@@ -70,6 +71,7 @@ export function SessionColumn({ compact = false }: { compact?: boolean } = {}) {
         />
       ) : null}
       <ActionErrorBanner className="mx-6 mt-3 shrink-0" />
+      <UsageLimitBanner className={cn('mt-3 shrink-0', compact ? 'mx-4 w-auto' : 'mx-6 w-auto')} />
 
       {view === 'terminal' ? <SessionTerminal /> : <Thread variant="desktop" />}
       <ComposerArea variant="desktop" />

@@ -44,6 +44,13 @@ reconnexion la saisie est en lecture seule et la raison reste visible. Le bouton
 Figma (fond `--border`, icône blanche). Clavier mobile : `useKeyboardInset()` (visualViewport) ; la page met
 `interactive-widget=resizes-content` dans la balise viewport et un conteneur `100dvh`.
 
+Barre d'outils (`tools` de `Composer` / `PhoneComposer`, `composer/ComposerToolbar.tsx`) : « Joindre » (fichiers
+écrits par le runner dans `.nuera/pieces-jointes/` du worktree, exclus par `info/exclude`, envoyés en `@<chemin>`),
+puces Modèle (`/model <alias>` tapé dans le CLI au repos, libellé = barre d'état) et Mode (Maj+Tab jusqu'à ce que
+l'écran du CLI affiche le mode ; hors CLI vivant : option du prochain démarrage), « / » et la palette `/` `@`
+(commandes choisies, skills, MCP du projet, fichiers ; insère, n'envoie jamais). Bureau : outils à gauche, micro et
+Envoyer à droite ; téléphone : rangée d'icônes 44 px au-dessus du champ, feuilles pour les choix.
+
 ### Modifications et diff
 
 | Composant | Props principales | Figma |

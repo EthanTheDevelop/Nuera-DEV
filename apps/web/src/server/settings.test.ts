@@ -101,6 +101,25 @@ describe.skipIf(!available)('réglages par portée', () => {
     });
   });
 
+  it("automatic resumption after the usage limit: off by default, per space, its instruction defaulted", async () => {
+    const { getEffectiveSessionPolicy, getSpaceSettings, updateSpaceSettings } = await import('./settings');
+    const { a, b } = accounts;
+    expect(await getSpaceSettings(a.spaceId)).toMatchObject({ autoResumeAfterLimit: false, autoResumeInstruction: null });
+    expect(await getEffectiveSessionPolicy(a.spaceId)).toMatchObject({ autoResumeAfterLimit: false, autoResumeInstruction: "Continue là où tu t'es arrêté." });
+
+    await updateSpaceSettings(a.spaceId, { autoResumeAfterLimit: true, autoResumeInstruction: '  Reprends les tests.  ' }, { userId: a.userId });
+    expect(await getEffectiveSessionPolicy(a.spaceId)).toMatchObject({ autoResumeAfterLimit: true, autoResumeInstruction: 'Reprends les tests.' });
+    expect(await getEffectiveSessionPolicy(b.spaceId)).toMatchObject({ autoResumeAfterLimit: false });
+    // Empty: back to the default instruction.
+    await updateSpaceSettings(a.spaceId, { autoResumeInstruction: '' }, { userId: a.userId });
+    expect((await getSpaceSettings(a.spaceId))?.autoResumeInstruction).toBeNull();
+    expect((await getEffectiveSessionPolicy(a.spaceId)).autoResumeInstruction).toBe("Continue là où tu t'es arrêté.");
+    await expect(updateSpaceSettings(a.spaceId, { autoResumeInstruction: 'x'.repeat(2001) }, { userId: a.userId })).rejects.toMatchObject({ code: 'VALIDATION' });
+    await expect(updateSpaceSettings(a.spaceId, { autoResumeAfterLimit: true }, { userId: b.userId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const entries = await journal();
+    expect(JSON.stringify(entries.map((entry) => entry.summary))).toContain("reprise automatique après la limite d'utilisation");
+  });
+
   it('bypass block: effective = instance OR space, and the default mode never stays « bypass » while blocked', async () => {
     const { getEffectiveSessionPolicy, updateInstanceSettings, updateSpaceSettings } = await import('./settings');
     const { a, b } = accounts;

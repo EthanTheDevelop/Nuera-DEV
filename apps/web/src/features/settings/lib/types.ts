@@ -44,6 +44,8 @@ export type SettingKey =
   | 'permissionWaitSeconds'
   | 'remoteControlByDefault'
   | 'worktreeStaleDays'
+  | 'autoResumeAfterLimit'
+  | 'autoResumeInstruction'
   | 'theme'
   | 'locale'
   | 'gitAuthorName'
@@ -73,6 +75,10 @@ export interface SettingsValues {
   permissionWaitSeconds: number;
   remoteControlByDefault: boolean;
   worktreeStaleDays: number;
+  /** « Reprise automatique après la limite d'utilisation » by default (a session may override it). */
+  autoResumeAfterLimit: boolean;
+  /** « Instruction de reprise »; null = « Continue là où tu t'es arrêté. ». */
+  autoResumeInstruction: string | null;
   // Account (user_preferences).
   theme: ThemeValue;
   locale: string;

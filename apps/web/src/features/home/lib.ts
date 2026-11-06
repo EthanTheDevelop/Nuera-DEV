@@ -3,6 +3,7 @@
  * Copy is Figma's (D01 / M01) when drawn; undrawn states use sober French sentences.
  */
 import { formatNumber, formatRelative, formatUsage, plural } from '@nuera/shared/format';
+import { usageLimitLabel } from '@/components/dev/lib/usage-limit';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type {
   ClaudeState,
@@ -73,7 +74,10 @@ export function lowerFirst(text: string): string {
 }
 
 /** `Plan 3 / 5 · écrit les tests de pipeline-totals.ts` (D01) — or the activity alone without a plan. */
-export function progressLine(session: Pick<HomeSession, 'planDone' | 'planTotal' | 'currentActivity'>): string | null {
+export function progressLine(session: Pick<HomeSession, 'planDone' | 'planTotal' | 'currentActivity'> & { limit?: HomeSession['limit'] }): string | null {
+  // Stopped by the usage limit: what the CLI announced, never a plan that no longer moves.
+  const limited = usageLimitLabel(session.limit);
+  if (limited) return limited;
   const activity = session.currentActivity?.trim() || null;
   const hasPlan = typeof session.planTotal === 'number' && session.planTotal > 0;
   if (hasPlan) {
@@ -87,7 +91,9 @@ export function progressLine(session: Pick<HomeSession, 'planDone' | 'planTotal'
  * Activity line of a session card: « Attend votre accord pour npm run test -- crm » while a request
  * is pending (D01 / M01), else the runner's current activity.
  */
-export function cardActivity(session: Pick<HomeSession, 'status' | 'currentActivity' | 'pendingPermission'>): string | null {
+export function cardActivity(session: Pick<HomeSession, 'status' | 'currentActivity' | 'pendingPermission'> & { limit?: HomeSession['limit'] }): string | null {
+  const limited = usageLimitLabel(session.limit);
+  if (limited) return limited;
   const target = session.pendingPermission?.target?.trim();
   if (session.status === 'waiting_permission' && target) return `Attend votre accord pour ${target}`;
   return session.currentActivity?.trim() || null;
@@ -290,6 +296,7 @@ export function applySessionStatus(items: readonly HomeSession[], event: Session
     planDone: event.planDone,
     planTotal: event.planTotal,
     pendingPermission: event.pendingPermissionId ? current.pendingPermission : null,
+    limit: event.limit !== undefined ? event.limit : current.limit,
   };
   const copy = [...items];
   copy[index] = next;

@@ -91,6 +91,7 @@ function toHomeSession(item: SessionListItem, pending: ReadonlyMap<string, HomeP
     startedAt: item.startedAt,
     lastActivityAt: item.lastActivityAt,
     pendingPermission: request,
+    limit: item.limit,
   };
 }
 

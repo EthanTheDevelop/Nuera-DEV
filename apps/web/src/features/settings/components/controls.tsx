@@ -223,7 +223,7 @@ export function BooleanSwitch({
   onMessage,
   offMessage,
 }: {
-  field: 'remoteControlByDefault';
+  field: 'remoteControlByDefault' | 'autoResumeAfterLimit';
   labelledBy: string;
   describedBy?: string;
   onMessage: string;
@@ -332,7 +332,7 @@ export function NumberSetting({
   );
 }
 
-type TextField = 'serverName' | 'serverLocation';
+type TextField = 'serverName' | 'serverLocation' | 'autoResumeInstruction';
 
 export function TextSetting({
   field,
@@ -340,6 +340,7 @@ export function TextSetting({
   hint,
   maxLength,
   nullable,
+  placeholder,
   successMessage,
 }: {
   field: TextField;
@@ -347,6 +348,8 @@ export function TextSetting({
   hint?: ReactNode;
   maxLength: number;
   nullable?: boolean;
+  /** Shown while empty (the value used when none is saved). */
+  placeholder?: string;
   successMessage: (value: string | null) => string;
 }) {
   const { settings, save, pending, errorFor, canEdit } = useSettings();
@@ -370,7 +373,7 @@ export function TextSetting({
   return (
     <form noValidate onSubmit={submit} className="flex flex-col gap-2">
       <Field label={label} hint={locked ? ADMIN_SET_NOTE : hint} error={localError ?? errorFor(field)}>
-        <Input disabled={locked} value={draft} maxLength={maxLength} onChange={(event) => { setDraft(event.target.value); setLocalError(null); }} />
+        <Input disabled={locked} value={draft} maxLength={maxLength} placeholder={placeholder} onChange={(event) => { setDraft(event.target.value); setLocalError(null); }} />
       </Field>
       {dirty && !locked ? (
         <div className="flex gap-2">

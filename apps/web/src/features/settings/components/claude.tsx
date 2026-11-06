@@ -5,7 +5,8 @@ import { LiveTime } from '@/components/dev';
 import { Badge, Card, CompactButton, Field, KeyValueList, TileHeader } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { authMethodLabel, claudeBadge, claudeStateNote, formatSeconds, planLabel } from '../lib/copy';
-import { BlockBypassSwitch, BooleanSwitch, EffortSelect, ModelSelect, NumberSetting, PermissionModeSelect } from './controls';
+import { DEFAULT_AUTO_RESUME_INSTRUCTION } from '@nuera/shared/runner';
+import { BlockBypassSwitch, BooleanSwitch, EffortSelect, ModelSelect, NumberSetting, PermissionModeSelect, TextSetting } from './controls';
 import { AdminSetNote, InlineError, NoServerNote, SettingsRow, SettingsRows, UnavailableNote } from './parts';
 import { useSettings } from './SettingsContext';
 
@@ -111,6 +112,8 @@ export function ClaudeTab() {
   const { claude, data, refreshClaude, refreshingClaude, claudeRefreshError, serverName, settings } = useSettings();
   const remoteTitle = useId();
   const remoteCaption = useId();
+  const resumeTitle = useId();
+  const resumeCaption = useId();
   const effortId = useId();
   const plan = claude ? planLabel(claude.subscriptionType) : null;
 
@@ -195,7 +198,34 @@ export function ClaudeTab() {
                 />
               }
             />
+            <SettingsRow
+              titleId={resumeTitle}
+              title="Reprise automatique après la limite d'utilisation"
+              caption={
+                <span id={resumeCaption}>
+                  Quand le CLI s'arrête sur la limite de votre abonnement, la session reprend 2 min après l'heure de levée qu'il annonce. Chaque session peut changer ce choix.
+                </span>
+              }
+              control={
+                <BooleanSwitch
+                  field="autoResumeAfterLimit"
+                  labelledBy={resumeTitle}
+                  describedBy={resumeCaption}
+                  onMessage="Reprise automatique activée par défaut"
+                  offMessage="Reprise automatique désactivée par défaut"
+                />
+              }
+            />
           </SettingsRows>
+          <TextSetting
+            field="autoResumeInstruction"
+            label="Instruction de reprise"
+            hint="Tapée dans la session quand elle reprend après la limite."
+            maxLength={2000}
+            nullable
+            placeholder={DEFAULT_AUTO_RESUME_INSTRUCTION}
+            successMessage={(value) => (value ? 'Instruction de reprise enregistrée' : "Instruction de reprise : « Continue là où tu t'es arrêté. »")}
+          />
         </Card>
       </div>
     </div>
