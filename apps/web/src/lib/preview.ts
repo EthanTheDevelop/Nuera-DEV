@@ -4,9 +4,10 @@
  *
  * The previewed project's code is untrusted: it never runs on the application's origin. The same
  * web container answers a second host, `PREVIEW_HOST` (e.g. `nuera-dev-apercu.perso.nuera.studio`),
- * on which `src/proxy.ts` sends EVERY request to the relay route handlers (no application page, no
- * application API); on the application host those handlers answer 404. Empty `PREVIEW_HOST` ⇒ the
- * feature is off and the Workspace says why.
+ * on which `src/proxy.ts` sends EVERY request to the runner of the run's server (external rewrite,
+ * `server/preview/gate.ts`) or to the entry route handler (no application page, no application
+ * API); on the application host that handler answers 404. Empty `PREVIEW_HOST` ⇒ the feature is off
+ * and the Workspace says why.
  */
 
 export const PREVIEW_COOKIE = 'nuera_apercu';
@@ -14,10 +15,8 @@ export const PREVIEW_COOKIE = 'nuera_apercu';
 export const PREVIEW_ENTRY_PATH = '/__nuera/entree';
 /** Paths of the preview host kept for Nuera Dev (never relayed to the dev server). */
 export const PREVIEW_RESERVED_PREFIX = '/__nuera/';
-/** Internal route handlers the proxy rewrites preview-host requests to. */
-export const PREVIEW_ROUTES = { relay: '/api/apercu/proxy', entry: '/api/apercu/entree' } as const;
-/** Original path + query of a preview-host request (set by the proxy only; any inbound copy is dropped). */
-export const PREVIEW_PATH_HEADER = 'x-nuera-apercu-path';
+/** Internal route handler the proxy rewrites the entry of the preview host to. */
+export const PREVIEW_ROUTES = { entry: '/api/apercu/entree' } as const;
 /** Lifetime of the preview cookie (an access is re-checked on every request anyway). */
 export const PREVIEW_COOKIE_TTL_MS = 12 * 3_600_000;
 /** Lifetime of a handoff token (single use). */

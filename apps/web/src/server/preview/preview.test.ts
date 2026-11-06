@@ -9,7 +9,8 @@ import { createTestAccount, createTestResources, truncateTenancy, type TestAccou
 /*
  * « Aperçu »: tokens (signature, expiry, single use, purpose), the access re-check behind every
  * preview request (account, web access, space of the run, dev run), the handoff refused for a run
- * of another space without any runner call, the entry (cookie) and the relay, host-bound.
+ * of another space without any runner call, the entry (cookie) and the gate of every other request
+ * (external rewrite to the run's runner, host-bound).
  */
 
 process.env.BETTER_AUTH_SECRET = 'tests-only-better-auth-secret-0123456789abcdef';
@@ -20,6 +21,8 @@ const tokens = await import('./tokens');
 const access = await import('./access');
 const handoff = await import('./handoff');
 const serve = await import('./serve');
+const gate = await import('./gate');
+const { readPreviewConfig } = await import('@/lib/preview');
 const { db } = await import('@/server/db');
 
 const GRANT = { userId: 'user_a', authSessionId: 'sess_a', runId: '11111111-1111-4111-8111-111111111111' };
@@ -72,7 +75,7 @@ describe('preview tokens', () => {
   });
 });
 
-describe.skipIf(process.env.NUERA_TEST_DB === '0')('preview access, handoff, entry and relay', () => {
+describe.skipIf(process.env.NUERA_TEST_DB === '0')('preview access, handoff, entry and gate', () => {
   let runnerA: FakeRunner;
   let runnerB: FakeRunner;
   let a: TestAccount;
@@ -99,6 +102,7 @@ describe.skipIf(process.env.NUERA_TEST_DB === '0')('preview access, handoff, ent
     process.env.PREVIEW_HOST = 'apercu.example.test';
     await truncateTenancy();
     access.invalidatePreviewAccess();
+    gate.resetPreviewProbes();
     tokens.resetPreviewNonces();
     a = await createTestAccount({ role: 'owner', environment: { configSource: 'db', isDefault: false, url: runnerA.url, name: 'VPS-3' } });
     b = await createTestAccount({ role: 'member', environment: { configSource: 'db', url: runnerB.url, name: 'VPS-4' } });
@@ -175,41 +179,66 @@ describe.skipIf(process.env.NUERA_TEST_DB === '0')('preview access, handoff, ent
     expect((await serve.servePreviewEntry(entry('apercu.example.test'))).status).toBe(401);
   });
 
-  it("relays with the cookie to the run's server, strips Nuera cookies, adds the position script; refuses without access", async () => {
-    runnerA.handle((_req, res) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-nuera-preview': 'upstream', 'set-cookie': 'theme=1; Path=/' });
-      res.end('<!doctype html><html><head><title>Devis</title></head><body>é</body></html>');
-    });
+  const config = () => {
+    const value = readPreviewConfig();
+    if (!value.enabled) throw new Error('aperçu désactivé');
+    return value;
+  };
+  const rewriteOf = (result: Awaited<ReturnType<typeof gate.previewGate>>) => {
+    if (result.kind !== 'rewrite') throw new Error(`réponse ${result.response.status} au lieu d'une réécriture`);
+    return result;
+  };
+  const responseOf = (result: Awaited<ReturnType<typeof gate.previewGate>>) => {
+    if (result.kind !== 'response') throw new Error('réécriture au lieu d\'une réponse');
+    return result.response;
+  };
+  const decide = (headers: Record<string, string>, cookie: string | undefined, path = '/src/main.ts?x=1') =>
+    gate.previewGate({ headers: new Headers({ host: 'apercu.example.test', ...headers }), cookie }, path, config());
+
+  it("rewrites to the run's own runner with the runner token, Nuera cookies stripped; refuses without access", async () => {
+    runnerA.handle((_req, res) => runnerA.json(res, 200, { ok: true }));
     const cookie = tokens.issuePreviewCookie(grantA()).value;
-    const request = (headers: Record<string, string>, host = 'apercu.example.test') =>
-      new NextRequest(`https://${host}/api/apercu/proxy`, { headers: { host, 'x-nuera-apercu-path': '/src/main.ts?x=1', ...headers } });
-
-    const ok = await serve.servePreviewRequest(request({ cookie: `nuera_apercu=${cookie}; theme=sombre; __Secure-nuera.session_token=s` }));
-    expect(ok.status).toBe(200);
-    const html = await ok.text();
-    expect(html).toMatch(/^<!doctype html><html><head><script data-nuera-apercu>.*"https:\/\/dev\.example\.test".*<\/script><title>Devis<\/title>/);
-    expect(html).toContain('<body>é</body>');
-    expect(ok.headers.getSetCookie()).toEqual(['theme=1; Path=/']);
-    expect(ok.headers.get('x-nuera-preview')).toBeNull();
-    const [relayed] = runnerA.requests;
-    expect(relayed).toMatchObject({ method: 'GET', path: `/v1/runs/${devRunA}/preview/src/main.ts?x=1` });
-    expect(relayed!.authorization).toMatch(/^Bearer nrt_/);
-
-    expect((await serve.servePreviewRequest(request({}))).status).toBe(401);
-    const foreign = tokens.issuePreviewCookie({ userId: b.user.id, authSessionId: b.user.authSessionId, runId: devRunA }).value;
-    expect((await serve.servePreviewRequest(request({ cookie: `nuera_apercu=${foreign}` }))).status).toBe(403);
-    expect((await serve.servePreviewRequest(request({ cookie: `nuera_apercu=${cookie}` }, 'dev.example.test'))).status).toBe(404);
+    const ok = rewriteOf(await decide({ cookie: `nuera_apercu=${cookie}; theme=sombre; __Secure-nuera.session_token=s`, authorization: 'Basic dTpw', 'x-nuera-preview-origin': 'forge', 'content-length': '12', connection: 'keep-alive' }, cookie));
+    expect(ok.url).toBe(`${runnerA.url}/v1/runs/${devRunA}/preview/src/main.ts?x=1`);
+    expect(Object.fromEntries(ok.headers)).toEqual({
+      authorization: expect.stringMatching(/^Bearer nrt_/),
+      cookie: 'theme=sombre',
+      'content-length': '12',
+      'x-nuera-preview-authorization': 'Basic dTpw',
+      'x-nuera-preview-origin': 'https://apercu.example.test',
+      'x-nuera-preview-app-origin': 'https://dev.example.test',
+    });
+    // Runner reachability checked once (then kept 5 s), never on another server.
+    expect(runnerA.requests.map((r) => `${r.method} ${r.path}`)).toEqual(['GET /v1/health']);
+    await decide({}, cookie);
     expect(runnerA.requests).toHaveLength(1);
+
+    expect(responseOf(await decide({}, undefined)).status).toBe(401);
+    const foreign = tokens.issuePreviewCookie({ userId: b.user.id, authSessionId: b.user.authSessionId, runId: devRunA }).value;
+    expect(responseOf(await decide({}, foreign)).status).toBe(403);
+    expect(responseOf(await decide({}, cookie, '//evil.test/')).status).toBe(400);
     expect(runnerB.requests).toHaveLength(0);
   });
 
-  it('a runner error becomes a short page in the frame', async () => {
-    runnerA.handle((_req, res) => runnerA.json(res, 409, { error: { code: 'CONFLICT', message: 'Le serveur de développement est arrêté.', reason: 'PREVIEW_NOT_RUNNING' } }));
+  it('keeps the WebSocket handshake, from the preview origin only', async () => {
+    runnerA.handle((_req, res) => runnerA.json(res, 200, { ok: true }));
     const cookie = tokens.issuePreviewCookie(grantA()).value;
-    const response = await serve.servePreviewRequest(
-      new NextRequest('https://apercu.example.test/api/apercu/proxy', { headers: { host: 'apercu.example.test', cookie: `nuera_apercu=${cookie}`, 'x-nuera-apercu-path': '/' } }),
-    );
-    expect(response.status).toBe(409);
-    expect(await response.text()).toContain('Le serveur de développement est arrêté.');
+    const handshake = { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-key': 'abc', 'sec-websocket-version': '13' };
+    const ok = rewriteOf(await decide({ ...handshake, origin: 'https://apercu.example.test' }, cookie, '/_next/hmr?id=1'));
+    expect(ok.url).toBe(`${runnerA.url}/v1/runs/${devRunA}/preview/_next/hmr?id=1`);
+    expect(ok.headers.get('upgrade')).toBe('websocket');
+    expect(ok.headers.get('connection')).toBe('Upgrade');
+    expect(ok.headers.get('sec-websocket-key')).toBe('abc');
+    expect(responseOf(await decide({ ...handshake, origin: 'https://autre.example.test' }, cookie, '/_next/hmr?id=1')).status).toBe(403);
+  });
+
+  it('an unreachable runner becomes the short page in the frame, never a bare error', async () => {
+    const cookie = tokens.issuePreviewCookie(grantA()).value;
+    await runnerA.close();
+    const down = responseOf(await decide({}, cookie));
+    expect(down.status).toBe(503);
+    expect(down.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(await down.text()).toContain('Aperçu indisponible');
+    runnerA = await startFakeRunner();
   });
 });
