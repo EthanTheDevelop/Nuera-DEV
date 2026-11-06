@@ -431,6 +431,16 @@ Usage: `<div data-tone="dark" className="bg-bg text-text border-border">` gives 
 
 ### 6.2 Server config (`apps/web/lib/auth.ts`) — same options exercised in §10.5 (memory adapter; Drizzle/Postgres run unfinished)
 
+> **Historique (version multi-comptes, `docs/MULTICOMPTE.md` §6).** L'esquisse ci-dessous date du « propriétaire
+> unique » : ses copies « Un seul propriétaire » et « Nuera Dev a déjà un propriétaire. » (ici et au §10.5) ne
+> correspondent plus au code. Aujourd'hui `user.create.before` refuse **toute** création (`SIGN_UP_CLOSED`, « Les
+> inscriptions sont fermées : demandez une invitation à un administrateur. »), sans `NUERA_ALLOW_SIGNUP` ; les comptes
+> sont écrits par des transactions de Nuera Dev (`apps/web/src/server/auth/setup.ts` pour le propriétaire,
+> `server/auth/links.ts` pour les invitations) ; l'unicité du propriétaire vient de l'index `user_owner_idx`
+> (`(true) WHERE role = 'owner'`), qui a remplacé `user_single_owner_idx`. Les comportements de Better Auth relevés
+> ici (blocage de `auth.api.signUpEmail` par `disableSignUp`, hooks `before`) restent exacts. Code réel :
+> `apps/web/src/server/auth/auth.ts`.
+
 No `import 'server-only'` in this file: `server-only@0.0.1` resolves to an empty module only under the `react-server` export condition and otherwise **throws** ("This module cannot be imported from a Client Component module…") [V, package exports + `index.js`]; the `auth` CLI and one-off Node scripts (owner creation) import this file outside that condition [I]. Put the guard in the app modules around it instead.
 
 ```ts

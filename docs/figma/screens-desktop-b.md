@@ -629,6 +629,10 @@ Grille     2 columns × 554, gap 20 (each column: stack of tiles, gap 20)
 
 ### 4.2 Header & tabs
 - `Paramètres` / `Compte, sécurité, Claude Code et serveur. Un seul propriétaire, aucun autre compte.`
+  - **Écart multi-comptes** (`docs/MULTICOMPTE.md` §14, W5-1) : le sous-titre construit est `Compte, sécurité, Claude
+    Code et serveur. Chaque compte a ses propres réglages.` ; l'onglet `Compte et sécurité` (non maquetté) commence par
+    une tuile d'identité titrée par le rôle (`Propriétaire` · `Administrateur` · `Membre`), avec nom, e-mail et la
+    légende `<rôle> · double facteur actif · serveur <nom>` (ou `· aucun serveur attribué`).
 - **Onglets** (row, gap 4) rendered with Badges: Accent `Vue d'ensemble` (active) · Neutre `Compte et sécurité` · `Claude Code` · `Serveur` · `Préférences`. Only the overview is designed; other tabs presumably show the corresponding tile(s) in full (assumption).
 
 **Settings row pattern** (used in every tile): row, gap 12, centred, `py 10`, 1 px bottom border except the last row; optional 18 px leading icon (`--muted`: monitor, smartphone, book, refresh, trash) or 8 px status dot; tile-header pastille icons are `--accent` (terminal, shield, server, sliders, bell); the `Dev · Interrupteur` "on" SVG is accent + white knob; text column (flex 1, gap 2) = Row title (Outfit Medium 14 `--text`) + Row caption (Outfit Regular 12 / 16 `--muted`); trailing control (Badge, compact button, switch, dropdown 140 w).

@@ -827,6 +827,10 @@ Connected, expired and disabled servers; an auth-expired alert. All servers heal
 
 Header: `Paramètres` / `Un seul propriétaire : Nezar` (no action button).
 
+**Écart multi-comptes** (`docs/MULTICOMPTE.md` §14, W5-1) : le sous-titre construit est `Compte de <prénom>` ; la
+tuile d'identité de `Compte et sécurité` est titrée par le rôle (`Propriétaire` · `Administrateur` · `Membre`), légende
+`<rôle> · double facteur actif · serveur <nom>` (ou `· aucun serveur attribué`).
+
 Settings groups (see *Settings group* in §2). Row anatomy: leading icon 20 (accent unless noted) · label Outfit **Regular** 15 `--text` (+ optional sublabel 12 `--muted`) · trailing value (Outfit Regular 14 `--muted`) or Badge or toggle · `icon/chevron` 16 `--muted`. Rows are 52 px, or 60 px with a sublabel.
 
 | Group (overline) | Icon | Label | Sublabel | Trailing |
