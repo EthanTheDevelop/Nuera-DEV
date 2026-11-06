@@ -25,7 +25,8 @@ pnpm --filter @nuera/runner typecheck
 | `DATABASE_URL` | — | DSN complet (serveur par défaut tant qu'il n'est pas restreint). Tables écrites : worktrees, sessions, session_events, permission_requests, operations, command_runs, uptime_daily ; projects pour la synchro ; `environments` (battement seulement). |
 | `NUERA_DB_POOL_MAX` | `5` | Connexions du pool principal (+ 1 connexion dédiée au bail). |
 | `NUERA_ENVIRONMENT_ID` | — | Assertion facultative : identifiant attendu du serveur. Différent de celui que désigne le jeton → arrêt (« NUERA_ENVIRONMENT_ID ne correspond pas au serveur de ce jeton : vérifiez la configuration du runner. »). |
-| `NUERA_CLAUDE_CONFIG_DIR` | — | Dev, tests, plusieurs runners sur une machine : `CLAUDE_CONFIG_DIR` de **tous** les processus `claude` du runner (sessions, `auth status`, connexion, `mcp …`, terminal /status ; aussi les terminaux de shell et les commandes du projet, pour un `claude` tapé à la main) et racine des journaux acceptés. Non défini en production (HOME propre au conteneur). |
+| `NUERA_CLAUDE_CONFIG_DIR` | — | Dev, tests, plusieurs runners sur une machine : `CLAUDE_CONFIG_DIR` des processus `claude` du **premier compte** du serveur (sessions, `auth status`, connexion, `mcp …`, terminal /status ; aussi les terminaux de shell et les commandes de ses projets) et racine de ses journaux acceptés. Non défini en production (HOME propre au conteneur). |
+| `NUERA_CLAUDE_ACCOUNTS_DIR` | `<NUERA_CLAUDE_CONFIG_DIR>-comptes`, sinon `~/claude-comptes` | Serveur partagé (lot P1) : racine des dossiers Claude des **autres** comptes du serveur, `<racine>/<id de l'espace>/` (0700, créés au premier besoin, supprimés quand le compte quitte le serveur). Chaque processus `claude` d'un compte reçoit son dossier, jamais celui d'un autre ; le premier compte garde le dossier existant (épinglé dans `<NUERA_DATA_DIR>/claude-compte-principal.json`). À garder sur le volume HOME persistant. |
 | `NUERA_ENV_FILE` | — | Dev : fichier lu **avant** le `.env` racine (ses valeurs l'emportent), pour un second runner. |
 | `APP_URL` | `http://localhost:3000` | Web, pour les rappels `/api/internal/*` (`NUERA_WEB_INTERNAL_URL` pour une URL interne différente). |
 | `NUERA_PROJECTS_ROOT` | `./.data/projects` | Racine des clones et worktrees (prod : `/srv/dev`). Chemins relatifs = relatifs à la racine du dépôt. |
@@ -146,14 +147,14 @@ Toutes exigent le Bearer et valident leurs entrées avec Zod. **Cloisonnement** 
 | Sessions | `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `POST …/start\|resume\|instruction\|interrupt\|stop\|announce\|auto-resume`, `GET …/events?afterVersion=`, `GET …/stream` (SSE), `GET …/terminal`, `POST /permissions/:id/decision` |
 | Processus | `POST /runs`, `GET /runs/:id`, `GET /runs/:id/stream` (SSE), `DELETE /runs/:id` |
 | Aperçu | `<toute méthode> /runs/:id/preview/*` — relais brut vers le serveur de développement du lancement (hors `RUNNER_ROUTES`, contrat `RUNNER_PREVIEW_ROUTE`) |
-| CLI Claude | `GET /claude/status?refresh=`, `POST /claude/mcp/sync`, `GET /claude/mcp/:name` |
+| CLI Claude | `GET /claude/status?refresh=`, `POST /claude/mcp/sync`, `GET /claude/mcp/:name`, `GET /claude/config`, `POST /claude/config/sync` (configuration commune) |
 
 Écoute locale (127.0.0.1:`RUNNER_HOOK_PORT`, jeton de session en Bearer) : `POST /internal/hooks/:sessionId`,
 `POST /internal/statusline/:sessionId`, `POST /internal/mcp-headers/:sessionId`.
 
 Rappels vers le web (Bearer = jeton du serveur, d'où le web déduit le serveur ; tolérés absents/injoignables ; 401/403
 journalisés « Le web refuse le jeton de ce serveur … ») : `POST /api/internal/notify`, `/api/internal/mcp-headers`,
-`/api/internal/git-credentials`. Les vérifications d'intégrations sont cadencées par le web, plus par les runners.
+`/api/internal/git-credentials`, `/api/internal/claude-config`. Les vérifications d'intégrations sont cadencées par le web, plus par les runners.
 
 ## Flux SSE (`@nuera/shared/events`)
 
@@ -288,6 +289,33 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
 Confiance du dossier : le CLI retient ses hooks tant que le dialogue de confiance n'est pas accepté. Accepter une
 fois la confiance pour `NUERA_PROJECTS_ROOT` (terminal `claude` dans ce dossier) évite le dialogue pour chaque
 worktree ; sinon la session affiche « Action requise dans le terminal » et l'instruction attend en file.
+
+## Configuration Claude commune (lot K1)
+
+`src/claude/common-config.ts` (`CommonConfigSync`) écrit sur ce serveur la configuration commune de l'instance qui
+s'applique au compte de son espace (`docs/MULTICOMPTE.md` §14, lot K1). Le runner ne lit aucune table de cette
+configuration : il la demande au web (`POST /api/internal/claude-config`, jeton du serveur, `{ have: [{ name, hash }] }`
+— les fichiers des skills inchangés sont omis) :
+
+- **quand** : au démarrage (après le bail), à `POST /v1/claude/config/sync` (le web l'appelle après chaque
+  modification et sur « Synchroniser les serveurs »), et avant de lancer une session dont `launch.commonConfig.hash`
+  diffère de sa copie. Une synchronisation à la fois ; un échec (web injoignable, réponse illisible, dossier non
+  inscriptible) garde la copie précédente et ne bloque jamais un lancement. `GET /v1/claude/config` : révision, date,
+  skills écrits, conflits, erreur (`<NUERA_DATA_DIR>/claude-commun/state.json`, relu après un redémarrage) ;
+- **quoi** (dossier Claude = `NUERA_CLAUDE_CONFIG_DIR`, sinon `~/.claude`) :
+  - `skills/<nom>/` + marqueur `.nuera-commun.json` : nouvelle version écrite dans `skills/.nuera-tmp-*` puis deux
+    renommages (l'ancien dossier part en `.nuera-old-*`, supprimé ensuite ; restes nettoyés à la synchronisation
+    suivante) ; un dossier marqué qui ne s'applique plus est supprimé ; un dossier **sans** marqueur (skill du compte)
+    n'est jamais touché (conflit) ; fichiers 0444, scripts autorisés 0555 ; `skills/` qui serait un lien : refusé ;
+  - `rules/nuera-commun.md` : règles « Par défaut » (mémoire de niveau utilisateur du CLI) ;
+  - `<NUERA_DATA_DIR>/claude-commun/regles-imposees.md` : règles « Imposé », passées à chaque lancement et reprise par
+    `--append-system-prompt-file` ;
+  - jamais `.credentials.json`, `.claude.json`, `settings.json` ni un autre fichier de `rules/` (`assertManagedTarget`) ;
+    sans skill à écrire ni dossier `skills/`, rien n'est créé.
+- **options de lancement** (champs facultatifs, contrat 2) : `allowRules`, `askRules` (avec `denyRules` →
+  `permissions` du `--settings` de la session), `settingsEnv` (variables « Imposé » → `env` du `--settings`, mêmes noms
+  refusés que `env`), `commonConfig { hash, revision }`. Gardés dans `launch.json` (repris après un redémarrage).
+- **palette « / »** : un skill dont le dossier porte le marqueur est listé avec `source: 'common'` (« commun »).
 
 ## Processus du projet et système
 

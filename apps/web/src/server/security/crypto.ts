@@ -69,6 +69,8 @@ export const SecretScopes = {
   integration: (spaceId: string, kind: string): SecretScope => ({ table: 'integrations', ownerId: `${spaceId}:${kind}` }),
   /** `mcp_servers.secrets_encrypted` (generate the row id before the insert). */
   mcpServer: (serverId: string): SecretScope => ({ table: 'mcp_servers', ownerId: serverId }),
+  /** `instance_mcp_servers.secrets_encrypted` (configuration Claude commune; generate the row id before the insert). */
+  instanceMcpServer: (serverId: string): SecretScope => ({ table: 'instance_mcp_servers', ownerId: serverId }),
   /** `environments.token_encrypted` and `environments.next_token_encrypted`. */
   environmentToken: (environmentId: string): SecretScope => ({ table: 'environments', ownerId: environmentId }),
   /** Signed state of the GitHub App manifest flow (never stored): bound to the account that started it. */

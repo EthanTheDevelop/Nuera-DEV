@@ -3,9 +3,11 @@ import type { Transaction } from '@nuera/db';
 import {
   account,
   auditLog,
+  environmentSpaces,
   environments,
   invitations,
   passkey,
+  projects,
   pushSubscriptions,
   session,
   sessions,
@@ -83,7 +85,7 @@ export interface AdminAccountView {
 /** Every account that is not deleted, owner first, then by creation date. */
 export async function listAccounts(actor: AdminActor): Promise<AdminAccountView[]> {
   assertAdmin(actor);
-  const rows = await db
+  const linked = await db
     .select({
       id: user.id,
       name: user.name,
@@ -100,12 +102,21 @@ export async function listAccounts(actor: AdminActor): Promise<AdminAccountView[
     })
     .from(user)
     .leftJoin(spaces, and(eq(spaces.ownerUserId, user.id), eq(spaces.kind, 'personal')))
+    // The server the space works on, its first account or not (lot P1, shared servers).
+    .leftJoin(environmentSpaces, eq(environmentSpaces.spaceId, spaces.id))
     .leftJoin(
       environments,
-      and(eq(environments.spaceId, spaces.id), ne(environments.status, 'retired')),
+      and(eq(environments.id, environmentSpaces.environmentId), ne(environments.status, 'retired')),
     )
     .where(isNull(user.deletedAt))
     .orderBy(sql`case when ${user.role} = 'owner' then 0 else 1 end`, asc(user.createdAt));
+  // One row per account: the server in use wins over a retired one.
+  const byUser = new Map<string, (typeof linked)[number]>();
+  for (const row of linked) {
+    const seen = byUser.get(row.id);
+    if (!seen || (!seen.environmentId && row.environmentId)) byUser.set(row.id, row);
+  }
+  const rows = [...byUser.values()];
   const ids = rows.map((row) => row.id);
   if (ids.length === 0) return [];
 
@@ -122,26 +133,26 @@ export async function listAccounts(actor: AdminActor): Promise<AdminAccountView[
       .where(and(inArray(auditLog.actorUserId, ids), inArray(auditLog.action, SIGN_IN_ACTIONS)))
       .groupBy(auditLog.actorUserId),
     (() => {
-      const environmentIds = rows
-        .map((row) => row.environmentId)
-        .filter((id): id is string => Boolean(id));
-      return environmentIds.length
+      // Live sessions of each account's own space (a shared server runs other accounts' too).
+      const spaceIds = rows.map((row) => row.spaceId).filter((id): id is string => Boolean(id));
+      return spaceIds.length
         ? db
-            .select({ environmentId: sessions.environmentId, total: count() })
+            .select({ spaceId: projects.spaceId, total: count() })
             .from(sessions)
+            .innerJoin(projects, and(eq(projects.id, sessions.projectId), eq(projects.environmentId, sessions.environmentId)))
             .where(
               and(
-                inArray(sessions.environmentId, environmentIds),
+                inArray(projects.spaceId, spaceIds),
                 inArray(sessions.status, [...LIVE_SESSION_STATUSES]),
               ),
             )
-            .groupBy(sessions.environmentId)
-        : Promise.resolve([] as Array<{ environmentId: string; total: number }>);
+            .groupBy(projects.spaceId)
+        : Promise.resolve([] as Array<{ spaceId: string; total: number }>);
     })(),
   ]);
   const accessBy = new Map(accesses.map((row) => [row.userId, Number(row.total)]));
   const signInBy = new Map(signIns.map((row) => [row.userId, row.at]));
-  const liveBy = new Map(live.map((row) => [row.environmentId, Number(row.total)]));
+  const liveBy = new Map(live.map((row) => [row.spaceId, Number(row.total)]));
 
   return rows.map((row) => ({
     id: row.id,
@@ -158,7 +169,7 @@ export async function listAccounts(actor: AdminActor): Promise<AdminAccountView[
       row.environmentId && row.environmentName && row.environmentStatus
         ? { id: row.environmentId, name: row.environmentName, status: row.environmentStatus }
         : null,
-    liveSessions: row.environmentId ? (liveBy.get(row.environmentId) ?? 0) : 0,
+    liveSessions: row.environmentId && row.spaceId ? (liveBy.get(row.spaceId) ?? 0) : 0,
     isSelf: row.id === actor.id,
   }));
 }
@@ -226,6 +237,38 @@ async function spaceOf(tx: Transaction, userId: string): Promise<{ id: string } 
   return row ?? null;
 }
 
+/**
+ * Server in use of a space (lot P1: its first account or not) and whether another account still
+ * working there is active (then the server is never suspended nor retired for this one).
+ */
+async function serverOfAccount(
+  tx: Pick<Transaction, 'select'>,
+  spaceId: string,
+): Promise<{ id: string; name: string; primary: boolean; othersActive: number } | null> {
+  const [row] = await tx
+    .select({ id: environments.id, name: environments.name, primarySpaceId: environments.spaceId })
+    .from(environmentSpaces)
+    .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+    .where(and(eq(environmentSpaces.spaceId, spaceId), ne(environments.status, 'retired')))
+    .limit(1);
+  if (!row) return null;
+  const [others] = await tx
+    .select({ total: count() })
+    .from(environmentSpaces)
+    .innerJoin(spaces, eq(spaces.id, environmentSpaces.spaceId))
+    .innerJoin(user, eq(user.id, spaces.ownerUserId))
+    .where(
+      and(
+        eq(environmentSpaces.environmentId, row.id),
+        ne(environmentSpaces.spaceId, spaceId),
+        isNull(user.disabledAt),
+        isNull(user.deletedAt),
+        isNull(spaces.archivedAt),
+      ),
+    );
+  return { id: row.id, name: row.name, primary: row.primarySpaceId === spaceId, othersActive: Number(others?.total ?? 0) };
+}
+
 function invalidateAccount(userId: string, environmentIds: Array<string | null | undefined>): void {
   invalidateContextCache(userId);
   for (const id of environmentIds) {
@@ -241,13 +284,17 @@ function invalidateAccount(userId: string, environmentIds: Array<string | null |
  */
 async function stopLiveSessions(
   environmentId: string,
+  spaceId: string,
 ): Promise<{ stopped: number; failed: number }> {
+  // The account's own sessions only (a shared server also runs other accounts', lot P1).
   const live = await db
     .select({ id: sessions.id })
     .from(sessions)
+    .innerJoin(projects, and(eq(projects.id, sessions.projectId), eq(projects.environmentId, sessions.environmentId)))
     .where(
       and(
         eq(sessions.environmentId, environmentId),
+        eq(projects.spaceId, spaceId),
         inArray(sessions.status, [...LIVE_SESSION_STATUSES]),
       ),
     );
@@ -374,26 +421,33 @@ export async function disableAccount(
     await tx.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, target.id));
     const space = await spaceOf(tx, target.id);
     let server: { id: string; name: string } | null = null;
+    let working: { id: string; name: string } | null = null;
     if (space) {
-      const [suspended] = await tx
-        .update(environments)
-        .set({ status: 'suspended' })
-        .where(
-          and(
-            eq(environments.spaceId, space.id),
-            inArray(environments.status, ['active', 'suspended']),
-          ),
-        )
-        .returning({ id: environments.id, name: environments.name });
-      server = suspended ?? null;
+      const used = await serverOfAccount(tx, space.id);
+      working = used ? { id: used.id, name: used.name } : null;
+      // A shared server (lot P1) keeps serving its other active accounts: suspended only when this
+      // account is its first one and nobody else still works there.
+      if (!used || (used.primary && used.othersActive === 0)) {
+        const [suspended] = await tx
+          .update(environments)
+          .set({ status: 'suspended' })
+          .where(
+            and(
+              eq(environments.spaceId, space.id),
+              inArray(environments.status, ['active', 'suspended']),
+            ),
+          )
+          .returning({ id: environments.id, name: environments.name });
+        server = suspended ?? null;
+      }
     }
-    return { target, closed: closed.length, server, wasDisabled: Boolean(target.disabledAt) };
+    return { target, closed: closed.length, server, working, spaceId: space?.id ?? null, wasDisabled: Boolean(target.disabledAt) };
   });
-  invalidateAccount(userId, [outcome.server?.id]);
+  invalidateAccount(userId, [outcome.server?.id, outcome.working?.id]);
 
   const { stopped, failed } =
-    stopSessions && outcome.server
-      ? await stopLiveSessions(outcome.server.id)
+    stopSessions && outcome.working && outcome.spaceId
+      ? await stopLiveSessions(outcome.working.id, outcome.spaceId)
       : { stopped: 0, failed: 0 };
 
   if (!outcome.wasDisabled) {
@@ -404,7 +458,7 @@ export async function disableAccount(
       subjectUserId: outcome.target.id,
       targetType: 'user',
       targetId: outcome.target.id,
-      environmentId: outcome.server?.id ?? null,
+      environmentId: outcome.server?.id ?? outcome.working?.id ?? null,
       metadata: {
         closedAccesses: outcome.closed,
         stopSessions,
@@ -479,24 +533,21 @@ export async function deleteAccount(
       id: user.id,
       role: user.role,
       disabledAt: user.disabledAt,
-      environmentId: environments.id,
+      spaceId: spaces.id,
     })
     .from(user)
     .leftJoin(spaces, and(eq(spaces.ownerUserId, user.id), eq(spaces.kind, 'personal')))
-    .leftJoin(
-      environments,
-      and(eq(environments.spaceId, spaces.id), ne(environments.status, 'retired')),
-    )
     .where(and(eq(user.id, userId), isNull(user.deletedAt)))
     .limit(1);
+  const used = candidate?.spaceId ? await serverOfAccount(db, candidate.spaceId) : null;
   const stoppable =
     candidate &&
     candidate.role !== 'owner' &&
     candidate.id !== actor.id &&
     candidate.disabledAt &&
-    candidate.environmentId;
+    used;
   const halted = stoppable
-    ? await stopLiveSessions(candidate.environmentId!)
+    ? await stopLiveSessions(used!.id, candidate.spaceId!)
     : { stopped: 0, failed: 0 };
   const outcome = await db.transaction(async (tx) => {
     const target = await lockTarget(tx, userId);
@@ -539,21 +590,39 @@ export async function deleteAccount(
       );
     const space = await spaceOf(tx, target.id);
     let servers: Array<{ id: string; name: string; dbRole: string | null }> = [];
+    let shared: { id: string; name: string } | null = null;
     if (space) {
+      const working = await serverOfAccount(tx, space.id);
       await tx.update(spaces).set({ archivedAt: now }).where(eq(spaces.id, space.id));
-      servers = await tx
-        .update(environments)
-        .set({ status: 'retired' })
-        .where(and(eq(environments.spaceId, space.id), ne(environments.status, 'retired')))
-        .returning({ id: environments.id, name: environments.name, dbRole: environments.dbRole });
-      for (const server of servers) await disableRunnerRoleLogin(tx, server.dbRole);
+      // A shared server (lot P1) keeps serving its other accounts: only this account leaves it (its
+      // archived projects keep the row); the server is retired only when nobody else works there.
+      if (working && (!working.primary || working.othersActive > 0)) {
+        shared = { id: working.id, name: working.name };
+      } else {
+        servers = await tx
+          .update(environments)
+          .set({ status: 'retired' })
+          .where(and(eq(environments.spaceId, space.id), ne(environments.status, 'retired')))
+          .returning({ id: environments.id, name: environments.name, dbRole: environments.dbRole });
+        for (const server of servers) await disableRunnerRoleLogin(tx, server.dbRole);
+      }
     }
-    return { target, servers };
+    return { target, servers, shared, spaceId: space?.id ?? null };
   });
-  invalidateAccount(
-    userId,
-    outcome.servers.map((server) => server.id),
-  );
+  invalidateAccount(userId, [...outcome.servers.map((server) => server.id), outcome.shared?.id]);
+  // Its Claude Code login must not stay on a server other accounts keep using.
+  let signedOut = false;
+  if (outcome.shared && outcome.spaceId) {
+    try {
+      const forgotten = await getRunnerForEnvironment(outcome.shared.id).claudeAccountForget(
+        { params: { spaceId: outcome.spaceId }, body: { deleted: true } },
+        { timeoutMs: 45_000 },
+      );
+      signedOut = forgotten.signedOut || forgotten.removed;
+    } catch (error) {
+      console.warn('[administration] connexion Claude du compte supprimé non retirée', error instanceof Error ? error.message : error);
+    }
+  }
   // NOLOGIN only refuses new connections: the ones its runner (or a session) still holds are closed.
   const closed = { closed: 0, refused: 0 };
   for (const server of outcome.servers) {
@@ -571,6 +640,8 @@ export async function deleteAccount(
     metadata: {
       email: outcome.target.email,
       retiredServers: outcome.servers.map((server) => server.id),
+      sharedServer: outcome.shared?.id ?? null,
+      claudeSignedOut: signedOut,
       stoppedSessions: halted.stopped,
       failedSessions: halted.failed,
       closedConnections: closed.closed,

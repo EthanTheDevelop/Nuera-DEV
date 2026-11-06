@@ -1,5 +1,6 @@
 'use client';
 
+import { CommonConfigCard } from '@/features/claude-config/components/CommonConfigCard';
 import { useId } from 'react';
 import { LiveTime } from '@/components/dev';
 import { Badge, Card, CompactButton, Field, KeyValueList, TileHeader } from '@/components/ui';
@@ -121,6 +122,7 @@ export function ClaudeTab() {
     <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
       <div className="flex min-w-0 flex-col gap-5">
         <ClaudeTile />
+        <CommonConfigCard />
       </div>
       <div className="flex min-w-0 flex-col gap-5">
         <Card as="section" aria-label="État du CLI" className="gap-3">

@@ -75,7 +75,29 @@ export const AUDIT_ACTIONS = {
   /** Space settings, server limits and personal preferences (`metadata.scope`). */
   settingsUpdated: 'settings.updated',
   /** Instance settings (administrators): shown in the instance journal. */
+  // Written by auth/password-reset.ts and the 2FA settings (catalogue alignment).
+  passwordResetRequested: 'auth.password_reset_requested',
+  passwordResetMailFailed: 'auth.password_reset_mail_failed',
+  passwordReset: 'auth.password_reset',
+  twoFactorDisabled: 'auth.2fa_disabled',
   instanceSettingsUpdated: 'instance.settings_updated',
+  // Configuration Claude commune (lot K1, server/claude-config): instance journal.
+  claudeRuleCreated: 'instance.claude_rule_created',
+  claudeRuleUpdated: 'instance.claude_rule_updated',
+  claudeRuleDeleted: 'instance.claude_rule_deleted',
+  claudeRulesReordered: 'instance.claude_rules_reordered',
+  claudeSkillCreated: 'instance.claude_skill_created',
+  claudeSkillUpdated: 'instance.claude_skill_updated',
+  claudeSkillDeleted: 'instance.claude_skill_deleted',
+  claudeMcpCreated: 'instance.claude_mcp_created',
+  claudeMcpUpdated: 'instance.claude_mcp_updated',
+  claudeMcpDeleted: 'instance.claude_mcp_deleted',
+  claudeMcpTested: 'instance.claude_mcp_tested',
+  claudePolicyUpdated: 'instance.claude_policy_updated',
+  claudeVersionRestored: 'instance.claude_version_restored',
+  claudeProposalCreated: 'instance.claude_proposal_created',
+  claudeProposalApproved: 'instance.claude_proposal_approved',
+  claudeProposalRejected: 'instance.claude_proposal_rejected',
   /** Name or location of a server changed by an administrator. */
   environmentUpdated: 'environment.updated',
   /** Recovery link printed by `pnpm --filter @nuera/db cli recovery-link` (packages/db/src/recovery.ts). */
@@ -93,6 +115,9 @@ export const AUDIT_ACTIONS = {
   serverRegistered: 'admin.server_registered',
   serverVerified: 'admin.server_verified',
   serverAssigned: 'admin.server_assigned',
+  /** Shared servers (lot P1): an account added to / removed from a server in service. */
+  serverAccountAdded: 'admin.server_account_added',
+  serverAccountRemoved: 'admin.server_account_removed',
   serverTokenRotated: 'admin.server_token_rotated',
   serverUpdated: 'admin.server_updated',
   serverRetired: 'admin.server_retired',

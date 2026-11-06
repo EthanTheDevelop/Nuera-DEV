@@ -11,6 +11,7 @@ export const ADMIN_TABS = [
   { value: 'comptes', label: 'Comptes' },
   { value: 'serveurs', label: 'Serveurs' },
   { value: 'instance', label: 'Instance' },
+  { value: 'claude', label: 'Claude' },
   { value: 'journal', label: 'Journal' },
 ] as const;
 
@@ -68,7 +69,7 @@ export function accessesText(count: number): string {
 }
 
 export const SERVER_FOOTNOTE =
-  "Chaque serveur a sa propre connexion Claude Code : la personne qui l'utilise s'y connecte avec son propre compte Claude, dans un terminal. Nuera Dev ne stocke aucun identifiant.";
+  "Un serveur peut accueillir plusieurs comptes : chacun y garde son espace, ses projets et sa propre connexion Claude Code, faite par la personne elle-même dans un terminal (jamais partagée). Les sessions parallèles du serveur sont communes à ses comptes. Nuera Dev ne stocke aucun identifiant.";
 
 export const BREAK_GLASS_HELP =
   "Sans administrateur disponible (propriétaire qui a perdu son téléphone et ses codes), un lien de récupération se crée sur le serveur : pnpm --filter @nuera/db cli recovery-link --email <adresse> (en production : docker compose run --rm -e APP_URL=<url> migrate node_modules/.bin/tsx src/cli/recovery-link.ts --email <adresse>). L'événement apparaît ici.";

@@ -27,6 +27,8 @@ Commandes
               --db <nom>          base (défaut nuera_<pile>)
               --reset             repart de zéro (base, rôles, clones, comptes, GitHub)
               --pristine          sans propriétaire ni GitHub (première configuration à faire)
+              --shared            serveur partagé : les comptes suivants sont invités sur « VPS-3 »
+                                  (chacun sa connexion Claude Code), sans runner b
               --no-web            sans le web (runners + faux GitHub seulement)
               --scheduler         active les tâches périodiques (runner et web)
               --seed a,b          lance aussi ces scénarios pour le compte a (voir seed)
@@ -55,7 +57,7 @@ interface Parsed {
   rest: string[];
 }
 
-const BOOLEAN_FLAGS = ['reset', 'pristine', 'no-web', 'scheduler', 'purge', 'json', 'mobile', 'full', 'dark'];
+const BOOLEAN_FLAGS = ['shared', 'reset', 'pristine', 'no-web', 'scheduler', 'purge', 'json', 'mobile', 'full', 'dark'];
 
 export function parseArgs(argv: string[]): Parsed {
   const separator = argv.indexOf('--');
@@ -149,6 +151,7 @@ export async function main(argv: string[]): Promise<number> {
         db: str(flags, 'db'),
         reset: flags.has('reset'),
         pristine: flags.has('pristine'),
+        shared: flags.has('shared') ? true : undefined,
         web: flags.has('no-web') ? false : undefined,
         scheduler: flags.has('scheduler') ? true : undefined,
         warm: list(str(flags, 'warm')).map(pagePath),

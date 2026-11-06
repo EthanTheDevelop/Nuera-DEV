@@ -10,6 +10,7 @@ import type { GithubMode } from '@/server/github/types';
 import { coolifyTokenRefusal, GITHUB_MCP_APP_REQUIRED } from './headers';
 import { presetOf } from './presets';
 import { credentialSourceOf, denyRulesOf, staticHeadersOf, type McpServerRow } from './registry';
+import type { InstanceMcpSessionParts } from '@/server/claude-config/instance-mcp';
 
 /**
  * Per-session MCP configuration (research §5.7): only the servers enabled for THIS project, given
@@ -24,6 +25,11 @@ export interface SessionMcpConfig {
   mcpConfig: McpConfig;
   /** `permissions.deny` rules for the session settings (Figma write tools, Coolify mutating tools…). */
   denyRules: string[];
+  /** `permissions.allow` / `permissions.ask` rules of the instance servers (read tools of Coolify, its writes). */
+  allowRules: string[];
+  askRules: string[];
+  /** An instance server that can act on production (Coolify) is present: bypass mode must stay blocked. */
+  blockBypass: boolean;
   /** Non-secret environment additions for the session. */
   env: Record<string, string>;
   /** Servers enabled for the project but left out, with the reason (shown in the Workspace). */
@@ -71,7 +77,11 @@ async function entryFor(
   };
 }
 
-export async function buildSessionMcpConfig(projectId: string): Promise<SessionMcpConfig> {
+/**
+ * `instance`: the MCP servers of the common configuration that apply to the account of the space
+ * (`launchCommonParts`). They come first; a space server with the same name is left out.
+ */
+export async function buildSessionMcpConfig(projectId: string, instance?: InstanceMcpSessionParts | null): Promise<SessionMcpConfig> {
   const [project] = await db.select({ id: projects.id, spaceId: projects.spaceId }).from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
   const rows = await db
@@ -94,10 +104,14 @@ export async function buildSessionMcpConfig(projectId: string): Promise<SessionM
     coolifyRefusal: coolify ? coolifyTokenRefusal(coolify.config) : null,
     githubMode: await getGithubMode(project.spaceId),
   };
-  const servers: Record<string, ServerEntry> = {};
-  const deny = new Set<string>();
-  const skipped: SessionMcpConfig['skipped'] = [];
+  const servers: Record<string, ServerEntry> = { ...(instance?.servers ?? {}) };
+  const deny = new Set<string>(instance?.rules.deny ?? []);
+  const skipped: SessionMcpConfig['skipped'] = [...(instance?.skipped ?? [])];
   for (const { server } of rows.sort((a, b) => a.server.name.localeCompare(b.server.name))) {
+    if (instance && Object.hasOwn(instance.servers, server.name)) {
+      skipped.push({ name: server.name, reason: "Nom pris par un serveur MCP commun de l'instance." });
+      continue;
+    }
     const result = await entryFor(server, context);
     if ('skip' in result) {
       skipped.push({ name: server.name, reason: result.skip });
@@ -107,5 +121,13 @@ export async function buildSessionMcpConfig(projectId: string): Promise<SessionM
     for (const rule of denyRulesOf(server)) deny.add(rule);
   }
   const mcpConfig = McpConfigSchema.parse({ mcpServers: servers });
-  return { mcpConfig, denyRules: [...deny], env: { ...SESSION_MCP_ENV }, skipped };
+  return {
+    mcpConfig,
+    denyRules: [...deny],
+    allowRules: [...new Set(instance?.rules.allow ?? [])],
+    askRules: [...new Set(instance?.rules.ask ?? [])],
+    blockBypass: instance?.blockBypass ?? false,
+    env: { ...SESSION_MCP_ENV },
+    skipped,
+  };
 }

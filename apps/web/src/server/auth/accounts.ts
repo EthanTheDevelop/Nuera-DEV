@@ -1,7 +1,8 @@
 import 'server-only';
 import type { Transaction } from '@nuera/db';
-import { account, environments, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
+import { account, environmentSpaces, environments, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
 import type { InstanceRole } from '@nuera/db/schema';
+import { SHARED_SERVER_CONTRACT_VERSION } from '@nuera/shared/runner';
 import { and, asc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { personalSpaceName } from '@/server/tenancy/names';
 
@@ -119,6 +120,19 @@ export async function insertAccount(tx: Transaction, input: NewAccountInput): Pr
       )
       .returning({ id: environments.id });
     environmentId = attached?.id ?? null;
+    if (!environmentId) {
+      // Shared server (lot P1): a server in service also works for the invited account, which gets
+      // its own space and its own Claude Code connection there (runner of contract 3 at least).
+      const [shared] = await tx
+        .select({ id: environments.id, status: environments.status, spaceId: environments.spaceId, contractVersion: environments.contractVersion })
+        .from(environments)
+        .where(eq(environments.id, input.environmentId))
+        .for('update');
+      if (shared && shared.status === 'active' && shared.spaceId && (shared.contractVersion ?? 1) >= SHARED_SERVER_CONTRACT_VERSION) {
+        await tx.insert(environmentSpaces).values({ environmentId: shared.id, spaceId }).onConflictDoNothing();
+        environmentId = shared.id;
+      }
+    }
   }
   return { userId: input.userId, spaceId, environmentId };
 }

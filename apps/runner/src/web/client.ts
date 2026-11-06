@@ -90,6 +90,15 @@ export class WebClient {
     return parsed.success ? parsed.data.headers : null;
   }
 
+  /**
+   * Effective common Claude configuration of one account of this server (rules, skills; `spaceId`
+   * omitted: its first account). The files of the skills listed in `have` are omitted when unchanged.
+   * Null = refused, unavailable or not deployed.
+   */
+  async claudeConfig(have: Array<{ name: string; hash: string }>, spaceId?: string | null): Promise<unknown | null> {
+    return this.post('/api/internal/claude-config', { have, ...(spaceId ? { spaceId } : {}) }, 30_000);
+  }
+
   /** Read token header for a background fetch. */
   async gitCredentials(payload: { projectId: string; fullName: string; access: 'read' }): Promise<{ extraHeader: string } | null> {
     const raw = await this.post('/api/internal/git-credentials', payload, 10_000);

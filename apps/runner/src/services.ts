@@ -1,8 +1,11 @@
 import { sql } from 'drizzle-orm';
 import { createDb, type Database } from '@nuera/db';
-import { RUNNER_CONTRACT_VERSION, uptimeServiceKey, type HealthResponse } from '@nuera/shared/runner';
+import { RUNNER_CONTRACT_VERSION, uptimeServiceKey, type ClaudeStatus, type HealthResponse } from '@nuera/shared/runner';
+import type { ClaudeAccount } from './claude/accounts';
 import type { Logger } from 'pino';
+import { ClaudeAccounts } from './claude/accounts';
 import { ClaudeCli } from './claude/cli';
+import { CommonConfigRegistry } from './claude/common-config';
 import type { RunnerConfig } from './config';
 import { EnvironmentContext, RunnerFatalError } from './environment';
 import { EventBus, GLOBAL } from './events/bus';
@@ -45,6 +48,12 @@ export interface RunnerServices {
   sessions: SessionManager;
   /** Composer « Joindre » and skills of the palette (disk side). */
   composer: ComposerTools;
+  /** Claude config folder of each account of the server (lot P1): one Claude connection per account. */
+  accounts: ClaudeAccounts;
+  /** Configuration Claude commune written in the CLI folder of each account (rules, skills). */
+  commonConfig: CommonConfigRegistry;
+  /** Refreshes `claude auth status` of one account and publishes it (`claude.status`, tagged with its space). */
+  publishClaudeStatus(account: ClaudeAccount, options?: { refresh?: boolean }): Promise<ClaudeStatus>;
   runs: RunManager;
   claude: ClaudeCli;
   metrics: MetricsCollector;
@@ -140,20 +149,35 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     liveRunsForWorktree: (id) => runsRef?.liveCountForWorktree(id) ?? 0,
     diskUsage: new DiskUsage(),
   });
-  const clone = new CloneService({ db, environment, git: gitCli, paths, ops, logger });
+  const clone = new CloneService({ db, environment, git: gitCli, paths, ops, logger, primarySpace: () => environment.current?.spaceId ?? null });
   const files = new FileService({ paths, git: gitCli, gitService: git });
+  const accounts = new ClaudeAccounts({
+    db,
+    environment,
+    legacyDir: config.claudeConfigDir,
+    accountsRoot: config.claudeAccountsDir ?? null,
+    dataDir: paths.dataDir,
+    logger,
+  });
   const terminals = new TerminalManager({
     dataDir: paths.dataDir,
     claudeBin: config.claudeBin,
-    claudeConfigDir: config.claudeConfigDir,
+    accounts,
     gitService: git,
     environment,
     logger,
   });
   const store = new SessionEventStore(db, bus);
-  const claude = new ClaudeCli(config.claudeBin, paths.dataDir, logger, config.claudeConfigDir);
+  const claude = new ClaudeCli(config.claudeBin, paths.dataDir, logger);
+  const publishClaudeStatus = async (account: ClaudeAccount, refresh: { refresh?: boolean } = {}) => {
+    const status = await claude.status(account, refresh);
+    bus.publish('claude.status', status, { channels: [GLOBAL] });
+    return status;
+  };
   const backend = await chooseBackend(config, terminals, logger, tmuxSocketResolver(config, environment));
+  const commonConfig = new CommonConfigRegistry({ dataDir: paths.dataDir, web, logger, accounts });
   const sessions = new SessionManager({
+    commonConfig,
     db,
     environment,
     bus,
@@ -165,17 +189,17 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     logger,
     dataDir: paths.dataDir,
     claudeBin: config.claudeBin,
-    claudeConfigDir: config.claudeConfigDir,
+    accounts,
     autoResume: config.autoResume,
     hookBaseUrl: () => `http://127.0.0.1:${hookPort.value}`,
-    onAuthProblem: () => {
-      claude.invalidate();
-      void claude.status({ refresh: true }).then((status) => bus.publish('claude.status', status, { channels: [GLOBAL] }));
+    onAuthProblem: (account) => {
+      claude.invalidate(account);
+      void publishClaudeStatus(account, { refresh: true }).catch(() => undefined);
     },
   });
   sessionsRef = sessions;
-  const composer = new ComposerTools({ db, environment, git, gitCli, paths, claudeConfigDir: config.claudeConfigDir });
-  const runs = new RunManager({ db, environment, bus, git, terminals, logger, claudeConfigDir: config.claudeConfigDir });
+  const composer = new ComposerTools({ db, environment, git, gitCli, paths, accounts });
+  const runs = new RunManager({ db, environment, bus, git, terminals, logger, accounts });
   runsRef = runs;
 
   const metrics = new MetricsCollector(paths.projectsRoot, () => ({
@@ -277,6 +301,9 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     clone,
     files,
     composer,
+    accounts,
+    commonConfig,
+    publishClaudeStatus,
     ops,
     store,
     terminals,

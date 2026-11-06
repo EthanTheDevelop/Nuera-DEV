@@ -4,6 +4,7 @@ import { commandRuns, type Database } from '@nuera/db';
 import { formatTestCounts } from '@nuera/shared/events';
 import type { GitIdentity, RunDto, TestReport } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
+import type { ClaudeAccounts } from '../claude/accounts';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
 import { getProject, getRunRow } from '../db/lookups';
 import type { EnvironmentScope } from '../environment';
@@ -63,8 +64,8 @@ export class RunManager {
       git: GitService;
       terminals: TerminalManager;
       logger: Logger;
-      /** NUERA_CLAUDE_CONFIG_DIR: the server's Claude config, for a `claude` started by a command. */
-      claudeConfigDir?: string | null;
+      /** Claude config folder of the project's account (lot P1), for a `claude` started by a command. */
+      accounts: Pick<ClaudeAccounts, 'forSpace'>;
     },
   ) {}
 
@@ -114,6 +115,7 @@ export class RunManager {
     const project = await getProject(this.deps.db, this.deps.environment.id, input.projectId);
     await this.deps.environment.assertCanStartWork();
     const { worktree, cwd } = await this.deps.git.resolveProjectWorktree(project.id, input.worktreeId);
+    const account = await this.deps.accounts.forSpace(project.spaceId);
     const configured = (project.commands ?? {}) as Record<string, string | null | undefined>;
     const command = input.command ?? (input.kind !== 'custom' ? configured[input.kind] ?? null : null);
     if (!command) throw new RunnerError('VALIDATION', 'Aucune commande configurée pour cette action.');
@@ -141,7 +143,7 @@ export class RunManager {
       ...(input.kind === 'test' ? { CI: '1' } : {}),
       // Trusted, after the project variables (where the GIT_ prefix is refused anyway).
       ...gitIdentityEnv(input.gitIdentity),
-      ...claudeEnv(this.deps.claudeConfigDir ?? null),
+      ...claudeEnv(account.configDir),
     });
     let terminal: Terminal;
     try {
@@ -155,6 +157,7 @@ export class RunManager {
         cols: input.cols,
         rows: input.rows,
         worktreeId: worktree.id,
+        spaceId: project.spaceId,
         scrollback: 5000,
         idleTimeoutMs: null,
       });

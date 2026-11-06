@@ -35,6 +35,9 @@ vi.mock('@/server/mcp', () => ({
   buildSessionMcpConfig: vi.fn<() => Promise<unknown>>(async () => ({
     mcpConfig: { mcpServers: { github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/', headersHelper: 'nuera' } } },
     denyRules: ['mcp__coolify__deploy'],
+    allowRules: [],
+    askRules: [],
+    blockBypass: false,
     env: { ENABLE_TOOL_SEARCH: 'true' },
     skipped: [],
   })),

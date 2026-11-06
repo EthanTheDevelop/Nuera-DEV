@@ -50,6 +50,16 @@ const EXPECTED_TABLES = [
   'push_subscriptions',
   'audit_log',
   'uptime_daily',
+  'instance_rules',
+  'instance_skills',
+  'instance_skill_files',
+  'instance_mcp_servers',
+  'instance_claude_policy',
+  'instance_config_versions',
+  'instance_config_proposals',
+  'space_claude_overrides',
+  'environment_spaces',
+  'session_claude_config',
 ];
 
 interface JournalEntry {
@@ -73,7 +83,7 @@ describe('fichiers de migration', () => {
     expect(first).toEqual({ idx: 0, version: '7', when: 1793852411456, tag: '0000_material_hiroim', breakpoints: true });
   });
 
-  it("enchaîne 0001 → 0006 dans l'ordre, avec des dates croissantes", () => {
+  it("enchaîne 0001 → 0008 dans l'ordre, avec des dates croissantes", () => {
     const entries = readJournal();
     expect(entries.map((entry) => entry.tag)).toEqual([
       '0000_material_hiroim',
@@ -83,6 +93,8 @@ describe('fichiers de migration', () => {
       '0004_runner_roles',
       '0005_runner_scope',
       '0006_session_usage_limit',
+      '0007_instance_claude_config',
+      '0008_shared_servers',
     ]);
     entries.forEach((entry, index) => {
       expect(entry.idx).toBe(index);
@@ -122,6 +134,16 @@ describe('fichiers de migration', () => {
     expect(usageLimit).not.toMatch(/DROP COLUMN/i);
     // Every column the restricted runner role updates has its grant (0004 grants column by column).
     expect(usageLimit).toContain('GRANT UPDATE ("usage_limit", "auto_resume") ON "sessions" TO "nuera_runner"');
+    // 0007: web-only tables (the runner fetches its configuration from the web): no grant at all.
+    const common = readFileSync(path.join(MIGRATIONS_FOLDER, '0007_instance_claude_config.sql'), 'utf8');
+    expect(common.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
+    expect(common).not.toMatch(/DROP COLUMN|ALTER TABLE "(sessions|projects|environments|worktrees)" ADD COLUMN/i);
+    expect(common).not.toMatch(/GRANT/i);
+    // 0008: the restricted runner role only READS the accounts of its own server.
+    const shared = readFileSync(path.join(MIGRATIONS_FOLDER, '0008_shared_servers.sql'), 'utf8');
+    expect(shared.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
+    expect(shared).not.toMatch(/DROP COLUMN|ADD COLUMN/i);
+    expect(shared.match(/GRANT [^;]+/gi)).toEqual(['GRANT SELECT ON "environment_spaces" TO "nuera_runner"']);
   });
 });
 
@@ -206,6 +228,20 @@ describe.skipIf(!available)('migrations Drizzle sur une base neuve', () => {
     await expect(sql`insert into app_settings (id) values (1)`).rejects.toThrow(/app_settings_pkey/);
   });
 
+  it('0007 crée la politique Claude commune vide sur une seule ligne, et des noms uniques', async () => {
+    const rows = await sql`select id, allow_rules, ask_rules, deny_rules, env, default_model, model_enforcement, revision from instance_claude_policy`;
+    expect(rows).toEqual([
+      { id: 'instance', allow_rules: [], ask_rules: [], deny_rules: [], env: [], default_model: null, model_enforcement: 'default', revision: 0 },
+    ]);
+    await expect(sql`insert into instance_claude_policy (id) values ('autre')`).rejects.toThrow(/instance_claude_policy_single_row/);
+    await sql`insert into instance_skills (name, description, content_hash) values ('revue', 'Relecture', 'h')`;
+    await expect(sql`insert into instance_skills (name, description, content_hash) values ('revue', 'Doublon', 'h')`).rejects.toThrow(/instance_skills_name_idx/);
+    const [skill] = await sql<{ id: string }[]>`select id from instance_skills where name = 'revue'`;
+    await sql`insert into instance_skill_files (skill_id, path, content, size_bytes) values (${skill!.id}, 'SKILL.md', '---', 3)`;
+    await sql`delete from instance_skills where id = ${skill!.id}`;
+    expect(await sql`select count(*)::int as n from instance_skill_files`).toEqual([{ n: 0 }]);
+  });
+
   it('crée le serveur par défaut « VPS-3 », non attribué, lu dans RUNNER_URL / RUNNER_TOKEN', async () => {
     const rows = await sql`
       select space_id, name, status, config_source, is_default, url, token_hash, max_concurrent_sessions,
@@ -238,6 +274,7 @@ describe.skipIf(!available)('migrations Drizzle sur une base neuve', () => {
       order by relname`;
     expect(rows.map((row) => row.relname)).toEqual([
       'command_runs',
+      'environment_spaces',
       'environments',
       'operations',
       'permission_requests',

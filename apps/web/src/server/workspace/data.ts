@@ -1,4 +1,5 @@
 import 'server-only';
+import { sessionConfigView } from '@/server/claude-config';
 import { permissionRequests, pullRequests, sessions, worktrees } from '@nuera/db/schema';
 import { CliStatusSchema, parseUsageLimit, type PermissionRequestDto, type SessionDto, type SessionEventItem } from '@nuera/shared/runner';
 import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
@@ -211,10 +212,14 @@ export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user
     countAllowed(sessionId),
     liveCount(scope.environmentId),
   ]);
-  const [max, identity, policy] = await Promise.all([
+  const [max, identity, policy, commonConfig] = await Promise.all([
     environmentMaxSessions(scope.environmentId, 4),
     getGitIdentity(ctx.user),
     getEffectiveSessionPolicy(scope.spaceId),
+    sessionConfigView(scope.spaceId, sessionId).catch((error: unknown) => {
+      console.warn('[workspace] configuration commune illisible', (error as Error)?.message ?? error);
+      return null;
+    }),
   ]);
 
   const permission: PermissionRequestDto | null = dto?.pendingPermission ?? null;
@@ -261,6 +266,7 @@ export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user
     author: identity ?? { name: ctx.user.name, email: ctx.user.email },
     environment: { id: scope.environmentId, name: scope.environmentName },
     preview: previewSettingsView(),
+    commonConfig,
     generatedAt: new Date().toISOString(),
   };
 }

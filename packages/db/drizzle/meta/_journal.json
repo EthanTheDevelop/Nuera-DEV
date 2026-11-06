@@ -50,6 +50,20 @@
       "when": 1793972315831,
       "tag": "0006_session_usage_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793979566036,
+      "tag": "0007_instance_claude_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793983236099,
+      "tag": "0008_shared_servers",
+      "breakpoints": true
     }
   ]
 }

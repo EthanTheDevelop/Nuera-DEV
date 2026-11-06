@@ -381,6 +381,8 @@ describe.skipIf(!available)('montée de version 0000 → dernière migration', (
           session_memory_limit_mb: 2048,
         },
       ]);
+      // 0008: the server works for this account (its primary account, row written by the backfill).
+      expect(await sql`select environment_id, space_id from environment_spaces`).toEqual([{ environment_id: environmentId, space_id: spaceId }]);
     });
 
     it('projets et lignes de travail sont rattachés à cet espace et à ce serveur', async () => {
@@ -512,7 +514,9 @@ describe.skipIf(!available)('montée de version 0000 → dernière migration', (
       const snapshot = await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations']);
       await runMigrations(url);
       const [row] = await sql<{ count: string }[]>`select count(*) from drizzle.__drizzle_migrations`;
-      expect(row?.count).toBe('7');
+      expect(row?.count).toBe('9');
+      // 0007 on a filled database: the common Claude configuration starts empty, revision 0.
+      expect(await sql`select id, revision from instance_claude_policy`).toEqual([{ id: 'instance', revision: 0 }]);
       expect(await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations'])).toEqual(snapshot);
     });
   });

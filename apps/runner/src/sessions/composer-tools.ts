@@ -1,9 +1,11 @@
+import { existsSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Database } from '@nuera/db';
 import { isPathInside } from '@nuera/shared/paths';
 import {
+  COMMON_SKILL_MARKER,
   ATTACHMENT_DIR,
   ATTACHMENT_EXCLUDE_LINE,
   ATTACHMENT_MAX_BYTES,
@@ -18,7 +20,8 @@ import {
   type SessionSkill,
   type SessionSkillsResponse,
 } from '@nuera/shared/runner';
-import { getSessionRow } from '../db/lookups';
+import type { ClaudeAccounts } from '../claude/accounts';
+import { getProject, getSessionRow } from '../db/lookups';
 import type { EnvironmentScope } from '../environment';
 import { RunnerError } from '../errors';
 import type { Git } from '../git/git';
@@ -201,12 +204,18 @@ export interface ComposerToolsDeps {
   git: GitService;
   gitCli: Git;
   paths: PathGuard;
-  /** NUERA_CLAUDE_CONFIG_DIR, else `~/.claude` of the runner's user (skills of the user). */
-  claudeConfigDir?: string | null;
+  /** Claude config folder of the session's account (its user skills; lot P1). */
+  accounts: Pick<ClaudeAccounts, 'forSpace'>;
 }
 
 export class ComposerTools {
   constructor(private readonly deps: ComposerToolsDeps) {}
+
+  /** Space of the session's project (its account's skills, never another account's). */
+  private async sessionSpace(sessionId: string): Promise<string> {
+    const row = await getSessionRow(this.deps.db, this.deps.environment.id, sessionId);
+    return (await getProject(this.deps.db, this.deps.environment.id, row.projectId)).spaceId;
+  }
 
   private async sessionCwd(sessionId: string): Promise<string> {
     const row = await getSessionRow(this.deps.db, this.deps.environment.id, sessionId);
@@ -362,7 +371,8 @@ export class ComposerTools {
     } catch {
       // no project skill (or a link out of the worktree: ignored)
     }
-    const configDir = this.deps.claudeConfigDir?.trim() || path.join(os.homedir(), '.claude');
+    const account = await this.deps.accounts.forSpace(await this.sessionSpace(sessionId));
+    const configDir = account.configDir?.trim() || path.join(os.homedir(), '.claude');
     try {
       roots.push({ dir: await realpath(path.join(configDir, 'skills')), source: 'user' });
     } catch {
@@ -386,7 +396,9 @@ export class ComposerTools {
         const skill = await readSkill(root.dir, dirName);
         if (!skill || seen.has(skill.name)) continue;
         seen.add(skill.name);
-        skills.push({ ...skill, source: root.source });
+        // A folder of the user skills written by Nuera Dev (configuration commune) is « commun ».
+        const common = root.source === 'user' && existsSync(path.join(root.dir, dirName, COMMON_SKILL_MARKER));
+        skills.push({ ...skill, source: common ? 'common' : root.source });
       }
     }
     return { skills, truncated };

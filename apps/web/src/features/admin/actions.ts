@@ -3,6 +3,7 @@
 import { headers } from 'next/headers';
 import { unstable_rethrow } from 'next/navigation';
 import {
+  addServerAccount,
   assignServer,
   changeAccountRole,
   createAccountRecoveryLink,
@@ -13,6 +14,7 @@ import {
   getInstanceJournal,
   loadAdministration,
   registerServer,
+  removeServerAccount,
   restrictServerDatabase,
   retireServer,
   revokeInvitation,
@@ -153,6 +155,22 @@ export async function assignServerAction(
 ): Promise<AdminActionResult<null>> {
   return run(async (user) => {
     await assignServer(user, environmentId, { userId });
+    return null;
+  });
+}
+
+/** Shared servers (lot P1): one more account on a server in service (its own Claude Code connection). */
+export async function addServerAccountAction(environmentId: string, userId: string): Promise<AdminActionResult<null>> {
+  return run(async (user) => {
+    await addServerAccount(user, environmentId, { userId });
+    return null;
+  });
+}
+
+/** Shared servers (lot P1): an account leaves the server (its Claude Code folder is removed there). */
+export async function removeServerAccountAction(environmentId: string, userId: string): Promise<AdminActionResult<null>> {
+  return run(async (user) => {
+    await removeServerAccount(user, environmentId, userId);
     return null;
   });
 }

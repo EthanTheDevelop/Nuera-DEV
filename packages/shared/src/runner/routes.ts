@@ -89,6 +89,10 @@ import {
 import { CreateRunRequestSchema, RunDtoSchema, RunParamsSchema } from './runs';
 import { HealthResponseSchema, SystemMetricsSchema, UptimeQuerySchema, UptimeResponseSchema } from './system';
 import {
+  ClaudeAccountForgetRequestSchema,
+  ClaudeAccountForgetResponseSchema,
+  ClaudeAccountParamsSchema,
+  ClaudeAccountQuerySchema,
   ClaudeStatusQuerySchema,
   ClaudeStatusSchema,
   McpCliStatusSchema,
@@ -96,6 +100,7 @@ import {
   McpSyncRequestSchema,
   McpSyncResultSchema,
 } from './claude';
+import { CommonConfigStatusSchema, CommonConfigSyncRequestSchema } from './common-config';
 import { PublishEventRequestSchema } from '../events';
 
 export type RunnerHttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -131,7 +136,8 @@ export const RUNNER_ROUTES = {
   systemUptime: { method: 'GET', path: '/v1/system/uptime', query: UptimeQuerySchema, response: UptimeResponseSchema },
 
   // --- Events -----------------------------------------------------------------------------
-  events: { method: 'GET', path: '/v1/events', stream: true },
+  // `spaceId` (contract 3): the account the stream is for — its own `claude.status` only.
+  events: { method: 'GET', path: '/v1/events', query: ClaudeAccountQuerySchema, stream: true },
   publishEvent: { method: 'POST', path: '/v1/events/publish', body: PublishEventRequestSchema, response: OkResponseSchema },
 
   // --- Repositories -----------------------------------------------------------------------
@@ -409,7 +415,27 @@ export const RUNNER_ROUTES = {
   // --- Claude CLI -------------------------------------------------------------------------
   claudeStatus: { method: 'GET', path: '/v1/claude/status', query: ClaudeStatusQuerySchema, response: ClaudeStatusSchema, timeoutMs: 45_000 },
   claudeMcpSync: { method: 'POST', path: '/v1/claude/mcp/sync', body: McpSyncRequestSchema, response: McpSyncResultSchema, timeoutMs: 120_000 },
-  claudeMcpGet: { method: 'GET', path: '/v1/claude/mcp/:name', params: McpNameParamsSchema, response: McpCliStatusSchema, timeoutMs: 45_000 },
+  claudeMcpGet: {
+    method: 'GET',
+    path: '/v1/claude/mcp/:name',
+    params: McpNameParamsSchema,
+    query: ClaudeAccountQuerySchema,
+    response: McpCliStatusSchema,
+    timeoutMs: 45_000,
+  },
+  // Configuration commune (lot K1): the runner fetches it from the web and writes it (absent before: 404).
+  claudeConfigStatus: { method: 'GET', path: '/v1/claude/config', query: ClaudeAccountQuerySchema, response: CommonConfigStatusSchema },
+  claudeConfigSync: { method: 'POST', path: '/v1/claude/config/sync', body: CommonConfigSyncRequestSchema, response: CommonConfigStatusSchema, timeoutMs: 60_000 },
+  // Shared servers (contract 3): an account left the server — its CLI config folder is signed out
+  // (`claude auth logout`) and removed. Refused while the account still works on the server.
+  claudeAccountForget: {
+    method: 'POST',
+    path: '/v1/claude/accounts/:spaceId/forget',
+    params: ClaudeAccountParamsSchema,
+    body: ClaudeAccountForgetRequestSchema,
+    response: ClaudeAccountForgetResponseSchema,
+    timeoutMs: 60_000,
+  },
 } as const satisfies Record<string, RunnerRouteDef>;
 
 export type RunnerRoutes = typeof RUNNER_ROUTES;

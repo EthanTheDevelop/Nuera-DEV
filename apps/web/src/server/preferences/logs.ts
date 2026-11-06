@@ -34,7 +34,9 @@ export async function listOperationLogs(ctx: Pick<RequestContext, 'space'>, limi
     .from(operations)
     .innerJoin(environments, eq(environments.id, operations.environmentId))
     .leftJoin(projects, eq(projects.id, operations.projectId))
-    .where(and(eq(environments.spaceId, ctx.space.id), or(isNull(operations.projectId), eq(projects.spaceId, ctx.space.id))))
+    // Operations of the space's projects; those without project only for the server's first account
+    // (a shared server's other accounts never see them, lot P1).
+    .where(or(eq(projects.spaceId, ctx.space.id), and(isNull(operations.projectId), eq(environments.spaceId, ctx.space.id))))
     .orderBy(desc(operations.createdAt))
     .limit(Math.min(Math.max(limit, 1), 100));
   return rows.map((row) => ({

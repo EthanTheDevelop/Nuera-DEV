@@ -1,8 +1,8 @@
 import 'server-only';
 import type { McpCliStatus, TerminalDto } from '@nuera/shared/runner';
-import { environments, mcpServers } from '@nuera/db/schema';
+import { environmentSpaces, environments, mcpServers } from '@nuera/db/schema';
 import type { EnvironmentStatus, McpStatus } from '@nuera/db/schema';
-import { and, asc, desc, eq, inArray, isNotNull, ne, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, or } from 'drizzle-orm';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import { inferAbilitiesFromTools } from '@/server/coolify';
@@ -74,7 +74,10 @@ export interface McpRunnerPort {
   createLoginTerminal(serverName: string, actorUserId?: string | null): Promise<TerminalDto>;
 }
 
-/** Server (runner) of a space: the one that is not retired (one per space, MULTICOMPTE §3.1). */
+/**
+ * Server (runner) of a space: the one that is not retired (one per space, MULTICOMPTE §3.1), whether
+ * the space is its first account or an account added to a shared server (lot P1).
+ */
 export interface SpaceServer extends PresetServerContext {
   id: string;
   status: EnvironmentStatus;
@@ -83,28 +86,32 @@ export interface SpaceServer extends PresetServerContext {
 export async function serverOfSpace(spaceId: string): Promise<SpaceServer | null> {
   const [row] = await db
     .select({ id: environments.id, name: environments.name, isDefault: environments.isDefault, status: environments.status })
-    .from(environments)
-    .where(and(eq(environments.spaceId, spaceId), isNotNull(environments.spaceId), ne(environments.status, 'retired')))
+    .from(environmentSpaces)
+    .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+    .where(and(eq(environmentSpaces.spaceId, spaceId), ne(environments.status, 'retired')))
     .orderBy(desc(eq(environments.status, 'active')), asc(environments.createdAt))
     .limit(1);
   return row ?? null;
 }
 
-/** Runner calls on one server (the runner client of that environment). */
-export function runnerPortFor(environmentId: string): McpRunnerPort {
+/**
+ * Runner calls on one server for one account (`spaceId`: its own Claude config folder, lot P1 — the
+ * user-scope MCP entries and OAuth grants of one account are never another's).
+ */
+export function runnerPortFor(environmentId: string, spaceId: string): McpRunnerPort {
   const client = getRunnerForEnvironment(environmentId);
   return {
-    mcpGet: (name) => client.claudeMcpGet({ params: { name } }),
-    mcpSync: (input) => client.claudeMcpSync({ body: input }),
+    mcpGet: (name) => client.claudeMcpGet({ params: { name }, query: { spaceId } }),
+    mcpSync: (input) => client.claudeMcpSync({ body: { ...input, spaceId } }),
     createLoginTerminal: (serverName, actorUserId) =>
-      client.createTerminal({ body: { kind: 'mcp-login', serverName, ...(actorUserId ? { actorUserId } : {}) } }),
+      client.createTerminal({ body: { kind: 'mcp-login', serverName, spaceId, ...(actorUserId ? { actorUserId } : {}) } }),
   };
 }
 
 /** Port of the server of the space, or null when the space has none. */
 export async function runnerPortOfSpace(spaceId: string): Promise<McpRunnerPort | null> {
   const server = await serverOfSpace(spaceId);
-  return server ? runnerPortFor(server.id) : null;
+  return server ? runnerPortFor(server.id, spaceId) : null;
 }
 
 const IMPACTS: Record<string, string> = {
@@ -252,7 +259,7 @@ export async function checkMcpServer(scope: McpServerScope, options: CheckMcpOpt
   const row = await getMcpServerRow(scope);
   if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   const server = await serverOfSpace(row.spaceId);
-  const port = options.port !== undefined ? options.port : server ? runnerPortFor(server.id) : null;
+  const port = options.port !== undefined ? options.port : server ? runnerPortFor(server.id, row.spaceId) : null;
   const viewOptions = { server };
   if (trigger === 'manual') {
     const map = (lastManualChecks.__nueraMcpLastManual ??= new Map());
@@ -488,7 +495,7 @@ export async function startMcpLogin(
   if (credentialSourceOf(row) !== 'claude_oauth') {
     throw new AppError('VALIDATION', 'Ce serveur ne se connecte pas par une autorisation OAuth.');
   }
-  const port = options.port ?? runnerPortFor(environment.id);
+  const port = options.port ?? runnerPortFor(environment.id, ctx.space.id);
   const sync = await syncMcpServersToCli({ spaceId: row.spaceId, upsert: [row] }, port);
   if (!sync.ok && sync.error) throw new AppError('RUNNER_UNAVAILABLE', sync.error);
   const terminal = await port.createLoginTerminal(row.name, ctx.user.id);

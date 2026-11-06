@@ -213,13 +213,14 @@ describe('global stream', () => {
     const parsed = frames(await readGlobal(handler, 2));
     expect(parsed[0]).toEqual({ id: null, type: 'stream.hello', data: { userId: b.user.id, environmentId: b.environment!.id } });
     expect(parsed[1]).toEqual({ id: `${b.environment!.id}.3`, type: 'heartbeat', data: {} });
-    expect(runnerB.requests).toMatchObject([{ path: '/v1/events' }]);
+    // The account's own Claude status only (lot P1).
+    expect(runnerB.requests).toMatchObject([{ path: `/v1/events?spaceId=${b.space.id}` }]);
     expect(runnerA.requests).toHaveLength(0);
 
     state.current = a.user;
     const forA = frames(await readGlobal(handler, 2));
     expect(forA[0]).toMatchObject({ type: 'stream.hello', data: { userId: a.user.id, environmentId: a.environment!.id } });
-    expect(runnerA.requests).toMatchObject([{ path: '/v1/events', authorization: `Bearer ${TOKEN}` }]);
+    expect(runnerA.requests).toMatchObject([{ path: expect.stringMatching(/^\/v1\/events\?spaceId=/), authorization: `Bearer ${TOKEN}` }]);
   });
 
   it('serves hello to an account without a server, without contacting any runner', async () => {

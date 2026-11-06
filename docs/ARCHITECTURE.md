@@ -17,7 +17,7 @@
 | S1 | Le backend web n'est pas un shell privilégié. | Git, terminaux, processus et Claude passent par le **runner** (service séparé, non-root, réseau privé, chemins autorisés, limites de ressources, journalisation). |
 | S2 | Rien n'est faux. | Aucun mock permanent, aucun faux « connecté », aucun bouton mort. Les fixtures n'existent que dans les tests. |
 | M1 | Cloisonnement des espaces. | Chaque compte travaille dans son espace ; l'espace vient du contexte de requête, jamais du client ; un identifiant d'un autre espace reçoit la réponse exacte d'un inconnu (404), sans appel au runner, sans écriture. Les administrateurs ne voient jamais le contenu d'un espace. |
-| M2 | Un serveur = un espace = une personne = une connexion Claude (conditions d'Anthropic). | Un runner par serveur, avec son disque, son tmux, son CLI et la connexion Claude de la seule personne à qui il est attribué ; un serveur utilisé n'est jamais réattribué. |
+| M2 | Un compte = un espace = une connexion Claude (conditions d'Anthropic) ; un serveur peut accueillir plusieurs comptes (lot P1, `docs/MULTICOMPTE.md` §14). | Un runner par serveur, avec son disque, son tmux, son CLI et un dossier de configuration Claude par compte (la connexion de chaque personne, jamais celle d'une autre) ; un serveur utilisé n'est jamais réattribué à un autre premier compte. |
 | M3 | 2FA obligatoire pour tous les comptes. | TOTP + codes de secours (clés d'accès en option) ; aucune variable ne la désactive. |
 
 ## 2. Topologie

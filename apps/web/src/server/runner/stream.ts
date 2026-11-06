@@ -13,6 +13,24 @@ import { promoteRunnerToken } from '@/server/admin/token-rotation';
 import { AppError, toErrorResponse } from '@/server/errors';
 import type { RunnerEndpoint } from './config';
 import { RunnerError, runnerUnavailableMessage } from './errors';
+import type { FrameFilter } from './event-scope';
+
+/**
+ * Writes the runner's frames through `filter` (global stream of a shared server, lot P1) without
+ * reordering them: each frame waits for the verdict of the previous ones.
+ */
+function filteredWriter(write: (frame: string) => void, filter: FrameFilter | undefined): (frame: string) => void {
+  if (!filter) return write;
+  let chain: Promise<void> = Promise.resolve();
+  return (frame) => {
+    chain = chain
+      .then(async () => {
+        if (await filter(frame)) write(frame);
+        return undefined;
+      })
+      .catch(() => undefined);
+  };
+}
 
 /**
  * Relays a runner SSE stream to the browser (route handlers under /api/stream/*). The caller has
@@ -167,6 +185,8 @@ interface RelayOptions {
   /** Frames written first, before anything from the runner (`stream.hello`). */
   prelude?: readonly string[];
   webChannel?: WebChannel;
+  /** Keeps only the runner frames of the account (global stream, see `event-scope.ts`). */
+  frameFilter?: FrameFilter;
 }
 
 type Source = { reader: ReadableStreamDefaultReader<Uint8Array>; abort: () => void; environmentId: string; name: string };
@@ -352,9 +372,10 @@ function relayResponse(req: Request, source: Source | null, options: RelayOption
         if (Date.now() - lastUpstreamActivity > HEARTBEAT_INTERVAL_MS * 2.5) close('Connexion au runner perdue.');
       }, HEARTBEAT_INTERVAL_MS);
 
+      const relay = filteredWriter(write, options.frameFilter);
       void pumpFrames(
         source,
-        (frame) => write(namespaceFrame(frame, source.environmentId)),
+        (frame) => relay(namespaceFrame(frame, source.environmentId)),
         () => {
           lastUpstreamActivity = Date.now();
         },
@@ -382,6 +403,9 @@ interface DegradableRelayInput {
   probeIntervalMs: number;
   /** Longest outage before the relay ends the stream (the browser reconnects: session re-checked). */
   maxDegradedMs: number;
+  /** `/v1/events` with the account's query (`?spaceId=`). */
+  runnerPath: string;
+  frameFilter?: FrameFilter;
 }
 
 /**
@@ -477,6 +501,7 @@ function degradableGlobalResponse(req: Request, input: DegradableRelayInput): Re
         probeTimer = setTimeout(() => void probe(), input.probeIntervalMs);
       };
 
+      const relay = filteredWriter(write, input.frameFilter);
       const attach = (opened: { reader: ReadableStreamDefaultReader<Uint8Array>; abort: () => void }) => {
         const current: Source = { ...opened, environmentId: endpoint.environmentId, name: endpoint.name };
         if (keepAlive) clearInterval(keepAlive);
@@ -499,7 +524,7 @@ function degradableGlobalResponse(req: Request, input: DegradableRelayInput): Re
             if (source !== current) return;
             const id = upstreamFrameId(frame);
             if (id) lastEventId = id;
-            write(namespaceFrame(frame, current.environmentId));
+            relay(namespaceFrame(frame, current.environmentId));
           },
           () => {
             if (source === current) lastUpstreamActivity = Date.now();
@@ -537,7 +562,7 @@ function degradableGlobalResponse(req: Request, input: DegradableRelayInput): Re
             // Database unavailable for a moment: try with the endpoint known.
           }
         }
-        const opened = await openUpstream(req, endpoint, '/v1/events', lastEventId);
+        const opened = await openUpstream(req, endpoint, input.runnerPath, lastEventId);
         if (closed) {
           if (opened.ok) {
             opened.abort();
@@ -598,16 +623,23 @@ export async function relayGlobalStream(
     probeIntervalMs?: number;
     /** Tests only: longest outage before the stream ends ({@link DEGRADED_STREAM_MAX_MS}). */
     maxDegradedMs?: number;
+    /**
+     * Account the stream is for (lot P1, shared servers): its `claude.status` only (`/v1/events?spaceId=`),
+     * and `frameFilter` keeps only the events of its own space.
+     */
+    spaceId?: string;
+    frameFilter?: FrameFilter;
   },
 ): Promise<Response> {
   const hello = encodeStreamHello({ userId: input.userId, environmentId: input.endpoint?.environmentId ?? null });
   if (!input.endpoint) return relayResponse(req, null, { prelude: [hello], webChannel: input.webChannel });
-  if (!input.webChannel) return proxyRunnerStream(req, input.endpoint, '/v1/events', { prelude: [hello] });
+  const runnerPath = input.spaceId ? `/v1/events?spaceId=${encodeURIComponent(input.spaceId)}` : '/v1/events';
+  if (!input.webChannel) return proxyRunnerStream(req, input.endpoint, runnerPath, { prelude: [hello], frameFilter: input.frameFilter });
 
   const endpoint = input.endpoint;
   const { upstream: lastEventId, reset } = resolveLastEventId(requestedLastEventId(req), endpoint.environmentId);
   const prelude = [hello, ...(reset ? [resetEvent()] : [])];
-  const opened = await openUpstream(req, endpoint, '/v1/events', lastEventId);
+  const opened = await openUpstream(req, endpoint, runnerPath, lastEventId);
   // A runner 4xx (refused path…) is not an outage: answered as JSON, exactly as before.
   if (!opened.ok && 'response' in opened) return opened.response;
   return degradableGlobalResponse(req, {
@@ -619,5 +651,7 @@ export async function relayGlobalStream(
     initial: opened,
     probeIntervalMs: Math.max(10, input.probeIntervalMs ?? RUNNER_PROBE_INTERVAL_MS),
     maxDegradedMs: Math.max(0, input.maxDegradedMs ?? DEGRADED_STREAM_MAX_MS),
+    runnerPath,
+    frameFilter: input.frameFilter,
   });
 }

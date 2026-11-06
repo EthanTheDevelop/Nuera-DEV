@@ -30,12 +30,13 @@ export function toClaudeCliView(status: ClaudeStatus): ClaudeCliView {
  * server: AppError CONFLICT reason NO_ENVIRONMENT (no runner call).
  */
 export async function getClaudeCli(
-  ctx: Pick<RequestContext, 'environment'>,
+  ctx: Pick<RequestContext, 'environment' | 'space'>,
   options: { refresh?: boolean; timeoutMs?: number } = {},
 ): Promise<ClaudeCliView> {
   const { runner } = requireEnvironment(ctx);
+  // The account's own Claude Code connection (lot P1: one per account of a shared server).
   const status = await runner.claudeStatus(
-    { query: { refresh: options.refresh ?? false } },
+    { query: { refresh: options.refresh ?? false, spaceId: ctx.space.id } },
     options.timeoutMs ? { timeoutMs: options.timeoutMs } : {},
   );
   return toClaudeCliView(status);

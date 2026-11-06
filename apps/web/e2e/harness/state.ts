@@ -208,7 +208,11 @@ export interface StackState {
   secrets: StackSecrets;
   /** Account `a` (owner) — projection kept for single-account specs. */
   owner: { name: string; email: string; password: string; totpSecret: string | null; userId: string | null; created: boolean };
-  options: { web: boolean; scheduler: boolean; pristine: boolean };
+  /**
+   * `shared` (lot P1, `up --shared`): every account works on the default server « VPS-3 » (runner a),
+   * each with its own Claude Code folder there — no runner b.
+   */
+  options: { web: boolean; scheduler: boolean; pristine: boolean; shared?: boolean };
   /** Folders of the stack; projects/runnerData/home/claude* are runner A's. */
   paths: StackLayout;
   processes: Partial<Record<ComponentName, ProcessRecord>>;

@@ -5,8 +5,14 @@ import { IsoDateSchema, SessionBackendSchema, UuidSchema } from './common';
  * Version of the runner ⇄ web contract, exposed by `/v1/health` (`contractVersion`). The web politely
  * refuses a route newer than the contract of the runner it talks to (a runner without the field is
  * version 1). Every field added for version 2 is optional, so older runners and webs keep working.
+ * Version 3 (lot P1, serveurs partagés): one Claude Code config folder per account of the server —
+ * `spaceId` on the Claude routes, login / status terminals and destination checks, `spaceId` in
+ * `claude.status` and terminals. The web assigns a second account only to a runner of version 3.
  */
-export const RUNNER_CONTRACT_VERSION = 2;
+export const RUNNER_CONTRACT_VERSION = 3;
+
+/** First contract that keeps one Claude Code connection per account (shared servers). */
+export const SHARED_SERVER_CONTRACT_VERSION = 3;
 
 /**
  * Availability key of a server in `uptime_daily`: `runner` for the default server (its history is

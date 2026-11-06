@@ -28,6 +28,7 @@ import {
   type DataTableColumn,
 } from '@/components/ui';
 import { formatDateTimeShort, plural } from '@nuera/shared/format';
+import { SHARED_SERVER_CONTRACT_VERSION } from '@nuera/shared/runner';
 import type { AdminAccountView, AdminInvitationView, CreatedInvitation, RecoveryLinkView } from '@/server/admin';
 import {
   changeRoleAction,
@@ -271,6 +272,12 @@ function AccountsList({ accounts, onAction }: { accounts: AdminAccountView[]; on
 // Confirmations
 // ---------------------------------------------------------------------------------------------
 
+/** Whether a server works for several accounts (lot P1: suspended or retired only with its last one). */
+function useSharedServer(): (serverId: string) => boolean {
+  const { data } = useAdmin();
+  return (serverId) => (data.servers.ok ? (data.servers.data.find((server) => server.id === serverId)?.accounts.length ?? 0) > 1 : false);
+}
+
 function useMutation() {
   const { refresh } = useAdmin();
   const [error, setError] = useState<string | null>(null);
@@ -332,6 +339,7 @@ function RoleDialog({ dialog, onClose }: { dialog: { account: AdminAccountView; 
 }
 
 function DisableDialog({ dialog, onClose }: { dialog: { account: AdminAccountView } | null; onClose: () => void }) {
+  const sharedServer = useSharedServer();
   const mutation = useMutation();
   const [stopSessions, setStopSessions] = useState(true);
   const account = dialog?.account ?? null;
@@ -351,7 +359,14 @@ function DisableDialog({ dialog, onClose }: { dialog: { account: AdminAccountVie
       title={`Désactiver le compte de ${name} ?`}
       consequences={[
         { kind: 'risk', text: `${name} ne peut plus se connecter : ses accès ouverts sont fermés tout de suite.` },
-        { kind: 'risk', text: account?.server ? `Son serveur ${account.server.name} est suspendu : il n'accepte plus de nouveau travail.` : "Ses appareils ne reçoivent plus ses notifications." },
+        {
+          kind: 'risk',
+          text: account?.server
+            ? sharedServer(account.server.id)
+              ? `Son serveur ${account.server.name} reste en service pour ses autres comptes : seules ses sessions à lui s'arrêtent.`
+              : `Son serveur ${account.server.name} est suspendu : il n'accepte plus de nouveau travail.`
+            : 'Ses appareils ne reçoivent plus ses notifications.',
+        },
         { kind: 'kept', text: 'Ses projets et son serveur restent intacts : réactiver le compte lui rend tout.' },
       ]}
       confirmLabel="Désactiver le compte"
@@ -382,6 +397,7 @@ function DisableDialog({ dialog, onClose }: { dialog: { account: AdminAccountVie
 }
 
 function DeleteDialog({ dialog, onClose }: { dialog: { account: AdminAccountView } | null; onClose: () => void }) {
+  const sharedServer = useSharedServer();
   const mutation = useMutation();
   const account = dialog?.account ?? null;
   const name = account ? firstName(account.name) : '';
@@ -398,7 +414,13 @@ function DeleteDialog({ dialog, onClose }: { dialog: { account: AdminAccountView
       icon="trash"
       title={`Supprimer le compte de ${name} ?`}
       consequences={[
-        { kind: 'risk', text: 'Le compte est anonymisé, son espace archivé et son serveur retiré : rien ne peut être rouvert.' },
+        {
+          kind: 'risk',
+          text:
+            account?.server && sharedServer(account.server.id)
+              ? `Le compte est anonymisé et son espace archivé ; sa connexion Claude Code est effacée de ${account.server.name}, qui reste en service pour ses autres comptes.`
+              : 'Le compte est anonymisé, son espace archivé et son serveur retiré : rien ne peut être rouvert.',
+        },
         { kind: 'kept', text: 'Les dépôts GitHub ne sont jamais touchés.' },
         { kind: 'kept', text: "Le journal garde l'historique de ses actions." },
       ]}
@@ -541,6 +563,10 @@ export function InviteDialog({ open, onOpenChange }: { open: boolean; onOpenChan
     ? [...VALIDITY_OPTIONS]
     : [{ value: defaultValidity, label: `${defaultValidity} h` }, ...VALIDITY_OPTIONS];
   const freeServers = data.servers.ok ? data.servers.data.filter((server) => server.status === 'pending') : [];
+  // Shared servers (lot P1): a server in service whose runner keeps one Claude connection per account.
+  const sharedServers = data.servers.ok
+    ? data.servers.data.filter((server) => server.status === 'active' && server.account && (server.contractVersion ?? 1) >= SHARED_SERVER_CONTRACT_VERSION)
+    : [];
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'admin' | 'member'>('member');
   const [server, setServer] = useState('');
@@ -624,11 +650,22 @@ export function InviteDialog({ open, onOpenChange }: { open: boolean; onOpenChan
                 ]}
               />
             </Field>
-            <Field label="Serveur" hint="Un serveur jamais utilisé, attribué à son espace dès l'acceptation.">
+            <Field
+              label="Serveur"
+              hint="Un serveur jamais utilisé, ou un serveur en service partagé avec ses autres comptes : la personne y aura son propre espace et sa propre connexion Claude Code."
+            >
               <Select
                 value={server || 'aucun'}
                 onValueChange={(value) => setServer(value === 'aucun' ? '' : value)}
-                options={[{ value: 'aucun', label: "Aucun pour l'instant" }, ...freeServers.map((item) => ({ value: item.id, label: item.name }))]}
+                options={[
+                  { value: 'aucun', label: "Aucun pour l'instant" },
+                  ...freeServers.map((item) => ({ value: item.id, label: item.name, description: 'jamais utilisé' })),
+                  ...sharedServers.map((item) => ({
+                    value: item.id,
+                    label: item.name,
+                    description: `partagé · ${item.accounts.length} compte${item.accounts.length > 1 ? 's' : ''}`,
+                  })),
+                ]}
               />
             </Field>
             <Field label="Validité">

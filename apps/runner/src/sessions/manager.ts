@@ -26,7 +26,9 @@ import {
 import { formatClockDay } from '@nuera/shared/format';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
+import type { ClaudeAccount, ClaudeAccounts } from '../claude/accounts';
 import { resolveClaudeCommand } from '../claude/bin';
+import type { CommonConfigSync } from '../claude/common-config';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
 import { getPermissionRow, getReadyProject, getSessionRow, getWorktree, type WorktreeRow } from '../db/lookups';
 import type { EnvironmentScope } from '../environment';
@@ -102,6 +104,8 @@ interface PendingPermission {
 interface LiveSession {
   id: string;
   projectId: string;
+  /** Claude config folder of the project's account (lot P1): its login, transcripts, skills. */
+  account: ClaudeAccount;
   worktreeId: string | null;
   cwd: string;
   title: string;
@@ -140,6 +144,13 @@ interface LiveSession {
 
 export interface SessionManagerDeps {
   db: Database;
+  /**
+   * Common Claude configuration of each account of the server (rules, skills): refreshed before a
+   * launch when it differs.
+   */
+  commonConfig?: { for(account: ClaudeAccount): Pick<CommonConfigSync, 'ensure' | 'lockedRulesFile'> } | null;
+  /** Claude config folder of each account of the server (lot P1). */
+  accounts: Pick<ClaudeAccounts, 'forSpace' | 'isolationDenyRules'>;
   /** Server of this runner: sessions are created, read, listed and reconciled within it only. */
   environment: EnvironmentScope;
   bus: EventBus;
@@ -151,12 +162,10 @@ export interface SessionManagerDeps {
   logger: Logger;
   dataDir: string;
   claudeBin: string | null;
-  /** NUERA_CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_DIR of every session CLI, root of the accepted transcripts. */
-  claudeConfigDir?: string | null;
   /** `http://127.0.0.1:<port>` of the hook listener (resolved after it listens). */
   hookBaseUrl: () => string;
-  /** A session reported an authentication problem: refresh `claude auth status`. */
-  onAuthProblem: () => void;
+  /** A session reported an authentication problem: refresh `claude auth status` of its account. */
+  onAuthProblem: (account: ClaudeAccount) => void;
   /** Automatic resumption after the usage limit: margin, retries (NUERA_AUTO_RESUME_*; tests shorten them). */
   autoResume?: Partial<AutoResumePolicy>;
 }
@@ -321,9 +330,9 @@ export class SessionManager {
     return and(eq(sessions.id, sessionId), eq(sessions.environmentId, this.envId));
   }
 
-  /** Same config dir as the CLI's: the only place its transcripts may live. */
-  private transcriptRoot(): string {
-    return transcriptsRoot(this.deps.claudeConfigDir ?? null);
+  /** Same config dir as the session CLI's (its account's): the only place its transcripts may live. */
+  private transcriptRoot(live: Pick<LiveSession, 'account'>): string {
+    return transcriptsRoot(live.account.configDir);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -534,6 +543,7 @@ export class SessionManager {
     await this.deps.environment.assertCanStartWork();
     await this.assertModeAllowed(input.permissionMode, input.launch.blockBypassPermissions);
     validateSessionEnv(input.launch.env ?? {});
+    validateSessionEnv(input.launch.settingsEnv ?? {});
     if (input.start) await this.assertCapacity(input.launch.maxConcurrentSessions ?? null);
     const id = input.sessionId ?? randomUUID();
     const rowValues = (worktreeId: string | null): typeof sessions.$inferInsert => ({
@@ -582,7 +592,15 @@ export class SessionManager {
     await writeSessionFiles(this.deps.dataDir, {
       sessionId: id,
       claudeSessionId: id,
-      launch: { denyRules: input.launch.denyRules ?? [], env: input.launch.env ?? {}, mcpConfig: input.launch.mcpConfig ?? null },
+      launch: {
+        denyRules: input.launch.denyRules ?? [],
+        env: input.launch.env ?? {},
+        mcpConfig: input.launch.mcpConfig ?? null,
+        allowRules: input.launch.allowRules ?? [],
+        askRules: input.launch.askRules ?? [],
+        settingsEnv: input.launch.settingsEnv ?? {},
+        commonConfig: input.launch.commonConfig ?? null,
+      },
       permissionWaitSeconds: input.launch.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: input.launch.maxConcurrentSessions ?? null,
       memoryLimitMb: input.launch.memoryLimitMb ?? settings.sessionMemoryLimitMb,
@@ -691,6 +709,7 @@ export class SessionManager {
   private async refreshLaunch(sessionId: string, launch: Partial<SessionLaunchOptions>): Promise<void> {
     const current = await readLaunchFile(this.deps.dataDir, sessionId);
     if (launch.env) validateSessionEnv(launch.env);
+    if (launch.settingsEnv) validateSessionEnv(launch.settingsEnv);
     const blockBypass = launch.blockBypassPermissions ?? current?.blockBypassPermissions;
     const [stored] = await this.deps.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(this.ownSession(sessionId)).limit(1);
     await writeSessionFiles(this.deps.dataDir, {
@@ -700,6 +719,10 @@ export class SessionManager {
         denyRules: launch.denyRules ?? current?.denyRules ?? [],
         env: launch.env ?? current?.env ?? {},
         mcpConfig: launch.mcpConfig === undefined ? undefined : launch.mcpConfig,
+        allowRules: launch.allowRules ?? current?.allowRules ?? [],
+        askRules: launch.askRules ?? current?.askRules ?? [],
+        settingsEnv: launch.settingsEnv ?? current?.settingsEnv ?? {},
+        commonConfig: launch.commonConfig === undefined ? (current?.commonConfig ?? null) : launch.commonConfig,
       },
       permissionWaitSeconds: launch.permissionWaitSeconds ?? current?.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: launch.maxConcurrentSessions ?? current?.maxConcurrentSessions ?? null,
@@ -753,6 +776,8 @@ export class SessionManager {
     await this.deps.environment.assertCanStartWork();
     if (!row.worktreeId) throw new RunnerError('CONFLICT', "La session n'a plus de worktree.", { reason: 'WORKTREE_MISSING' });
     const { project, worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
+    // The account of the project's space: ITS Claude login, never another account's of this server.
+    const account = await this.deps.accounts.forSpace(project.spaceId);
     const busy = this.liveSessionForWorktree(worktree.id);
     if (busy && busy !== sessionId) throw new RunnerError('CONFLICT', 'Une session tourne déjà dans ce worktree.', { reason: 'WORKTREE_IN_USE' });
     let launchFile: LaunchFile | null = await readLaunchFile(this.deps.dataDir, sessionId);
@@ -782,10 +807,27 @@ export class SessionManager {
     const token = newHookToken();
     const tokenHash = hashToken(token);
     const isTmux = this.deps.backend.kind === 'tmux';
+    // Rules and skills of the common configuration this session must start with (refreshed when the
+    // copy of the server is older; a failure keeps the copy on disk and never blocks the launch).
+    const common = this.deps.commonConfig?.for(account) ?? null;
+    await common?.ensure(launchFile.commonConfig?.hash ?? null).catch((error: unknown) => {
+      this.deps.logger.warn({ err: error, sessionId }, 'configuration commune non rafraîchie avant le lancement');
+    });
+    const lockedRules = common?.lockedRulesFile() ?? null;
     const files = await writeSessionFiles(this.deps.dataDir, {
       sessionId,
       claudeSessionId,
-      launch: { denyRules: launchFile.denyRules, env: launchFile.env, mcpConfig: undefined },
+      launch: {
+        denyRules: launchFile.denyRules,
+        env: launchFile.env,
+        mcpConfig: undefined,
+        allowRules: launchFile.allowRules ?? [],
+        askRules: launchFile.askRules ?? [],
+        settingsEnv: launchFile.settingsEnv ?? {},
+        commonConfig: launchFile.commonConfig ?? null,
+        // Other accounts' Claude folders stay out of reach of Claude's file tools (shared server).
+        isolationDenyRules: await this.deps.accounts.isolationDenyRules(account).catch(() => []),
+      },
       permissionWaitSeconds: launchFile.permissionWaitSeconds,
       maxConcurrentSessions: launchFile.maxConcurrentSessions,
       memoryLimitMb: launchFile.memoryLimitMb,
@@ -807,6 +849,9 @@ export class SessionManager {
       ...(row.effort ? ['--effort', row.effort] : []),
       '--settings',
       files.settings,
+      // « Imposé » rules of the instance: appended to the system prompt (a project CLAUDE.md cannot
+      // take precedence). The « Par défaut » ones are user-level memory (rules/nuera-commun.md).
+      ...(lockedRules ? ['--append-system-prompt-file', lockedRules] : []),
       ...(mcpFile && existsSync(mcpFile) ? ['--mcp-config', mcpFile, '--strict-mcp-config'] : []),
       ...(row.remoteControl ? ['--remote-control', `${row.title} · ${project.name}`] : []),
     ];
@@ -814,7 +859,7 @@ export class SessionManager {
       ...launchFile.env,
       // Trusted values, after the free-form env (where they are refused anyway).
       ...gitIdentityEnv(launchFile.gitIdentity),
-      ...claudeEnv(this.deps.claudeConfigDir ?? null),
+      ...claudeEnv(account.configDir),
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
       NUERA_HOOK_URL: this.deps.hookBaseUrl(),
       NUERA_SESSION_ID: sessionId,
@@ -830,6 +875,7 @@ export class SessionManager {
     const live: LiveSession = {
       id: sessionId,
       projectId: project.id,
+      account,
       worktreeId: worktree.id,
       cwd,
       title: row.title,
@@ -1580,7 +1626,7 @@ export class SessionManager {
 
   private async onSessionStart(live: LiveSession, p: Json): Promise<void> {
     const source = str(p.source) ?? 'startup';
-    const transcript = await validateTranscriptPath(p.transcript_path, this.transcriptRoot());
+    const transcript = await validateTranscriptPath(p.transcript_path, this.transcriptRoot(live));
     const claudeId = str(p.session_id);
     const bridge = str(p.nuera_bridge_session_id);
     const patch: Partial<typeof sessions.$inferInsert> = {};
@@ -1761,7 +1807,7 @@ export class SessionManager {
     }
     if (type === 'idle_prompt' || !message) return;
     await this.deps.store.append(live.id, 'notification', { notificationType: type, title: str(p.title), message: redactSecrets(message).slice(0, 4000), at: nowIso() });
-    if (type === 'auth_success') this.deps.onAuthProblem();
+    if (type === 'auth_success') this.deps.onAuthProblem(live.account);
   }
 
   private async onStop(live: LiveSession, p: Json): Promise<void> {
@@ -1822,7 +1868,7 @@ export class SessionManager {
     }
     const row = await this.setSession(live.id, { status: 'waiting_input', currentActivity: null, errorCode: code, errorMessage: message });
     if (AUTH_ERRORS.has(code)) {
-      this.deps.onAuthProblem();
+      this.deps.onAuthProblem(live.account);
       void this.notify(live, { kind: 'claude_disconnected', severity: 'danger', title: message, body: row.title, dedupKey: 'claude:auth' });
     } else {
       void this.notify(live, { kind: 'session_failed', severity: 'warning', title: `${row.title} : ${message}`, body: null, dedupKey: `session:${live.id}:error:${code}` });
@@ -2380,13 +2426,15 @@ export class SessionManager {
         this.deps.logger.warn({ tmuxName, sessionId: row.id, owner }, "session tmux d'une autre session : jamais rattachée");
         return false;
       }
-      const { worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
+      const { project, worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
+      const account = await this.deps.accounts.forSpace(project.spaceId);
       const launchFile = await readLaunchFile(this.deps.dataDir, row.id);
       const serverMemory = (await this.deps.environment.settings()).sessionMemoryLimitMb;
       terminal = tmux.attach(tmuxName, { sessionId: row.id, title: row.title, cwd, worktreeId: worktree.id, cols: 120, rows: 36 });
       const live: LiveSession = {
         id: row.id,
         projectId: row.projectId,
+        account,
         worktreeId: worktree.id,
         cwd,
         title: row.title,
@@ -2421,7 +2469,7 @@ export class SessionManager {
       this.watchTerminal(live, terminal);
       live.pid = await tmux.pid(terminal, tmuxName);
       if (row.transcriptPath) {
-        const transcript = await validateTranscriptPath(row.transcriptPath, this.transcriptRoot());
+        const transcript = await validateTranscriptPath(row.transcriptPath, this.transcriptRoot(live));
         if (transcript) {
           live.tailer = this.newTailer(live, transcript, true);
           live.tailer.start();

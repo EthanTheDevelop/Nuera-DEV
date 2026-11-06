@@ -134,6 +134,28 @@ export async function assertCallerReferences(
 }
 
 /**
+ * Space an event of the caller's server is about (lot P1, shared servers): the space of its session
+ * or project (on the caller's server, already checked by {@link assertCallerReferences}); without
+ * either, the server's first account (null while it is not assigned). Never another account of a
+ * shared server than the one the resource belongs to.
+ */
+export async function eventSpaceOfCaller(
+  caller: Pick<CallerEnvironment, 'id' | 'spaceId'>,
+  refs: { sessionId?: string | null; projectId?: string | null },
+): Promise<string | null> {
+  const projectId = refs.sessionId ? ((await findSession(refs.sessionId))?.projectId ?? refs.projectId ?? null) : (refs.projectId ?? null);
+  if (projectId) {
+    const [project] = await db
+      .select({ spaceId: projects.spaceId })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.environmentId, caller.id)))
+      .limit(1);
+    if (project) return project.spaceId;
+  }
+  return caller.spaceId;
+}
+
+/**
  * Who receives an event of the caller's server: the active members of its space; the active
  * administrators (owner included) when the server is not assigned to a space yet.
  */

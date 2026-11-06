@@ -59,9 +59,12 @@ if (argv[0] === '--version') {
   out('2.1.999 (Claude Code)\n');
   process.exit(0);
 }
+// Shared servers (lot P1): the folder the runner creates for another account (`<root>/<space id>`)
+// starts empty, like a real one — not signed in until `auth login` writes the marker.
+const accountFolder = Boolean(harnessDir && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path.basename(harnessDir)));
 if (argv[0] === 'auth' && argv[1] === 'status') {
   const marker = readMarker();
-  if (process.env.FAKE_CLAUDE_LOGGED_OUT === '1' || marker.loggedIn === false) {
+  if (process.env.FAKE_CLAUDE_LOGGED_OUT === '1' || marker.loggedIn === false || (accountFolder && marker.loggedIn !== true)) {
     out(JSON.stringify({ loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' }));
     process.exit(1);
   }
@@ -127,6 +130,43 @@ async function interactive() {
     mkdirSync(envDir, { recursive: true });
     const keys = ['CLAUDE_CONFIG_DIR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'];
     writeFileSync(path.join(envDir, `${sessionId}.json`), JSON.stringify(Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]))));
+    // What a real CLI would load at this launch (configuration commune): flags, settings rules and
+    // env, MCP servers, appended system prompt, user-level rules and skills of the config dir.
+    const read = (file) => {
+      try {
+        return file && existsSync(file) ? readFileSync(file, 'utf8') : null;
+      } catch {
+        return null;
+      }
+    };
+    const mcpFile = flag('--mcp-config');
+    let mcpServers = [];
+    try {
+      mcpServers = Object.keys(JSON.parse(read(mcpFile) ?? '{}').mcpServers ?? {});
+    } catch {
+      mcpServers = [];
+    }
+    const skillsDir = path.join(harnessDir, 'skills');
+    const skills = existsSync(skillsDir)
+      ? readdirSync(skillsDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && existsSync(path.join(skillsDir, entry.name, 'SKILL.md')))
+          .map((entry) => ({ name: entry.name, common: existsSync(path.join(skillsDir, entry.name, '.nuera-commun.json')) }))
+      : [];
+    const launchDir = path.join(harnessDir, 'nuera-fake-launch');
+    mkdirSync(launchDir, { recursive: true });
+    writeFileSync(
+      path.join(launchDir, `${sessionId}.json`),
+      JSON.stringify({
+        argv,
+        permissions: settings.permissions ?? {},
+        settingsEnv: settings.env ?? {},
+        mcpServers,
+        appendSystemPrompt: read(flag('--append-system-prompt-file')),
+        userRules: read(path.join(harnessDir, 'rules', 'nuera-commun.md')),
+        skills,
+        at: new Date().toISOString(),
+      }),
+    );
   }
   const base = { session_id: sessionId, transcript_path: transcript, cwd, permission_mode: flag('--permission-mode') ?? 'default' };
 

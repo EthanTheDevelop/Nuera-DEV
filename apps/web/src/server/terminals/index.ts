@@ -188,7 +188,7 @@ export async function openTerminal(ctx: TerminalCtx, input: OpenTerminalInput): 
     }
     case 'claude-login': {
       const { environment, runner } = requireLoginTerminalServer(ctx);
-      const terminal = await runner.createTerminal({ body: { kind: 'claude-login', ...size, actorUserId: ctx.user.id } });
+      const terminal = await runner.createTerminal({ body: { kind: 'claude-login', ...size, actorUserId: ctx.user.id, spaceId: ctx.space.id } });
       await auditIn(ctx, {
         action: TERMINAL_AUDIT_ACTION,
         summary: 'terminal de connexion à Claude Code ouvert (claude auth login)',
@@ -201,7 +201,7 @@ export async function openTerminal(ctx: TerminalCtx, input: OpenTerminalInput): 
     }
     case 'claude-status': {
       const { environment, runner } = requireLoginTerminalServer(ctx);
-      const terminal = await runner.createTerminal({ body: { kind: 'claude-status', ...size, actorUserId: ctx.user.id } });
+      const terminal = await runner.createTerminal({ body: { kind: 'claude-status', ...size, actorUserId: ctx.user.id, spaceId: ctx.space.id } });
       await auditIn(ctx, {
         action: TERMINAL_AUDIT_ACTION,
         summary: 'terminal Claude Code ouvert pour /status',

@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { CreateTerminalRequest, TerminalDto } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
+import type { ClaudeAccounts } from '../claude/accounts';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
 import type { EnvironmentScope } from '../environment';
 import { RunnerError } from '../errors';
@@ -41,8 +42,11 @@ export class TerminalManager {
     private readonly deps: {
       dataDir: string;
       claudeBin: string | null;
-      /** NUERA_CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_DIR of the login, MCP login and status terminals. */
-      claudeConfigDir: string | null;
+      /**
+       * Claude config folder of each account (lot P1): shells take their project's account, login /
+       * MCP login / status terminals the account the web names (`spaceId`).
+       */
+      accounts: Pick<ClaudeAccounts, 'forSpace' | 'forRequest'>;
       gitService: GitService;
       /** Server of this runner: a suspended server opens no shell. */
       environment: EnvironmentScope;
@@ -93,8 +97,9 @@ export class TerminalManager {
   async create(input: CreateTerminalRequest & { cols: number; rows: number }): Promise<Terminal> {
     switch (input.kind) {
       case 'shell': {
-        const { worktree, cwd } = await this.deps.gitService.resolveWorktree(input.worktreeId);
+        const { project, worktree, cwd } = await this.deps.gitService.resolveWorktree(input.worktreeId);
         await this.deps.environment.assertCanStartWork();
+        const account = await this.deps.accounts.forSpace(project.spaceId);
         const shell = defaultShell();
         return this.spawn({
           kind: 'shell',
@@ -102,27 +107,30 @@ export class TerminalManager {
           file: shell.file,
           args: shell.args,
           cwd,
-          // Same Claude config as the server's sessions (a `claude` typed here uses the server's login).
-          env: terminalEnv({ ...claudeEnv(this.deps.claudeConfigDir), ...gitIdentityEnv(input.gitIdentity) }),
+          // Same Claude config as the account's sessions (a `claude` typed here uses ITS login).
+          env: terminalEnv({ ...claudeEnv(account.configDir), ...gitIdentityEnv(input.gitIdentity) }),
           cols: input.cols,
           rows: input.rows,
           worktreeId: worktree.id,
           ownerUserId: input.actorUserId ?? null,
+          spaceId: project.spaceId,
           idleTimeoutMs: SHELL_IDLE_MS,
         });
       }
       case 'claude-login': {
         const claude = this.claude();
+        const account = await this.deps.accounts.forRequest(input.spaceId);
         return this.spawn({
           kind: 'claude-login',
           title: 'Connexion à Claude',
           file: claude.file,
           args: [...claude.prefix, 'auth', 'login'],
           cwd: this.scratchDir('claude-login'),
-          env: terminalEnv(claudeEnv(this.deps.claudeConfigDir)),
+          env: terminalEnv(claudeEnv(account.configDir)),
           cols: input.cols,
           rows: input.rows,
           ownerUserId: input.actorUserId ?? null,
+          spaceId: account.spaceId,
           private: true,
           scrollback: 500,
           idleTimeoutMs: LOGIN_IDLE_MS,
@@ -130,16 +138,18 @@ export class TerminalManager {
       }
       case 'mcp-login': {
         const claude = this.claude();
+        const account = await this.deps.accounts.forRequest(input.spaceId);
         return this.spawn({
           kind: 'mcp-login',
           title: `Connexion MCP · ${input.serverName}`,
           file: claude.file,
           args: [...claude.prefix, 'mcp', 'login', input.serverName, '--no-browser'],
           cwd: this.scratchDir('mcp-login'),
-          env: terminalEnv(claudeEnv(this.deps.claudeConfigDir)),
+          env: terminalEnv(claudeEnv(account.configDir)),
           cols: input.cols,
           rows: input.rows,
           ownerUserId: input.actorUserId ?? null,
+          spaceId: account.spaceId,
           private: true,
           scrollback: 500,
           idleTimeoutMs: LOGIN_IDLE_MS,
@@ -149,16 +159,18 @@ export class TerminalManager {
         // `/status` is an interactive command: open the CLI in a scratch folder and let the owner
         // type /status (or /usage). Nothing is sent to Claude unless the owner types a prompt.
         const claude = this.claude();
+        const account = await this.deps.accounts.forRequest(input.spaceId);
         return this.spawn({
           kind: 'claude-status',
           title: 'Claude Code · /status',
           file: claude.file,
           args: [...claude.prefix],
           cwd: this.scratchDir('claude-status'),
-          env: terminalEnv({ ...claudeEnv(this.deps.claudeConfigDir), ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
+          env: terminalEnv({ ...claudeEnv(account.configDir), ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
           cols: input.cols,
           rows: input.rows,
           ownerUserId: input.actorUserId ?? null,
+          spaceId: account.spaceId,
           private: true,
           scrollback: 1000,
           idleTimeoutMs: LOGIN_IDLE_MS,

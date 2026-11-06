@@ -13,6 +13,7 @@ import {
 } from '@/features/sessions/lib/contract';
 import { db } from '@/server/db';
 import { AppError, formatZodIssues } from '@/server/errors';
+import { launchCommonParts, recordSessionConfig, type SessionConfigSnapshot } from '@/server/claude-config';
 import { buildSessionMcpConfig } from '@/server/mcp';
 import { RunnerError, isRunnerUnavailable } from '@/server/runner/client';
 import { getEffectiveSessionPolicy, type EffectiveSessionPolicy } from '@/server/settings';
@@ -99,21 +100,59 @@ export async function buildLaunchOptions(
   /** « Reprise automatique » chosen for the session (`sessions.auto_resume`); null/absent = the space default. */
   session: { autoResume?: boolean | null } = {},
 ): Promise<SessionLaunchOptions> {
+  return (await buildLaunchPlan(ctx, scope, session)).launch;
+}
+
+export interface LaunchPlan {
+  launch: SessionLaunchOptions;
+  /** What the session receives from the common configuration (recorded once the runner accepted it). */
+  common: SessionConfigSnapshot;
+  /** Model imposed by the instance (« Imposé »), or null. */
+  lockedModel: string | null;
+  /** Default model of new sessions: the space's, else the instance's. */
+  defaultModel: string | null;
+}
+
+/**
+ * Launch options + the common configuration (lot K1): instance MCP servers merged with the project's,
+ * permission rules of the instance policy and of the instance servers (deny > ask > allow in the CLI),
+ * « Par défaut » variables BEFORE the project's (which win), « Imposé » ones in the session settings,
+ * bypass block forced when an instance server can act on production (Coolify), and the hash of the
+ * rules and skills the runner must hold before starting the CLI.
+ */
+export async function buildLaunchPlan(
+  ctx: Pick<RequestContext, 'user'>,
+  scope: Pick<ProjectScope, 'projectId' | 'spaceId'>,
+  session: { autoResume?: boolean | null } = {},
+): Promise<LaunchPlan> {
+  const common = await launchCommonParts(scope.spaceId);
   const [policy, mcp, projectEnv, gitIdentity] = await Promise.all([
     getEffectiveSessionPolicy(scope.spaceId),
-    buildSessionMcpConfig(scope.projectId),
+    buildSessionMcpConfig(scope.projectId, common.mcp),
     readProjectEnv(scope),
     getGitIdentity(ctx.user),
   ]);
-  const { env } = buildSessionEnv(projectEnv.env, mcp.env);
-  return {
+  const { env } = buildSessionEnv(common.env.defaults, projectEnv.env, mcp.env);
+  const { env: settingsEnv } = buildSessionEnv(common.env.locked);
+  const unique = (...lists: string[][]) => [...new Set(lists.flat())];
+  const launch: SessionLaunchOptions = {
     mcpConfig: Object.keys(mcp.mcpConfig.mcpServers).length > 0 ? mcp.mcpConfig : null,
-    denyRules: mcp.denyRules,
+    denyRules: unique(mcp.denyRules, common.rules.deny),
+    allowRules: unique(common.rules.allow, mcp.allowRules ?? []),
+    askRules: unique(common.rules.ask, mcp.askRules ?? []),
+    settingsEnv,
     env,
     permissionWaitSeconds: policy.permissionWaitSeconds,
-    blockBypassPermissions: policy.blockBypassPermissions,
+    blockBypassPermissions: policy.blockBypassPermissions || mcp.blockBypass === true,
     gitIdentity,
     autoResume: autoResumeOptions(policy, session.autoResume),
+    commonConfig: { hash: common.hash, revision: common.revision },
+  };
+  return {
+    launch,
+    common: { ...common.snapshot, skipped: mcp.skipped ?? [] },
+    lockedModel: common.model.locked ? common.model.value : null,
+    defaultModel: policy.defaultModel ?? common.model.value,
   };
 }
 
@@ -195,14 +234,21 @@ export async function createSession(ctx: SessionActorContext, input: CreateSessi
   }
 
   const worktree = await resolveWorktree(scope, project, data.branch);
-  const launch = await buildLaunchOptions(ctx, scope);
+  const plan = await buildLaunchPlan(ctx, scope);
+  const launch = plan.launch;
+  if (permissionMode === 'bypassPermissions' && launch.blockBypassPermissions) {
+    throw new AppError('FORBIDDEN', 'Le mode sans autorisation est bloqué pour les sessions qui reçoivent Coolify (administrateurs).', {
+      untouched: 'Aucun worktree créé, aucune session démarrée.',
+    });
+  }
   const dto = await scope.runner.createSession({
     body: {
       projectId: project.id,
       title: data.title,
       worktree,
       permissionMode,
-      model: data.model === undefined ? policy.defaultModel : data.model,
+      // « Imposé » by the instance wins over the dialog; otherwise the dialog, the space, the instance.
+      model: plan.lockedModel ?? (data.model === undefined ? plan.defaultModel : data.model),
       effort: data.effort === undefined ? policy.defaultEffort : data.effort,
       remoteControl: data.remoteControl ?? policy.remoteControlByDefault,
       launch,
@@ -211,6 +257,7 @@ export async function createSession(ctx: SessionActorContext, input: CreateSessi
     },
   });
 
+  await recordSessionConfig(dto.id, scope.spaceId, plan.common);
   await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.create,
     summary: `session créée : « ${dto.title} » · ${project.name} · ${dto.worktree?.branch ?? 'branche inconnue'}`,
@@ -268,8 +315,10 @@ export async function startNewSession(ctx: SessionActorContext, sessionId: strin
     throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus démarrer.', { untouched: "L'historique reste lisible." });
   }
   if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
-  const launch = await buildLaunchOptions(ctx, scope, row);
-  return scope.runner.startSession({ params: { sessionId: scope.sessionId }, body: { launch } });
+  const plan = await buildLaunchPlan(ctx, scope, row);
+  const dto = await scope.runner.startSession({ params: { sessionId: scope.sessionId }, body: { launch: plan.launch } });
+  await recordSessionConfig(scope.sessionId, scope.spaceId, plan.common);
+  return dto;
 }
 
 export interface SessionActionResult {
@@ -295,8 +344,9 @@ export async function resumeSession(ctx: SessionActorContext, sessionId: string)
   if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
   const current = await scope.runner.getSession({ params: { sessionId: scope.sessionId } });
   if (current.live) return actionResult(ctx, scope);
-  const launch = await buildLaunchOptions(ctx, scope, row);
-  const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch } });
+  const plan = await buildLaunchPlan(ctx, scope, row);
+  const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch: plan.launch } });
+  await recordSessionConfig(scope.sessionId, scope.spaceId, plan.common);
   await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.resume,
     summary: `session reprise : « ${dto.title} » · ${row.projectName}`,

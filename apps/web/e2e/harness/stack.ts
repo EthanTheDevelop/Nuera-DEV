@@ -94,6 +94,8 @@ export interface UpOptions extends StackSelector {
   scheduler?: boolean;
   /** Accounts (= servers) of the stack (default: state.json, else 2 for `e2e`, 1 otherwise). */
   accounts?: number;
+  /** Shared server (lot P1): the other accounts are invited onto « VPS-3 » instead of their own server. */
+  shared?: boolean;
   /** Extra paths to compile once the web answers. */
   warm?: string[];
   /** Seed scenarios of account `a` to run once the stack is up. */
@@ -132,7 +134,7 @@ async function vapidKeys(): Promise<{ publicKey: string; privateKey: string }> {
   return webpush.generateVAPIDKeys();
 }
 
-function newAccount(name: string, layout: StackLayout, key: StackKey): StackAccount {
+function newAccount(name: string, layout: StackLayout, key: StackKey, shared = false): StackAccount {
   const identity = accountIdentity(name, key);
   const files = accountFiles(layout, key);
   return {
@@ -144,7 +146,7 @@ function newAccount(name: string, layout: StackLayout, key: StackKey): StackAcco
     totpSecret: null,
     userId: null,
     spaceId: null,
-    runner: key,
+    runner: shared ? 'a' : key,
     gitIdentity: identity.gitIdentity,
     stateFile: files.stateFile,
     storageState: files.storageState,
@@ -174,7 +176,7 @@ function newRunner(layout: StackLayout, ports: StackPorts, key: StackKey, token:
   };
 }
 
-async function newState(name: string, ports: StackPorts, db: string, options: Pick<UpOptions, 'web' | 'scheduler' | 'pristine'>, accountCount: number): Promise<StackState> {
+async function newState(name: string, ports: StackPorts, db: string, options: Pick<UpOptions, 'web' | 'scheduler' | 'pristine' | 'shared'>, accountCount: number): Promise<StackState> {
   const layout = layoutFor(name);
   const urls = urlsFor(ports);
   const vapid = await vapidKeys();
@@ -183,7 +185,8 @@ async function newState(name: string, ports: StackPorts, db: string, options: Pi
   const allRepos = fixtureRepoStates(layout.remotes, apps);
   const runnerToken = randomBytes(32).toString('hex');
   const now = new Date().toISOString();
-  const accounts = keys.map((key) => newAccount(name, layout, key));
+  const shared = options.shared === true;
+  const accounts = keys.map((key) => newAccount(name, layout, key, shared));
   const a = accounts[0]!;
   const appA = apps.find((app) => app.key === 'a')!;
   const state: StackState = {
@@ -204,7 +207,7 @@ async function newState(name: string, ports: StackPorts, db: string, options: Pi
       vapidPrivateKey: vapid.privateKey,
     },
     owner: { name: a.name, email: a.email, password: a.password, totpSecret: null, userId: null, created: false },
-    options: { web: options.web ?? true, scheduler: options.scheduler ?? false, pristine: options.pristine ?? false },
+    options: { web: options.web ?? true, scheduler: options.scheduler ?? false, pristine: options.pristine ?? false, shared },
     paths: layout,
     processes: {},
     github: { appId: appA.appId, slug: appA.slug, accounts: FIXTURE_ACCOUNTS.filter((account) => account.installationId > 0), connected: false },
@@ -213,7 +216,7 @@ async function newState(name: string, ports: StackPorts, db: string, options: Pi
     seeded: {},
     accountCount,
     accounts,
-    runners: keys.map((key) => newRunner(layout, ports, key, key === 'a' ? runnerToken : '')),
+    runners: (shared ? ['a' as StackKey] : keys).map((key) => newRunner(layout, ports, key, key === 'a' ? runnerToken : '')),
     githubApps: apps,
   };
   return state;
@@ -222,9 +225,10 @@ async function newState(name: string, ports: StackPorts, db: string, options: Pi
 /** Adds the accounts / servers / apps a larger `accountCount` needs (an existing stack keeps its entries). */
 function growState(state: StackState, accountCount: number): void {
   state.accountCount = accountCount;
+  const shared = state.options.shared === true;
   for (const key of stackKeys(accountCount)) {
-    if (!state.accounts.some((item) => item.key === key)) state.accounts.push(newAccount(state.name, state.paths, key));
-    if (!state.runners.some((item) => item.key === key)) state.runners.push(newRunner(state.paths, state.ports, key, ''));
+    if (!state.accounts.some((item) => item.key === key)) state.accounts.push(newAccount(state.name, state.paths, key, shared));
+    if (!shared && !state.runners.some((item) => item.key === key)) state.runners.push(newRunner(state.paths, state.ports, key, ''));
   }
   const apps = fixtureGithubApps(state.name, state.ports.web, stackKeys(accountCount));
   for (const app of apps) {
@@ -531,7 +535,8 @@ async function ensureMember(state: StackState, key: StackKey, log: Log): Promise
   }
   const created = readOwnerState(account.stateFile)!;
   const server = runner.environmentId ? await serverRow(state, { id: runner.environmentId }) : null;
-  if (server && row.spaceId && server.spaceId !== row.spaceId) throw new Error(`Le serveur « ${runner.name} » n'est pas attribué à l'espace de ${account.name} après l'invitation.`);
+  // On a shared stack the server's first account stays the owner's: the member is one more account there.
+  if (server && row.spaceId && account.runner === key && server.spaceId !== row.spaceId) throw new Error(`Le serveur « ${runner.name} » n'est pas attribué à l'espace de ${account.name} après l'invitation.`);
   const next = updateState(state.paths.stateFile, (current) => {
     const target = accountOf(current, key);
     Object.assign(target, { totpSecret: created.totpSecret, userId: row!.id, spaceId: row!.spaceId, created: true, createdVia: 'invitation' });
@@ -631,7 +636,12 @@ export async function up(options: UpOptions): Promise<StackState> {
         current.database = { name: db, url: databaseUrl(adminUrl(), db), adminUrl: adminUrl() };
         current.paths = layout;
         // `pristine` only holds for this call: a later `up` creates the owner if the test did not.
-        current.options = { web: options.web ?? current.options.web, scheduler: options.scheduler ?? current.options.scheduler, pristine: options.pristine ?? false };
+        current.options = {
+          web: options.web ?? current.options.web,
+          scheduler: options.scheduler ?? current.options.scheduler,
+          pristine: options.pristine ?? false,
+          shared: options.shared ?? current.options.shared ?? false,
+        };
         growState(current, accountCount);
       });
       // Servers beyond the requested count are stopped (their rows and folders are kept).
@@ -641,7 +651,9 @@ export async function up(options: UpOptions): Promise<StackState> {
       state = loadState(name);
     }
     const keys = stackKeys(accountCount);
-    log(`Pile ${name} · ${accountCount} compte(s) · web ${state.urls.web} · runners ${keys.map((key) => `${runnerOf(state!, key).name} ${runnerOf(state!, key).urls.runner}`).join(', ')} · GitHub ${state.urls.githubWeb} · base ${db}`);
+    // A shared stack (lot P1) has one runner for every account.
+    const runnerKeys = [...new Set(keys.map((key) => runnerOfAccount(state!, key).key))];
+    log(`Pile ${name} · ${accountCount} compte(s)${state.options.shared ? ' sur un serveur partagé' : ''} · web ${state.urls.web} · runners ${runnerKeys.map((key) => `${runnerOf(state!, key).name} ${runnerOf(state!, key).urls.runner}`).join(', ')} · GitHub ${state.urls.githubWeb} · base ${db}`);
 
     // Database + migrations (idempotent; the fingerprint of the default server's token is recorded).
     if (await ensureDatabase(adminUrl(), db, { reset: false })) log(`Base créée : ${db}`);
@@ -653,7 +665,7 @@ export async function up(options: UpOptions): Promise<StackState> {
       await installFixtureRemotes(layout.remotes, { log });
       log('Dépôts distants de test installés (atelier-test, dev-test, hugo-test).');
     }
-    for (const key of keys) {
+    for (const key of runnerKeys) {
       const runner = runnerOf(state, key);
       for (const dir of [runner.paths.projects, runner.paths.runnerData, runner.paths.claudeConfig]) mkdirSync(dir, { recursive: true });
       installScripts(runner.paths.claudeScenarios);
@@ -687,15 +699,18 @@ export async function up(options: UpOptions): Promise<StackState> {
       if (!(await githubConnected(state, 'a'))) state = await ensureGithub(state, 'a', log);
       else log('GitHub (propriétaire) : déjà connecté');
       for (const key of keys.slice(1)) {
-        state = await ensureServer(state, key, log);
-        await ensureRunnerUp(name, runnerOf(state, key).component, log);
+        // Shared stack: the account is invited onto « VPS-3 » (its own Claude folder there).
+        if (accountOf(state, key).runner === key) {
+          state = await ensureServer(state, key, log);
+          await ensureRunnerUp(name, runnerOf(state, key).component, log);
+        }
         state = await ensureMember(loadState(name), key, log);
         if (!(await githubConnected(state, key))) state = await ensureGithub(state, key, log);
         else log(`GitHub (${accountOf(state, key).name}) : déjà connecté`);
       }
     } else if (!state.options.web) {
       // Without the web, only servers registered earlier can run.
-      for (const key of keys.slice(1)) if (runnerOf(state, key).token) await ensureRunnerUp(name, runnerOf(state, key).component, log);
+      for (const key of runnerKeys.slice(1)) if (runnerOf(state, key).token) await ensureRunnerUp(name, runnerOf(state, key).component, log);
     }
     state = loadState(name);
     if (state.options.web && (webStarted || options.warm?.length)) {

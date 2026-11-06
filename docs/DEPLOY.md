@@ -25,7 +25,8 @@ Coolify ── déploie ──► serveur Docker (VPS-3 prévu ; en service : NU
 ```
 
 Un **serveur** (environnement d'exécution) est une instance du runner : son disque, son tmux, son CLI Claude Code et
-la connexion Claude d'**une seule personne**. Un serveur = un espace = une personne = une connexion Claude.
+une connexion Claude **par compte** qui y travaille. Un compte = un espace = une connexion Claude, jamais partagée ;
+un serveur peut accueillir plusieurs comptes (§13.1), chacun avec sa propre connexion.
 
 | Image | Dockerfile (cible) | Contenu | Taille mesurée (essai local) |
 |---|---|---|---|
@@ -481,8 +482,38 @@ docker compose run --rm -e APP_URL=<APP_URL de la ressource> migrate \
 ## 13. Ajouter un serveur (environnement d'exécution)
 
 Un serveur supplémentaire est une **ressource Coolify séparée**, construite depuis `deploy/docker-compose.runner.yml`
-(un seul service `environment-runner`, ses propres volumes, aucun domaine ni port). Il est attribué à **une seule
-personne**, qui s'y connecte à Claude Code avec son propre abonnement. Ce fichier ne sert jamais au serveur par défaut.
+(un seul service `environment-runner`, ses propres volumes, aucun domaine ni port). Il est d'abord attribué à **un
+compte** (son premier compte), qui s'y connecte à Claude Code avec son propre abonnement ; d'autres comptes peuvent
+ensuite y être ajoutés (§13.1). Ce fichier ne sert jamais au serveur par défaut.
+
+### 13.1 Ajouter un compte à un serveur existant (serveur partagé, lot P1)
+
+**Aucune nouvelle ressource Coolify** : Administration › Serveurs › menu du serveur → « Ajouter un compte… » (ou, à
+l'invitation, choisir un serveur « partagé » dans la liste Serveur). Conditions : serveur en service (`active`, ni
+`pending` ni suspendu), runner au **contrat 3** (version de ce lot ; le web refuse sinon — « Le runner du serveur … doit
+être mis à jour avant d'accueillir un autre compte »), compte actif sans autre serveur.
+
+- Chaque compte garde **son espace** (projets, sessions, worktrees, terminaux, notifications : jamais visibles des
+  autres) et **sa propre connexion Claude Code** : le runner lui crée un dossier de configuration du CLI
+  `~/claude-comptes/<id de l'espace>/` (0700) dans le volume HOME persistant (`nuera-claude-home`, ou
+  `NUERA_CLAUDE_ACCOUNTS_DIR`), donné en `CLAUDE_CONFIG_DIR` à chacun de ses processus `claude` (sessions, reprises,
+  terminaux de connexion et de `/status`, `claude mcp login`, shells, commandes du projet). Le premier compte garde
+  le dossier existant du serveur (`~/.claude`, `~/.claude.json`) : rien n'est déplacé ni lu à la mise à jour
+  (marqueur `<NUERA_DATA_DIR>/claude-compte-principal.json`).
+- La personne ajoutée se connecte elle-même : Paramètres › Claude Code → « Se reconnecter dans un terminal »
+  (`claude auth login` avec **son** compte Claude). Jamais un administrateur pour elle, jamais la connexion d'un autre.
+- Ses clones vont dans `<NUERA_PROJECTS_ROOT>/espaces/<id de l'espace>/` : deux comptes peuvent cloner le même dépôt.
+- **Capacité partagée** : « Sessions parallèles » et la mémoire par session sont celles du serveur, communes à ses
+  comptes, et seul le premier compte (ou un administrateur pour le plafond) les règle ; dimensionner la machine en
+  conséquence (environ 2 vCPU et 4 Go par session Claude active en même temps).
+- **Retirer un compte** du serveur : Administration › Serveurs › « Comptes du serveur » → « Retirer » (refusé pour le
+  premier compte, et tant que le compte a des projets sur ce serveur, archivés compris). Le runner déconnecte puis
+  supprime son dossier Claude (`claude auth logout`) ; s'il est injoignable, au prochain démarrage. Désactiver le
+  premier compte ne suspend le serveur que si aucun autre compte actif n'y travaille ; supprimer un compte d'un
+  serveur partagé efface sa connexion Claude de ce serveur sans retirer le serveur.
+- **Confiance** : tous les comptes d'un serveur s'exécutent sous le même utilisateur Linux ; une session d'un compte
+  pourrait lire le dossier d'un autre (`docs/SECURITY.md` §« Serveurs partagés »). Ne réunir sur un serveur que des
+  personnes de confiance ; sinon, un serveur par personne (étapes ci-dessous).
 
 **Capacité.** Prévoir par serveur environ 2 vCPU et 4 Go de mémoire (minimum de Claude Code :
 `docs/research/claude-code.md` §9) et au moins 20 Go de disque. NUERA-PERSO-01 (6 cœurs, 11,4 Go, qui héberge aussi
@@ -556,8 +587,9 @@ le serveur (son rôle PostgreSQL passe NOLOGIN et ses connexions ouvertes sont f
 données, connexion Claude). Pour la même personne ou une autre : un nouveau serveur, avec un nouveau
 `NUERA_SERVER_SLUG`.
 
-**Désactiver, supprimer un compte.** Administration › Comptes. Désactiver suspend aussi son serveur (aucun nouveau
-travail, rappels refusés) ; supprimer (seulement un compte désactivé) archive l'espace, retire le serveur et arrête les
+**Désactiver, supprimer un compte.** Administration › Comptes. Désactiver suspend aussi son serveur quand il en est le
+seul compte actif (aucun nouveau travail, rappels refusés ; un serveur partagé reste en service pour ses autres
+comptes, §13.1) ; supprimer (seulement un compte désactivé) archive l'espace, retire le serveur et arrête les
 sessions encore vivantes ; les dépôts GitHub ne sont jamais touchés.
 
 ## 14. Restreindre l'accès du serveur par défaut à la base

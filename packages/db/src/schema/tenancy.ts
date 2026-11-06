@@ -83,7 +83,10 @@ export const environments = pgTable(
   'environments',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    /** null = not assigned to a space yet. */
+    /**
+     * First account of the server (null = not assigned yet). Further accounts: {@link environmentSpaces}
+     * (this one always has its row there too).
+     */
     spaceId: uuid('space_id').references(() => spaces.id, { onDelete: 'restrict' }),
     /** « VPS-3 » */
     name: text('name').notNull(),
@@ -123,13 +126,42 @@ export const environments = pgTable(
       .notNull(),
   },
   (t) => [
-    // Target of the composite foreign key projects (environment_id, space_id).
+    // Former target of projects (environment_id, space_id), now environment_spaces (0008).
     unique('environments_id_space_key').on(t.id, t.spaceId),
     uniqueIndex('environments_default_idx').on(sql`(true)`).where(sql`${t.isDefault}`),
     // v1: one server in use per space (retired servers do not count).
     uniqueIndex('environments_space_active_idx')
       .on(t.spaceId)
       .where(sql`${t.spaceId} is not null and ${t.status} <> 'retired'`),
+  ],
+);
+
+/**
+ * Accounts (spaces) a server works for (lot P1, migration 0008): one server can be assigned to
+ * several accounts, each keeping its own space and its OWN Claude Code connection (the runner gives
+ * every space a separate CLI config folder, never one login for two accounts). `environments.space_id`
+ * stays the server's first account (« compte principal »: its settings, its legacy CLI login); it
+ * always has its row here. A space has at most one server in use (checked by the web under lock).
+ *
+ * Target of `projects (environment_id, space_id)`: a project lives on a server of its own space's
+ * accounts, and a space cannot be unassigned while it still has projects there (RESTRICT).
+ * The restricted runner role reads the rows of its own server (0008, RLS).
+ */
+export const environmentSpaces = pgTable(
+  'environment_spaces',
+  {
+    environmentId: uuid('environment_id')
+      .notNull()
+      .references(() => environments.id, { onDelete: 'restrict' }),
+    spaceId: uuid('space_id')
+      .notNull()
+      .references(() => spaces.id, { onDelete: 'restrict' }),
+    createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: ts('created_at').defaultNow().notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'environment_spaces_pkey', columns: [t.environmentId, t.spaceId] }),
+    index('environment_spaces_space_idx').on(t.spaceId),
   ],
 );
 
@@ -149,7 +181,10 @@ export const invitations = pgTable(
     role: text('role').$type<InstanceRole>().notNull().default('member'),
     /** Target of a recovery, or the account created by the invitation. */
     userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
-    /** `pending` server pre-assigned to the space the invitation creates. */
+    /**
+   * Server pre-assigned to the space the invitation creates: a `pending` one (first account), or one
+   * in service that will also work for this account (lot P1).
+   */
     environmentId: uuid('environment_id').references(() => environments.id, { onDelete: 'set null' }),
     tokenHash: text('token_hash').notNull().unique(),
     expiresAt: ts('expires_at').notNull(),

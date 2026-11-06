@@ -1,5 +1,5 @@
 import 'server-only';
-import { environments, spaceMembers, spaceSettings, spaces, userPreferences } from '@nuera/db/schema';
+import { environmentSpaces, environments, spaceMembers, spaceSettings, spaces, userPreferences } from '@nuera/db/schema';
 import type { EnvironmentStatus, SpaceKind, SpaceRole } from '@nuera/db/schema';
 import { uptimeServiceKey } from '@nuera/shared/runner';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
@@ -46,6 +46,13 @@ export interface EnvironmentRef {
   /** `uptime_daily.service` of this server (`runner` for the default one). */
   uptimeKey: string;
   maxConcurrentSessions: number;
+  /**
+   * Shared servers (lot P1): this space is the server's first account (`environments.space_id`: its
+   * server settings, the existing Claude folder). False for an account added to someone's server.
+   */
+  primary: boolean;
+  /** Accounts the server works for (1 unless shared; « Sessions parallèles » is shared between them). */
+  accounts: number;
 }
 
 export interface RequestContext {
@@ -92,14 +99,20 @@ async function readScope(userId: string): Promise<{ space: SpaceRef; environment
       environmentStatus: environments.status,
       environmentIsDefault: environments.isDefault,
       environmentMaxSessions: environments.maxConcurrentSessions,
+      environmentPrimarySpaceId: environments.spaceId,
+      environmentAccounts: sql<number>`(select count(*)::int from ${environmentSpaces} as l where l.environment_id = ${environments}.${sql.identifier('id')})`,
     })
     .from(spaceMembers)
     .innerJoin(
       spaces,
       and(eq(spaces.id, spaceMembers.spaceId), eq(spaces.kind, 'personal'), eq(spaces.ownerUserId, userId)),
     )
-    .leftJoin(environments, and(eq(environments.spaceId, spaces.id), ne(environments.status, 'retired')))
+    // Shared servers (lot P1): the server is the one working for this space (its first account or not).
+    .leftJoin(environmentSpaces, eq(environmentSpaces.spaceId, spaces.id))
+    .leftJoin(environments, and(eq(environments.id, environmentSpaces.environmentId), ne(environments.status, 'retired')))
     .where(eq(spaceMembers.userId, userId))
+    // The server in use first (a retired one may still hold the space's former projects).
+    .orderBy(sql`${environments}.${sql.identifier('id')} is null`)
     .limit(1);
   if (!row) return null;
   const environment: EnvironmentRef | null =
@@ -112,6 +125,8 @@ async function readScope(userId: string): Promise<{ space: SpaceRef; environment
           isDefault: row.environmentIsDefault === true,
           uptimeKey: uptimeServiceKey({ id: row.environmentId, isDefault: row.environmentIsDefault === true }),
           maxConcurrentSessions: row.environmentMaxSessions ?? 4,
+          primary: row.environmentPrimarySpaceId === row.spaceId,
+          accounts: Math.max(1, Number(row.environmentAccounts ?? 1)),
         }
       : null;
   return {

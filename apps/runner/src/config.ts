@@ -34,6 +34,11 @@ export interface RunnerConfig {
    * environment (production: HOME of the container).
    */
   claudeConfigDir: string | null;
+  /**
+   * NUERA_CLAUDE_ACCOUNTS_DIR (lot P1): root of the Claude config folders of the server's other
+   * accounts (`<root>/<space id>/`). Null: `<NUERA_CLAUDE_CONFIG_DIR>-comptes`, else `~/claude-comptes`.
+   */
+  claudeAccountsDir?: string | null;
   /** Public URL of the web app (internal callbacks: /api/internal/*). */
   appUrl: string;
   /** URL the runner uses to reach the web app (defaults to appUrl). */
@@ -81,6 +86,7 @@ const EnvSchema = z.object({
     .optional()
     .refine((v) => !v || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v), 'NUERA_ENVIRONMENT_ID doit être un identifiant de serveur (UUID).'),
   NUERA_CLAUDE_CONFIG_DIR: z.string().optional(),
+  NUERA_CLAUDE_ACCOUNTS_DIR: z.string().optional(),
   APP_URL: z.string().url().default('http://localhost:3000'),
   NUERA_WEB_INTERNAL_URL: z.string().url().optional(),
   NUERA_PROJECTS_ROOT: z.string().default('./.data/projects'),
@@ -159,6 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     dbPoolMax: e.NUERA_DB_POOL_MAX,
     environmentId: e.NUERA_ENVIRONMENT_ID?.toLowerCase() || null,
     claudeConfigDir: e.NUERA_CLAUDE_CONFIG_DIR?.trim() ? resolveFromRoot(e.NUERA_CLAUDE_CONFIG_DIR.trim()) : null,
+    claudeAccountsDir: e.NUERA_CLAUDE_ACCOUNTS_DIR?.trim() ? resolveFromRoot(e.NUERA_CLAUDE_ACCOUNTS_DIR.trim()) : null,
     appUrl,
     webInternalUrl: (e.NUERA_WEB_INTERNAL_URL ?? appUrl).replace(/\/+$/, ''),
     projectsRoot: resolveFromRoot(e.NUERA_PROJECTS_ROOT),

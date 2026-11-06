@@ -1,6 +1,7 @@
 import { apiRoute } from '@/server/http';
 import { subscribeUserEvents } from '@/server/notifications/user-events';
 import { getRunnerEndpoint, relayGlobalStream } from '@/server/runner/client';
+import { spaceEventLookups, spaceFrameFilter } from '@/server/runner/event-scope';
 
 /**
  * GET /api/stream/events — global SSE stream of the account: `stream.hello` { userId,
@@ -26,6 +27,9 @@ export const GET = apiRoute({
     return relayGlobalStream(request, {
       userId,
       endpoint: environmentId ? await getRunnerEndpoint(environmentId) : null,
+      // Shared servers (lot P1): only this space's events and this account's Claude status.
+      spaceId: ctx.space.id,
+      ...(environmentId ? { frameFilter: spaceFrameFilter({ spaceId: ctx.space.id, lookups: spaceEventLookups({ spaceId: ctx.space.id, environmentId }) }) } : {}),
       // Each new attempt while the runner is out of reach re-reads its endpoint (rotated token, new URL).
       ...(environmentId ? { resolveEndpoint: () => getRunnerEndpoint(environmentId) } : {}),
       // Only this account's events: the bus delivers to the listeners of `userId` alone.

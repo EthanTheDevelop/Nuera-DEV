@@ -27,8 +27,10 @@ import {
 } from '@/components/ui';
 import type { AdminServerView, RegisteredServer, RestrictedDatabaseAccess, RotatedToken } from '@/server/admin';
 import {
+  addServerAccountAction,
   assignServerAction,
   registerServerAction,
+  removeServerAccountAction,
   restrictDatabaseAction,
   retireServerAction,
   rotateServerTokenAction,
@@ -41,6 +43,8 @@ import { OnceSecret } from './OnceSecret';
 
 type ServerDialog =
   | { kind: 'assign'; server: AdminServerView }
+  | { kind: 'accounts'; server: AdminServerView }
+  | { kind: 'add-account'; server: AdminServerView }
   | { kind: 'edit'; server: AdminServerView }
   | { kind: 'rotate'; server: AdminServerView }
   | { kind: 'restrict'; server: AdminServerView }
@@ -90,6 +94,12 @@ export function ServersTab({ openRegister }: { openRegister: boolean }) {
       </section>
       <RegisterDialog open={registering} onOpenChange={setRegistering} />
       <AssignDialog server={dialog?.kind === 'assign' ? dialog.server : null} onClose={close} />
+      <AccountsDialog
+        server={dialog?.kind === 'accounts' ? (servers.find((item) => item.id === dialog.server.id) ?? dialog.server) : null}
+        onClose={close}
+        onAdd={(server) => setDialog({ kind: 'add-account', server })}
+      />
+      <AddAccountDialog server={dialog?.kind === 'add-account' ? dialog.server : null} onClose={close} />
       <EditDialog server={dialog?.kind === 'edit' ? dialog.server : null} onClose={close} />
       <RotateDialog server={dialog?.kind === 'rotate' ? dialog.server : null} onClose={close} />
       <RestrictDialog server={dialog?.kind === 'restrict' ? dialog.server : null} onClose={close} />
@@ -125,6 +135,16 @@ function ServerMenu({ server, onAction }: { server: AdminServerView; onAction: (
         {server.status === 'pending' ? (
           <DropdownMenuItem icon="link" onSelect={() => onAction({ kind: 'assign', server })}>
             Attribuer à un compte…
+          </DropdownMenuItem>
+        ) : null}
+        {server.account ? (
+          <DropdownMenuItem icon="clients" onSelect={() => onAction({ kind: 'accounts', server })}>
+            {`Comptes du serveur · ${server.accounts.length}`}
+          </DropdownMenuItem>
+        ) : null}
+        {server.status === 'active' && server.account ? (
+          <DropdownMenuItem icon="plus" onSelect={() => onAction({ kind: 'add-account', server })}>
+            Ajouter un compte…
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem icon="edit" onSelect={() => onAction({ kind: 'edit', server })}>
@@ -181,7 +201,15 @@ function ServersList({ servers, onAction }: { servers: AdminServerView[]; onActi
       key: 'account',
       header: 'Compte',
       width: 170,
-      cell: (server) => (server.account ? <span className="truncate font-sans text-app-13 text-text">{server.account.name}</span> : <Badge tone="neutral">{serverStatusLabel(server.status)}</Badge>),
+      cell: (server) =>
+        server.account ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate font-sans text-app-13 text-text">{server.account.name}</span>
+            {server.accounts.length > 1 ? <Badge tone="neutral">{`+${server.accounts.length - 1}`}</Badge> : null}
+          </span>
+        ) : (
+          <Badge tone="neutral">{serverStatusLabel(server.status)}</Badge>
+        ),
     },
     { key: 'state', header: 'État', width: 130, cell: health },
     { key: 'claude', header: 'Claude Code', width: 120, hideBelowLg: true, cell: (server) => <span className="font-sans text-app-13 text-muted">{claudeText(server.claudeInstalled)}</span> },
@@ -211,7 +239,15 @@ function ServersList({ servers, onAction }: { servers: AdminServerView[]; onActi
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {health(server)}
-              {server.account ? <Badge tone="accent">{server.account.name}</Badge> : null}
+              {server.accounts.length > 0
+                ? server.accounts.map((account) => (
+                    <Badge key={account.id} tone={account.primary ? 'accent' : 'neutral'}>
+                      {account.name}
+                    </Badge>
+                  ))
+                : server.account
+                  ? <Badge tone="accent">{server.account.name}</Badge>
+                  : null}
             </div>
             <p className="m-0 font-sans text-app-12 text-muted">
               {`Dernier contact ${lastSeenText(server.lastSeenAt, data.now)} · Claude Code : ${claudeText(server.claudeInstalled).toLowerCase()}`}
@@ -371,6 +407,135 @@ function AssignDialog({ server, onClose }: { server: AdminServerView | null; onC
     >
       {candidates.length > 0 ? (
         <Field label="Compte">
+          <Select value={userId || undefined} onValueChange={setUserId} placeholder="Choisir un compte…" options={candidates.map((account) => ({ value: account.id, label: account.name, description: account.email }))} />
+        </Field>
+      ) : null}
+    </ConfirmDialog>
+  );
+}
+
+/** Accounts a server works for (lot P1): each keeps its space and its own Claude Code connection. */
+function AccountsDialog({ server, onClose, onAdd }: { server: AdminServerView | null; onClose: () => void; onAdd: (server: AdminServerView) => void }) {
+  const mutation = useServerMutation();
+  const [removing, setRemoving] = useState<string | null>(null);
+  const shared = (server?.accounts.length ?? 0) > 1;
+  async function remove(userId: string, name: string) {
+    if (!server) return;
+    setRemoving(userId);
+    const result = await mutation.run(() => removeServerAccountAction(server.id, userId));
+    setRemoving(null);
+    if (result) toast({ message: `${name} retiré de ${server.name}` });
+  }
+  return (
+    <Dialog
+      open={server !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+          mutation.setError(null);
+        }
+      }}
+    >
+      <DialogContent
+        size="md"
+        title={`Comptes du serveur ${server?.name ?? ''}`}
+        description={
+          shared
+            ? `Serveur partagé : chaque compte garde son espace, ses projets et sa propre connexion Claude Code. Les ${server?.maxConcurrentSessions ?? ''} sessions parallèles du serveur sont communes à ses comptes.`
+            : "Un seul compte travaille sur ce serveur. Vous pouvez en ajouter d'autres : chacun y aura son propre espace et sa propre connexion Claude Code."
+        }
+        footer={
+          <>
+            <Button variant="default" onClick={onClose}>
+              Fermer
+            </Button>
+            {server?.status === 'active' ? (
+              <Button variant="accent" onClick={() => server && onAdd(server)}>
+                Ajouter un compte
+              </Button>
+            ) : null}
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          {mutation.error ? (
+            <p role="alert" className="m-0 font-sans text-app-13 text-danger">
+              {mutation.error}
+            </p>
+          ) : null}
+          <ul className="m-0 flex list-none flex-col p-0" aria-label={`Comptes de ${server?.name ?? ''}`}>
+            {(server?.accounts ?? []).map((account) => (
+              <li key={account.id} className="flex min-w-0 items-center gap-3 border-b border-border py-2 last:border-b-0">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate font-sans text-app-13 font-medium text-text">{account.name}</span>
+                  <span className="truncate font-sans text-app-12 text-muted">
+                    {[account.email, account.primary ? 'premier compte' : null, account.disabled ? 'désactivé' : null, `${account.projects} projet${account.projects > 1 ? 's' : ''}`]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </div>
+                {account.primary ? (
+                  <Badge tone="accent">Premier compte</Badge>
+                ) : (
+                  <Button variant="default" loading={removing === account.id} loadingLabel="Retrait…" onClick={() => void remove(account.id, account.name)}>
+                    Retirer
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="m-0 font-sans text-app-12 text-muted">
+            Le premier compte règle les sessions parallèles du serveur et ne peut pas le quitter (retirez le serveur). Un compte retiré doit d'abord supprimer ses projets sur ce serveur ; sa connexion Claude Code y est alors effacée.
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Adds an account to a server in service (lot P1). */
+function AddAccountDialog({ server, onClose }: { server: AdminServerView | null; onClose: () => void }) {
+  const { data } = useAdmin();
+  const mutation = useServerMutation();
+  const candidates = data.accounts.ok ? data.accounts.data.filter((account) => !account.server && !account.disabledAt) : [];
+  const [userId, setUserId] = useState('');
+  const reset = () => {
+    setUserId('');
+    mutation.setError(null);
+  };
+  return (
+    <ConfirmDialog
+      open={server !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+          reset();
+        }
+      }}
+      tone="warn"
+      icon="server"
+      title={`Ajouter un compte au serveur ${server?.name ?? ''} ?`}
+      consequences={[
+        { kind: 'kept', text: "Chaque compte garde son espace, ses projets et ses sessions : aucun ne voit ceux d'un autre." },
+        { kind: 'kept', text: "Le compte ajouté connecte son propre compte Claude Code sur ce serveur (Paramètres › Claude Code) : aucune connexion n'est partagée." },
+        { kind: 'risk', text: `Les ${server?.maxConcurrentSessions ?? ''} sessions parallèles du serveur sont partagées entre ses comptes.` },
+        { kind: 'risk', text: "Tous les comptes du serveur s'exécutent sous le même utilisateur du système : n'y réunissez que des personnes de confiance." },
+      ]}
+      confirmLabel="Ajouter le compte"
+      confirmDisabled={candidates.length === 0 ? 'Aucun compte sans serveur.' : !userId ? 'Choisissez un compte.' : undefined}
+      error={mutation.error}
+      onConfirm={async () => {
+        if (!server || !userId) return;
+        const name = candidates.find((account) => account.id === userId)?.name ?? 'Compte';
+        if ((await mutation.run(() => addServerAccountAction(server.id, userId))) !== null) {
+          onClose();
+          reset();
+          toast({ message: `${name} ajouté à ${server.name}` });
+        }
+      }}
+    >
+      {candidates.length > 0 ? (
+        <Field label="Compte" hint="Seuls les comptes actifs sans serveur sont proposés.">
           <Select value={userId || undefined} onValueChange={setUserId} placeholder="Choisir un compte…" options={candidates.map((account) => ({ value: account.id, label: account.name, description: account.email }))} />
         </Field>
       ) : null}

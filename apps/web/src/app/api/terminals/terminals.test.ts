@@ -288,8 +288,8 @@ describe('POST /api/terminals', () => {
     const status = await call(create, '/api/terminals', { body: { kind: 'claude-status' } });
     expect(status.status).toBe(201);
     expect(state.calls.map((c) => c.input)).toEqual([
-      { body: { kind: 'claude-login', actorUserId: TEST_USER_ID } },
-      { body: { kind: 'claude-status', actorUserId: TEST_USER_ID } },
+      { body: { kind: 'claude-login', actorUserId: TEST_USER_ID, spaceId: TEST_SPACE_ID } },
+      { body: { kind: 'claude-status', actorUserId: TEST_USER_ID, spaceId: TEST_SPACE_ID } },
     ]);
     expect(new Set(state.servers)).toEqual(new Set([TEST_ENVIRONMENT_ID]));
     const rows = await auditRows();

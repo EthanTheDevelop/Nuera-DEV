@@ -1,4 +1,5 @@
 import { account, auditLog, environments, mcpServers, notifications, projects, spaces, user } from '@nuera/db/schema';
+import { RUNNER_CONTRACT_VERSION } from '@nuera/shared/runner';
 import { hashToken } from '@nuera/shared/tokens';
 import { eq, inArray } from 'drizzle-orm';
 import { NextRequest } from 'next/server';
@@ -80,7 +81,7 @@ function healthBody(environment: { id: string; name: string } | null, overrides:
     dataDir: '/data',
     environment,
     state: 'ready',
-    contractVersion: 2,
+    contractVersion: RUNNER_CONTRACT_VERSION,
     ...overrides,
   };
 }
@@ -186,7 +187,7 @@ describe('serveurs · vérifier, renouveler le jeton, attribuer, retirer', () =>
     createdRoles.add(registered.dbRole);
     runner.handle((_req, res) => runner.json(res, 200, healthBody({ id: registered.id, name: 'VPS-5' })));
     const ok = await admin.verifyServer(actorOf(a), registered.id);
-    expect(ok).toMatchObject({ ok: true, message: 'VPS-5 répond · runner 1.4.0', problems: [], contractVersion: 2 });
+    expect(ok).toMatchObject({ ok: true, message: 'VPS-5 répond · runner 1.4.0', problems: [], contractVersion: RUNNER_CONTRACT_VERSION });
     expect(runner.requests.at(-1)).toMatchObject({ method: 'GET', path: '/v1/health', authorization: `Bearer ${registered.token}` });
 
     runner.handle((_req, res) => runner.json(res, 200, healthBody({ id: crypto.randomUUID(), name: 'VPS-9' }, { contractVersion: 1 })));
@@ -244,7 +245,7 @@ describe('serveurs · vérifier, renouveler le jeton, attribuer, retirer', () =>
     await expect(admin.assignServer(actorOf(a), registered.id, { userId: d.user.id })).rejects.toMatchObject({ code: 'CONFLICT' });
 
     await createTestResources(
-      { space: c.space, user: c.user, environment: { id: registered.id, name: 'VPS-6', location: null, status: 'active', isDefault: false, uptimeKey: `runner:${registered.id}`, maxConcurrentSessions: 4 } },
+      { space: c.space, user: c.user, environment: { id: registered.id, name: 'VPS-6', location: null, status: 'active', isDefault: false, uptimeKey: `runner:${registered.id}`, maxConcurrentSessions: 4, primary: true, accounts: 1 } },
       'projet-c',
     );
     await expect(admin.retireServer(actorOf(a), registered.id)).rejects.toMatchObject({ code: 'CONFLICT' });

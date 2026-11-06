@@ -119,7 +119,7 @@ export interface PaletteSourceData {
   skills?: ReadonlyArray<{
     name: string;
     description: string | null;
-    source: 'project' | 'user';
+    source: 'project' | 'user' | 'common';
   }> | null;
   mcp?: ReadonlyArray<{ name: string; label: string; tools: readonly string[] }>;
 }
@@ -139,7 +139,7 @@ export function buildPaletteItems(data: PaletteSourceData = {}): PaletteItem[] {
       id: `skill:${skill.source}:${skill.name}`,
       group: 'skills',
       label: `/${skill.name}`,
-      description: [skill.description, skill.source === 'project' ? 'projet' : 'serveur']
+      description: [skill.description, skill.source === 'project' ? 'projet' : skill.source === 'common' ? 'commun' : 'serveur']
         .filter(Boolean)
         .join(' · '),
       insert: `/${skill.name} `,

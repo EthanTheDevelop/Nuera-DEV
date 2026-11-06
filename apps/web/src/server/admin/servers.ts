@@ -1,10 +1,11 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { environments, invitations, projects, sessions, spaces, user } from '@nuera/db/schema';
+import { environmentSpaces, environments, invitations, projects, sessions, spaces, user } from '@nuera/db/schema';
 import type { EnvironmentConfigSource, EnvironmentStatus, SessionBackend } from '@nuera/db/schema';
 import {
   HealthResponseSchema,
   RUNNER_CONTRACT_VERSION,
+  SHARED_SERVER_CONTRACT_VERSION,
   type HealthResponse,
 } from '@nuera/shared/runner';
 import { generateRunnerToken, hashToken } from '@nuera/shared/tokens';
@@ -20,7 +21,7 @@ import {
 } from '@/server/runner/config';
 import { resetCliMcpState } from '@/server/mcp/diagnostics';
 import { createNotification, spaceRecipients } from '@/server/notifications';
-import { invalidateRunnerContract } from '@/server/runner/client';
+import { getRunnerForEnvironment, invalidateRunnerContract } from '@/server/runner/client';
 import { runnerUnavailableMessage } from '@/server/runner/errors';
 import { audit } from '@/server/security/audit';
 import { invalidateSsrfCache } from '@/server/security/ssrf';
@@ -87,7 +88,13 @@ export interface AdminServerView {
   configSource: EnvironmentConfigSource;
   isDefault: boolean;
   status: EnvironmentStatus;
+  /** First account of the server (`environments.space_id`). */
   account: { id: string; name: string; email: string } | null;
+  /**
+   * Every account the server works for (lot P1, shared servers), the first one first: each keeps its
+   * space and its own Claude Code connection. Never what is inside their spaces (projects counted only).
+   */
+  accounts: ServerAccountView[];
   /** Attributed to the space of another account than the administrator viewing it. */
   ownedByOther: boolean;
   lastSeenAt: string | null;
@@ -110,7 +117,67 @@ export interface AdminServerView {
   createdAt: string;
 }
 
+export interface ServerAccountView {
+  id: string;
+  name: string;
+  email: string;
+  spaceId: string;
+  /** The server's first account: it sets the server's limits and cannot leave it (retire the server). */
+  primary: boolean;
+  disabled: boolean;
+  /** Projects of this account on the server (archived ones included: they keep it attached). */
+  projects: number;
+}
+
 type ServerRow = typeof environments.$inferSelect;
+
+/** Accounts of each server (first account first), with their project count on that server. */
+async function accountsOf(ids: string[]): Promise<Map<string, ServerAccountView[]>> {
+  const result = new Map<string, ServerAccountView[]>();
+  if (ids.length === 0) return result;
+  const rows = await db
+    .select({
+      environmentId: environmentSpaces.environmentId,
+      spaceId: environmentSpaces.spaceId,
+      primarySpaceId: environments.spaceId,
+      userId: user.id,
+      name: user.name,
+      email: user.email,
+      disabledAt: user.disabledAt,
+      projects: sql<number>`(select count(*)::int from ${projects} as p where p.environment_id = ${environmentSpaces}.${sql.identifier('environment_id')} and p.space_id = ${environmentSpaces}.${sql.identifier('space_id')})`,
+    })
+    .from(environmentSpaces)
+    .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+    .innerJoin(spaces, eq(spaces.id, environmentSpaces.spaceId))
+    .innerJoin(user, and(eq(user.id, spaces.ownerUserId), isNull(user.deletedAt)))
+    .where(inArray(environmentSpaces.environmentId, ids))
+    .orderBy(asc(environmentSpaces.createdAt));
+  for (const row of rows) {
+    const list = result.get(row.environmentId) ?? [];
+    list.push({
+      id: row.userId,
+      name: row.name,
+      email: row.email,
+      spaceId: row.spaceId,
+      primary: row.primarySpaceId === row.spaceId,
+      disabled: row.disabledAt !== null,
+      projects: Number(row.projects ?? 0),
+    });
+    result.set(row.environmentId, list);
+  }
+  for (const list of result.values()) list.sort((a, b) => Number(b.primary) - Number(a.primary));
+  return result;
+}
+
+/** Users of every account a server works for (their contexts are invalidated after a change). */
+async function linkedUserIds(environmentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: spaces.ownerUserId })
+    .from(environmentSpaces)
+    .innerJoin(spaces, eq(spaces.id, environmentSpaces.spaceId))
+    .where(eq(environmentSpaces.environmentId, environmentId));
+  return rows.map((row) => row.id).filter((id): id is string => Boolean(id));
+}
 
 function claudeInstalledOf(row: Pick<ServerRow, 'capabilities'>): boolean | null {
   const capabilities = (row.capabilities ?? {}) as { claudeVersion?: string | null };
@@ -138,7 +205,7 @@ export async function listServers(actor: AdminActor): Promise<AdminServerView[]>
     );
   const ids = rows.map((row) => row.server.id);
   if (ids.length === 0) return [];
-  const [live, active, restricted] = await Promise.all([
+  const [live, active, restricted, accounts] = await Promise.all([
     db
       .select({ id: sessions.environmentId, total: count() })
       .from(sessions)
@@ -157,6 +224,7 @@ export async function listServers(actor: AdminActor): Promise<AdminServerView[]>
     assessRestrictedAccess(
       rows.filter((row) => row.server.status !== 'retired').map((row) => row.server),
     ),
+    accountsOf(ids),
   ]);
   const liveBy = new Map(live.map((row) => [row.id, Number(row.total)]));
   const activeBy = new Map(active.map((row) => [row.id, Number(row.total)]));
@@ -174,6 +242,7 @@ export async function listServers(actor: AdminActor): Promise<AdminServerView[]>
         accountId && accountName && accountEmail
           ? { id: accountId, name: accountName, email: accountEmail }
           : null,
+      accounts: accounts.get(server.id) ?? [],
       ownedByOther: server.spaceId !== null && ownerId !== actor.id,
       lastSeenAt: iso(server.lastSeenAt),
       runnerVersion: server.runnerVersion,
@@ -354,18 +423,23 @@ async function notifyServerChange(
 ): Promise<void> {
   if (!row.spaceId) return;
   try {
-    const recipients = (await spaceRecipients(row.spaceId)).filter((id) => id !== actor.id);
-    if (recipients.length === 0) return;
-    await createNotification(
-      {
-        kind: 'security',
-        severity: 'warning',
-        title: input.title,
-        body: input.body,
-        href: '/parametres?onglet=compte-et-securite',
-      },
-      { spaceId: row.spaceId, userIds: recipients, environmentId: row.id },
-    );
+    // Every account of a shared server (lot P1), each in its own space.
+    const links = await db.select({ spaceId: environmentSpaces.spaceId }).from(environmentSpaces).where(eq(environmentSpaces.environmentId, row.id));
+    const spaceIds = [...new Set([row.spaceId, ...links.map((link) => link.spaceId)])];
+    for (const spaceId of spaceIds) {
+      const recipients = (await spaceRecipients(spaceId)).filter((id) => id !== actor.id);
+      if (recipients.length === 0) continue;
+      await createNotification(
+        {
+          kind: 'security',
+          severity: 'warning',
+          title: input.title,
+          body: input.body,
+          href: '/parametres?onglet=compte-et-securite',
+        },
+        { spaceId, userIds: recipients, environmentId: row.id },
+      );
+    }
   } catch (error) {
     console.warn(
       '[serveurs] notification du compte impossible',
@@ -722,10 +796,13 @@ export async function assignServer(
         'CONFLICT',
         "Ce compte n'a pas encore d'espace : il doit d'abord se connecter une fois.",
       );
+    // Its first account or not (lot P1): a space works on one server at a time.
+    await tx.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, target.spaceId)).for('update');
     const [current] = await tx
       .select({ id: environments.id, name: environments.name })
-      .from(environments)
-      .where(and(eq(environments.spaceId, target.spaceId), ne(environments.status, 'retired')))
+      .from(environmentSpaces)
+      .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+      .where(and(eq(environmentSpaces.spaceId, target.spaceId), ne(environments.status, 'retired')))
       .limit(1);
     if (current)
       throw new AppError(
@@ -748,6 +825,179 @@ export async function assignServer(
     targetType: 'environment',
     targetId: environmentId,
     environmentId,
+  });
+  return getServer(actor, environmentId);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Serveur partagé (lot P1) : d'autres comptes sur un serveur en service
+// ---------------------------------------------------------------------------------------------
+
+/** « VPS-3 ne peut pas encore accueillir un autre compte… » (runner older than contract 3). */
+export function sharedServerOutdatedMessage(name: string): string {
+  return `Le runner du serveur ${name} doit être mis à jour avant d'accueillir un autre compte : chacun doit y avoir sa propre connexion Claude Code.`;
+}
+
+/** Best effort after a change of the accounts of a server: tell its runner (folders, common configuration). */
+function announceAccounts(environmentId: string, spaceId: string | null): void {
+  if (process.env.NUERA_CLAUDE_CONFIG_PUSH === 'off') return;
+  void getRunnerForEnvironment(environmentId)
+    .claudeConfigSync({ body: { reason: 'changed', ...(spaceId ? { spaceId } : {}) } }, { timeoutMs: 45_000 })
+    .catch(() => undefined);
+}
+
+async function notifyAccounts(environmentId: string, spaceIds: string[], actor: AdminActor, input: { title: string; body: string }): Promise<void> {
+  try {
+    for (const spaceId of spaceIds) {
+      const recipients = (await spaceRecipients(spaceId)).filter((id) => id !== actor.id);
+      if (recipients.length === 0) continue;
+      await createNotification(
+        { kind: 'server', severity: 'info', title: input.title, body: input.body, href: '/parametres?onglet=serveur' },
+        { spaceId, userIds: recipients, environmentId },
+      );
+    }
+  } catch (error) {
+    console.warn('[serveurs] notification des comptes impossible', error instanceof Error ? error.message : error);
+  }
+}
+
+/**
+ * Adds an account to a server in service (lot P1). The account keeps its own space, projects and
+ * sessions (never visible to the others) and gets its OWN Claude Code connection on that server
+ * (a separate CLI config folder kept by the runner: it connects with « Se reconnecter dans un
+ * terminal », nobody else's login is ever used). « Sessions parallèles » of the server is shared.
+ * Refused: a server not yet attributed (use {@link assignServer}), suspended or retired, a runner
+ * older than contract 3, an account that already has a server.
+ */
+export async function addServerAccount(
+  actor: AdminActor,
+  environmentId: string,
+  input: { userId: string },
+): Promise<AdminServerView> {
+  assertAdminMutation(actor);
+  const { userId } = assignServerSchema.parse(input);
+  if (!UUID_PATTERN.test(environmentId)) throw new AppError('NOT_FOUND', NOT_FOUND_SERVER);
+  const outcome = await db.transaction(async (tx) => {
+    const [server] = await tx.select().from(environments).where(eq(environments.id, environmentId)).for('update');
+    if (!server) throw new AppError('NOT_FOUND', NOT_FOUND_SERVER);
+    if (server.status === 'retired') throw new AppError('CONFLICT', 'Ce serveur est retiré.');
+    if (!server.spaceId || server.status === 'pending') {
+      throw new AppError('CONFLICT', "Ce serveur n'est encore attribué à personne : attribuez-le d'abord à un compte.");
+    }
+    if (server.status === 'suspended') {
+      throw new AppError('CONFLICT', "Ce serveur est suspendu (son premier compte est désactivé) : réactivez ce compte avant d'en ajouter un autre.");
+    }
+    if ((server.contractVersion ?? 1) < SHARED_SERVER_CONTRACT_VERSION) {
+      throw new AppError('CONFLICT', sharedServerOutdatedMessage(server.name), { reason: 'RUNNER_OUTDATED' });
+    }
+    const [target] = await tx
+      .select({ id: user.id, email: user.email, name: user.name, disabledAt: user.disabledAt, spaceId: spaces.id })
+      .from(user)
+      .leftJoin(spaces, and(eq(spaces.ownerUserId, user.id), eq(spaces.kind, 'personal'), isNull(spaces.archivedAt)))
+      .where(and(eq(user.id, userId), isNull(user.deletedAt)))
+      .limit(1);
+    if (!target) throw new AppError('NOT_FOUND', NOT_FOUND_ACCOUNT);
+    if (!target.spaceId) throw new AppError('CONFLICT', "Ce compte n'a pas encore d'espace : il doit d'abord se connecter une fois.");
+    if (target.disabledAt) throw new AppError('CONFLICT', "Ce compte est désactivé : réactivez-le avant de l'ajouter à un serveur.");
+    // One server in use per space: the space row is locked so that two additions never both pass.
+    await tx.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, target.spaceId)).for('update');
+    const [current] = await tx
+      .select({ id: environments.id, name: environments.name })
+      .from(environmentSpaces)
+      .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+      .where(and(eq(environmentSpaces.spaceId, target.spaceId), ne(environments.status, 'retired')))
+      .limit(1);
+    if (current?.id === server.id) throw new AppError('CONFLICT', 'Ce compte travaille déjà sur ce serveur.');
+    if (current) throw new AppError('CONFLICT', `Ce compte a déjà un serveur (${current.name}) : retirez-le d'abord.`);
+    await tx.insert(environmentSpaces).values({ environmentId: server.id, spaceId: target.spaceId, createdByUserId: actor.id });
+    return { server, target: { ...target, spaceId: target.spaceId } };
+  });
+  invalidateServer(environmentId, [outcome.target.id, ...(await linkedUserIds(environmentId))]);
+  await resetSpaceMcpState(outcome.target.spaceId);
+  announceAccounts(environmentId, outcome.target.spaceId);
+  await audit({
+    action: 'admin.server_account_added',
+    summary: `compte ${outcome.target.email} ajouté au serveur « ${outcome.server.name} » (serveur partagé, connexion Claude Code propre au compte)`,
+    actorUserId: actor.id,
+    subjectUserId: outcome.target.id,
+    targetType: 'environment',
+    targetId: environmentId,
+    environmentId,
+    metadata: { spaceId: outcome.target.spaceId },
+  });
+  await notifyAccounts(environmentId, [outcome.target.spaceId], actor, {
+    title: `Vous travaillez désormais sur le serveur ${outcome.server.name}.`,
+    body: 'Connectez votre propre compte Claude Code depuis Paramètres › Claude Code : vos projets et sessions restent les vôtres.',
+  });
+  await notifyAccounts(environmentId, [outcome.server.spaceId!], actor, {
+    title: `Le serveur ${outcome.server.name} accueille aussi un autre compte.`,
+    body: "Chaque compte garde son espace et sa propre connexion Claude Code ; les sessions parallèles du serveur sont partagées.",
+  });
+  return getServer(actor, environmentId);
+}
+
+/**
+ * Removes an account from a shared server (lot P1). Refused for the server's first account (retire the
+ * server instead) and while the account still has projects there (archived ones too: delete them).
+ * Its Claude Code config folder on the runner is signed out and removed (best effort, journalled).
+ */
+export async function removeServerAccount(
+  actor: AdminActor,
+  environmentId: string,
+  userId: string,
+): Promise<AdminServerView> {
+  assertAdminMutation(actor);
+  if (!UUID_PATTERN.test(environmentId) || !userId || userId.length > 200) throw new AppError('NOT_FOUND', NOT_FOUND_SERVER);
+  const outcome = await db.transaction(async (tx) => {
+    const [server] = await tx.select().from(environments).where(eq(environments.id, environmentId)).for('update');
+    if (!server) throw new AppError('NOT_FOUND', NOT_FOUND_SERVER);
+    const [target] = await tx
+      .select({ id: user.id, email: user.email, spaceId: environmentSpaces.spaceId })
+      .from(environmentSpaces)
+      .innerJoin(spaces, eq(spaces.id, environmentSpaces.spaceId))
+      .innerJoin(user, eq(user.id, spaces.ownerUserId))
+      .where(and(eq(environmentSpaces.environmentId, server.id), eq(user.id, userId)))
+      .limit(1);
+    if (!target) throw new AppError('NOT_FOUND', NOT_FOUND_ACCOUNT);
+    if (server.spaceId === target.spaceId) {
+      throw new AppError('CONFLICT', "C'est le premier compte de ce serveur : retirez le serveur pour le libérer.");
+    }
+    const [held] = await tx
+      .select({ total: count() })
+      .from(projects)
+      .where(and(eq(projects.environmentId, server.id), eq(projects.spaceId, target.spaceId)));
+    const total = Number(held?.total ?? 0);
+    if (total > 0) {
+      throw new AppError(
+        'CONFLICT',
+        `Ce compte a encore ${total === 1 ? 'un projet' : `${total} projets`} sur ce serveur (archivés compris) : ${total === 1 ? "qu'il le supprime" : "qu'il les supprime"} d'abord.`,
+      );
+    }
+    await tx.delete(environmentSpaces).where(and(eq(environmentSpaces.environmentId, server.id), eq(environmentSpaces.spaceId, target.spaceId)));
+    return { server, target };
+  });
+  invalidateServer(environmentId, [outcome.target.id, ...(await linkedUserIds(environmentId))]);
+  await resetSpaceMcpState(outcome.target.spaceId);
+  // Its Claude login must not stay on a server it no longer works on.
+  let forgotten: { removed: boolean; signedOut: boolean } | null = null;
+  try {
+    forgotten = await getRunnerForEnvironment(environmentId).claudeAccountForget({ params: { spaceId: outcome.target.spaceId } }, { timeoutMs: 45_000 });
+  } catch (error) {
+    console.warn('[serveurs] dossier Claude du compte non supprimé', error instanceof Error ? error.message : error);
+  }
+  await audit({
+    action: 'admin.server_account_removed',
+    summary: `compte ${outcome.target.email} retiré du serveur « ${outcome.server.name} »${forgotten?.removed ? ' · connexion Claude Code du compte supprimée du serveur' : ' · runner injoignable : la connexion Claude Code du compte sera supprimée à son prochain démarrage'}`,
+    actorUserId: actor.id,
+    subjectUserId: outcome.target.id,
+    targetType: 'environment',
+    targetId: environmentId,
+    environmentId,
+    metadata: { spaceId: outcome.target.spaceId, claudeFolderRemoved: forgotten?.removed ?? false, signedOut: forgotten?.signedOut ?? false },
+  });
+  await notifyAccounts(environmentId, [outcome.target.spaceId], actor, {
+    title: `Vous ne travaillez plus sur le serveur ${outcome.server.name}.`,
+    body: 'Un administrateur doit vous attribuer un autre serveur ; votre connexion Claude Code a été retirée de celui-ci.',
   });
   return getServer(actor, environmentId);
 }
@@ -1035,7 +1285,7 @@ export async function retireServer(
       : [];
     return { row, changed: true, ownerId: owner?.id ?? null };
   });
-  invalidateServer(environmentId, [outcome.ownerId]);
+  invalidateServer(environmentId, [outcome.ownerId, ...(await linkedUserIds(environmentId))]);
   if (outcome.changed) {
     // NOLOGIN only refuses new connections: the ones its runner (or a session) still holds are closed.
     const connections = await closeRunnerRoleConnections(outcome.row.dbRole);

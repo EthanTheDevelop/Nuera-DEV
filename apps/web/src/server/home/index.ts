@@ -166,7 +166,7 @@ export async function getHomeData(ctx: RequestContext): Promise<HomeData> {
   const [settings, metrics, claudeStatus, pendingOutcome, projectsOutcome, integrationsOutcome] = await Promise.all([
     getSpaceSettings(ctx.space.id).catch(() => null),
     runner ? attempt(() => runner.systemMetrics(undefined, { timeoutMs: RUNNER_TIMEOUT_MS })) : Promise.resolve(NO_ENVIRONMENT),
-    runner ? attempt(() => runner.claudeStatus({ query: { refresh: false } }, { timeoutMs: RUNNER_TIMEOUT_MS })) : Promise.resolve(NO_ENVIRONMENT),
+    runner ? attempt(() => runner.claudeStatus({ query: { refresh: false, spaceId: ctx.space.id } }, { timeoutMs: RUNNER_TIMEOUT_MS })) : Promise.resolve(NO_ENVIRONMENT),
     attempt(() => loadPendingPermissions(ctx)),
     attempt(() => loadRecentProjects(ctx, 4)),
     attempt(() => getIntegrationsOverview(ctx)),

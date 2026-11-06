@@ -128,7 +128,15 @@ export async function buildRunner(config: RunnerConfig, options: BuildRunnerOpti
     void beat();
     heartbeatTimer = setInterval(() => void beat(), heartbeatMs);
     heartbeatTimer.unref?.();
-    void services.claude.status().catch(() => undefined);
+    // Claude status of every account of the server (each with its own CLI config folder, lot P1).
+    void services.accounts
+      .all()
+      .then((accounts) => Promise.all(accounts.map((account) => services.claude.status(account).catch(() => undefined))))
+      .catch(() => undefined);
+    // Folders of accounts removed from this server while it was unreachable: signed out and removed.
+    void services.accounts.sweep((account) => services.claude.signOut(account)).catch(() => undefined);
+    // Common Claude configuration of each account (rules, skills): written before the first session.
+    void services.commonConfig.syncAll('start').catch(() => undefined);
     // The lease lives on one connection: if it dies, another runner may take the server over.
     leaseWatch = setInterval(() => {
       void environment.checkLease().then((alive) => {

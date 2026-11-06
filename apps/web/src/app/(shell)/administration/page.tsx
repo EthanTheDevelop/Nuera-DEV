@@ -8,7 +8,7 @@ export const metadata: Metadata = { title: 'Administration' };
 export const dynamic = 'force-dynamic';
 
 /**
- * /administration?onglet=comptes|serveurs|instance|journal — owner and administrators only (a member
+ * /administration?onglet=comptes|serveurs|instance|claude|journal — owner and administrators only (a member
  * gets a 404: the console is never revealed). docs/MULTICOMPTE.md §6, §10. No Figma frame: built from
  * the existing primitives, desktop and phone. Never replaced by T5 (the console must stay usable while a
  * server is down).

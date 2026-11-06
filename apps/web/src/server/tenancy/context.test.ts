@@ -68,6 +68,8 @@ describe('resolveContext', () => {
       isDefault: true,
       uptimeKey: 'runner',
       maxConcurrentSessions: 4,
+      primary: true,
+      accounts: 1,
     });
     expect(ctx.user).toBe(owner.user);
   });

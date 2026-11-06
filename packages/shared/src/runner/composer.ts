@@ -99,8 +99,11 @@ export type PermissionModeResult = z.infer<typeof PermissionModeResultSchema>;
 export const SessionSkillSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
-  /** `project`: `.claude/skills` of the worktree; `user`: `skills` of the CLI config dir of the server. */
-  source: z.enum(['project', 'user']),
+  /**
+   * `project`: `.claude/skills` of the worktree; `user`: `skills` of the CLI config dir of the server;
+   * `common`: a skill of the instance written there by Nuera Dev (« commun », marked folder).
+   */
+  source: z.enum(['project', 'user', 'common']),
 });
 export type SessionSkill = z.infer<typeof SessionSkillSchema>;
 

@@ -221,7 +221,11 @@ async function checkDestinationOn(
   input: z.input<typeof destinationCheckInputSchema>,
 ): Promise<DestinationView> {
   const parsed = destinationCheckInputSchema.parse(input);
-  const check = await server.runner.checkDestination({ body: { path: parsed.path, ...(parsed.fullName ? { fullName: parsed.fullName } : {}) } });
+  // `spaceId` (lot P1): on a shared server, the account's own folder (`espaces/<space id>/`) unless it
+  // is the server's first account — two accounts can then clone the same repository.
+  const check = await server.runner.checkDestination({
+    body: { path: parsed.path, spaceId: ctx.space.id, ...(parsed.fullName ? { fullName: parsed.fullName } : {}) },
+  });
   return {
     path: check.path,
     available: check.available,
