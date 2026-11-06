@@ -7,12 +7,13 @@ import { internalRoute } from '@/server/http';
 import { createNotification, notificationInputSchema, type NotificationInput } from '@/server/notifications';
 import { audit } from '@/server/security/audit';
 import type { CallerEnvironment } from '@/server/security/runner-token';
-import { assertCallerReferences, recipientsOfCaller } from '@/server/tenancy/runner-scope';
+import { assertCallerReferences, eventSpaceOfCaller, recipientsOfCaller } from '@/server/tenancy/runner-scope';
 
 /**
  * POST /api/internal/notify — runner → web (Bearer token of its server).
- * Creates a notification for each member of the space of the CALLER'S server (the administrators
- * while the server is not assigned), one unread notification per `dedupKey` and recipient, sent by
+ * Creates a notification for each member of the space the event is about: the space of its session
+ * or project (a shared server works for several accounts, lot P1), else the first account of the
+ * CALLER'S server (the administrators while the server is not assigned), one unread notification per `dedupKey` and recipient, sent by
  * Web Push. A `sessionId` / `projectId` of another server answers 404 and is journalled
  * (`security.runner_scope_violation`); an unknown one only loses its link.
  *
@@ -32,7 +33,7 @@ const AUTO_RESUME_AUDIT_ACTIONS = {
   fired: 'session.auto_resume_fired',
 } as const;
 
-async function auditAutoResume(body: NotificationInput, environment: CallerEnvironment): Promise<void> {
+async function auditAutoResume(body: NotificationInput, environment: CallerEnvironment, spaceId: string | null): Promise<void> {
   if (!body.sessionId || (body.kind !== 'session_usage_limit' && body.kind !== 'session_auto_resumed')) return;
   const [row] = await db
     .select({ title: sessions.title, usageLimit: sessions.usageLimit })
@@ -42,7 +43,7 @@ async function auditAutoResume(body: NotificationInput, environment: CallerEnvir
   if (!row) return;
   const limit = parseUsageLimit(row.usageLimit);
   const resume = limit?.autoResume ?? null;
-  const base = { targetType: 'session', targetId: body.sessionId, actorKind: 'runner' as const, actorLabel: null, spaceId: environment.spaceId, environmentId: environment.id };
+  const base = { targetType: 'session', targetId: body.sessionId, actorKind: 'runner' as const, actorLabel: null, spaceId, environmentId: environment.id };
   if (body.kind === 'session_usage_limit') {
     if (!limit?.active || resume?.outcome !== 'scheduled' || !resume.nextAttemptAt) return;
     await audit({
@@ -65,10 +66,11 @@ export const POST = internalRoute({
   body: notificationInputSchema,
   handler: async ({ body, environment }) => {
     await assertCallerReferences(environment, { sessionId: body.sessionId, projectId: body.projectId }, 'notify');
-    const userIds = await recipientsOfCaller(environment);
-    const result = await createNotification(body, { spaceId: environment.spaceId, userIds, environmentId: environment.id });
+    const spaceId = await eventSpaceOfCaller(environment, { sessionId: body.sessionId, projectId: body.projectId });
+    const userIds = await recipientsOfCaller({ spaceId });
+    const result = await createNotification(body, { spaceId, userIds, environmentId: environment.id });
     if (result.created > 0) {
-      await auditAutoResume(body, environment).catch((error: unknown) => console.error('[notify] journal de la reprise automatique', error instanceof Error ? error.message : error));
+      await auditAutoResume(body, environment, spaceId).catch((error: unknown) => console.error('[notify] journal de la reprise automatique', error instanceof Error ? error.message : error));
     }
     const first = result.recipients[0];
     return {

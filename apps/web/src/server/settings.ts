@@ -1,5 +1,5 @@
 import 'server-only';
-import { appSettings, environments, instanceClaudePolicy, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
+import { appSettings, environmentSpaces, environments, instanceClaudePolicy, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
 import type { EnvironmentStatus, InstanceRole, PermissionMode, SpaceRole, ThemePreference } from '@nuera/db/schema';
 import { and, eq, gte, isNull, ne } from 'drizzle-orm';
 import { DEFAULT_AUTO_RESUME_INSTRUCTION } from '@nuera/shared/runner';
@@ -806,10 +806,22 @@ export interface SettingsView {
   space: SpaceSettings;
   /** null when no server is assigned to the space yet. */
   environment: EnvironmentSettings | null;
+  /**
+   * Shared servers (lot P1): whether this space is the server's first account (it alone sets the
+   * server's limits) and how many accounts share it (« Sessions parallèles » is shared). null: no server.
+   */
+  serverAccess: { primary: boolean; accounts: number } | null;
   user: UserPreferences;
   effective: EffectiveSessionPolicy;
   /** Keys this account may change (false: read-only « Réglé par un administrateur »). */
   editable: Record<Exclude<FlatSettingKey, 'projectsRoot'>, boolean>;
+}
+
+/** Whether `spaceId` works on the server, as its first account or not, and how many accounts it has. */
+async function serverAccessOf(environment: Pick<EnvironmentSettings, 'id' | 'spaceId'>, spaceId: string): Promise<{ primary: boolean; accounts: number } | null> {
+  const links = await db.select({ spaceId: environmentSpaces.spaceId }).from(environmentSpaces).where(eq(environmentSpaces.environmentId, environment.id));
+  if (environment.spaceId !== spaceId && !links.some((link) => link.spaceId === spaceId)) return null;
+  return { primary: environment.spaceId === spaceId, accounts: Math.max(1, links.length) };
 }
 
 export async function getSettingsView(actor: SettingsPatchActor): Promise<SettingsView> {
@@ -822,11 +834,13 @@ export async function getSettingsView(actor: SettingsPatchActor): Promise<Settin
     getInstanceModelPolicy(),
   ]);
   if (!space || !spaceRole || !preferences) throw new AppError('NOT_FOUND');
-  // A server of another space is « no server » for this account.
-  const ownServer = environment && environment.spaceId === actor.spaceId ? environment : null;
+  // A server that does not work for this space is « no server » for this account; on a shared
+  // server (lot P1) only its first account sets the limits (shared by every account).
+  const access = environment ? await serverAccessOf(environment, actor.spaceId) : null;
+  const ownServer = access ? environment : null;
   const admin = isInstanceAdmin(actor.role);
   const spaceOwner = spaceRole === 'owner';
-  const limits = spaceOwner && ownServer !== null && ownServer.status !== 'retired';
+  const limits = spaceOwner && ownServer !== null && access?.primary === true && ownServer.status !== 'retired';
   const editable = {} as SettingsView['editable'];
   for (const [key, route] of Object.entries(FLAT_SETTING_KEYS) as Array<[FlatSettingKey, { group: FlatGroup }]>) {
     if (key === 'projectsRoot') continue;
@@ -845,6 +859,7 @@ export async function getSettingsView(actor: SettingsPatchActor): Promise<Settin
     instance,
     space,
     environment: ownServer,
+    serverAccess: access,
     user: preferences,
     effective: await getEffectiveSessionPolicy(actor.spaceId),
     editable,

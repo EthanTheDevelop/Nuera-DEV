@@ -165,7 +165,7 @@ function ServerCopies() {
       {servers?.length === 0 ? <p className="m-0 font-sans text-app-12 text-muted">Aucun serveur en service.</p> : null}
       <ul className="m-0 flex list-none flex-col p-0">
         {(servers ?? []).map((server) => (
-          <li key={server.id} className="flex min-w-0 flex-col gap-1 border-b border-border py-2 last:border-b-0">
+          <li key={server.key} className="flex min-w-0 flex-col gap-1 border-b border-border py-2 last:border-b-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-sans text-app-13 font-medium text-text">{server.name}</span>
               <Badge tone={server.upToDate ? 'success' : server.error ? 'danger' : 'warn'}>

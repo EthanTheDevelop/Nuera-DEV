@@ -1,6 +1,7 @@
 import 'server-only';
 import {
   RUNNER_CONTRACT_VERSION,
+  SHARED_SERVER_CONTRACT_VERSION,
   RUNNER_ROUTES,
   RunnerErrorBodySchema,
   buildRunnerPath,
@@ -102,6 +103,13 @@ export async function callRunner<K extends JsonRunnerRouteName>(
   const environmentId = endpoint.environmentId;
   if (!endpoint.baseUrl || !endpoint.token) {
     throw unavailable(endpoint, endpoint.problem ?? "Le jeton du runner n'est pas configuré côté web.");
+  }
+  // Shared server (lot P1): an older runner would run every account's `claude` with one login.
+  if (endpoint.shared && (endpoint.contractVersion ?? 1) < SHARED_SERVER_CONTRACT_VERSION && name !== 'health') {
+    throw new AppError('UPSTREAM', `Le serveur ${endpoint.name} est partagé entre plusieurs comptes : son runner doit être mis à jour avant toute action.`, {
+      reason: 'RUNNER_OUTDATED',
+      detail: `Contrat du runner : ${endpoint.contractVersion ?? 1} ; requis : ${SHARED_SERVER_CONTRACT_VERSION}.`,
+    });
   }
 
   const params = (input as { params?: Record<string, unknown> } | undefined)?.params;

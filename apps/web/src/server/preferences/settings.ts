@@ -54,6 +54,8 @@ export function toSettingsValues(view: SettingsView): SettingsValues {
     maxConcurrentSessions: view.environment?.maxConcurrentSessions ?? null,
     maxConcurrentSessionsCap: view.environment?.maxConcurrentSessionsCap ?? null,
     sessionMemoryLimitMb: view.environment?.sessionMemoryLimitMb ?? null,
+    serverAccounts: view.serverAccess?.accounts ?? null,
+    serverPrimary: view.serverAccess?.primary ?? null,
     // « Imposé » by the common configuration: the instance's model, read-only.
     defaultModel: view.effective.modelLockedByInstance ? view.effective.defaultModel : view.space.defaultModel,
     defaultEffort: view.space.defaultEffort,

@@ -25,7 +25,7 @@ export interface ServerSyncResult {
 const DEBOUNCE_MS = 400;
 const holder = globalThis as unknown as { __nueraCommonConfigTimer?: ReturnType<typeof setTimeout> | null };
 
-/** Every server in service (assigned and active): the ones whose runner holds sessions. */
+/** Every server in service (assigned and active): the ones whose runner holds sessions (it writes the copy of each of its accounts). */
 async function serversInService(environmentIds?: string[]): Promise<Array<{ id: string; name: string }>> {
   const conditions = [eq(environments.status, 'active'), isNotNull(environments.spaceId), ...(environmentIds?.length ? [inArray(environments.id, environmentIds)] : [])];
   return db.select({ id: environments.id, name: environments.name }).from(environments).where(and(...conditions));
@@ -67,10 +67,13 @@ export function scheduleCommonConfigSync(environmentIds?: string[]): void {
   holder.__nueraCommonConfigTimer.unref?.();
 }
 
-/** Status of the copy written on one server (null: runner unreachable or too old). */
-export async function serverSyncStatus(environmentId: string): Promise<CommonConfigStatus | null> {
+/**
+ * Status of the copy written on one server for one of its accounts (lot P1: each account has its own
+ * Claude config folder; `spaceId` omitted: its first account). Null: runner unreachable or too old.
+ */
+export async function serverSyncStatus(environmentId: string, spaceId?: string | null): Promise<CommonConfigStatus | null> {
   try {
-    return await getRunnerForEnvironment(environmentId).claudeConfigStatus(undefined, { timeoutMs: 6_000 });
+    return await getRunnerForEnvironment(environmentId).claudeConfigStatus(spaceId ? { query: { spaceId } } : undefined, { timeoutMs: 6_000 });
   } catch {
     return null;
   }

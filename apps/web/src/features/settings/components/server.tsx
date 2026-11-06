@@ -517,12 +517,21 @@ export function ServerTab() {
             <NoServerNote />
           ) : (
             <>
+              {(settings.serverAccounts ?? 1) > 1 ? (
+                <p className="m-0 font-sans text-app-12 text-muted">
+                  {`Serveur partagé entre ${settings.serverAccounts} comptes : chacun garde son espace, ses projets et sa propre connexion Claude Code ; la capacité et les mesures sont celles du serveur entier.`}
+                </p>
+              ) : null}
               <TextSetting field="serverName" label="Nom du serveur" hint={`Affiché dans la barre latérale et les messages (« ${serverName} ne répond pas »).`} maxLength={40} successMessage={(value) => `Nom du serveur : ${value ?? ''}`} />
               <TextSetting field="serverLocation" label="Emplacement" hint="Facultatif (hébergeur, région)." maxLength={80} nullable successMessage={(value) => (value ? `Emplacement : ${value}` : 'Emplacement retiré')} />
               <NumberSetting
                 field="maxConcurrentSessions"
                 label="Sessions parallèles"
-                hint={`Processus Claude Code vivants en même temps ; au-delà, une nouvelle session est refusée jusqu'à l'arrêt d'une autre. ${cap} au plus (plafond fixé par un administrateur).`}
+                hint={
+                  (settings.serverAccounts ?? 1) > 1
+                    ? `Processus Claude Code vivants en même temps sur ce serveur, partagés entre ses ${settings.serverAccounts} comptes ; au-delà, une nouvelle session est refusée jusqu'à l'arrêt d'une autre. ${cap} au plus (plafond fixé par un administrateur).${settings.serverPrimary ? '' : ' Réglé par le premier compte du serveur.'}`
+                    : `Processus Claude Code vivants en même temps ; au-delà, une nouvelle session est refusée jusqu'à l'arrêt d'une autre. ${cap} au plus (plafond fixé par un administrateur).`
+                }
                 unit="sessions"
                 min={1}
                 max={cap}

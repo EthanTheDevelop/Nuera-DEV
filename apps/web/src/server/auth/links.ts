@@ -2,7 +2,7 @@ import 'server-only';
 import { account, environments, invitations, session, user, verification } from '@nuera/db/schema';
 import type { InstanceRole } from '@nuera/db/schema';
 import { hashToken, isLinkToken } from '@nuera/shared/tokens';
-import { and, eq, gt, isNull, like, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { emailTaken, insertAccount } from '@/server/auth/accounts';
@@ -137,7 +137,13 @@ export async function getLinkState(kind: LinkKind, token: string, current: Pick<
       ? await db
           .select({ name: environments.name })
           .from(environments)
-          .where(and(eq(environments.id, row.environmentId), eq(environments.status, 'pending'), isNull(environments.spaceId)))
+          // A free server, or one in service the account will share (lot P1: its own Claude connection).
+          .where(
+            and(
+              eq(environments.id, row.environmentId),
+              or(and(eq(environments.status, 'pending'), isNull(environments.spaceId)), and(eq(environments.status, 'active'), isNotNull(environments.spaceId))),
+            ),
+          )
           .limit(1)
       : [];
     state = { kind: 'valid', email: row.email, role: row.role, inviterName: inviter?.name ?? null, serverName: server?.name ?? null, expiresAt: row.expiresAt };

@@ -167,7 +167,7 @@ describe('requireRunnerContract', () => {
     expect(runnerB.requests).toHaveLength(1);
 
     client.invalidateRunnerContract(member.environment!.id);
-    runnerB.handle((_req, res) => runnerB.json(res, 200, health(2)));
+    runnerB.handle((_req, res) => runnerB.json(res, 200, health(3)));
     await expect(client.requireRunnerContract(member.environment!.id)).resolves.toBeUndefined();
   });
 });

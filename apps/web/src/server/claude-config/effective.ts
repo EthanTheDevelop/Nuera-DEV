@@ -1,5 +1,5 @@
 import 'server-only';
-import { sessionClaudeConfig, spaceClaudeOverrides, spaces, user, type InstanceRole } from '@nuera/db/schema';
+import { environmentSpaces, sessionClaudeConfig, spaceClaudeOverrides, spaces, user, type InstanceRole } from '@nuera/db/schema';
 import { CommonConfigPayloadSchema, type CommonConfigPayload, type CommonConfigRequest } from '@nuera/shared/runner';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/server/db';
@@ -92,15 +92,28 @@ function emptyPayload(revision: number): CommonConfigPayload {
 }
 
 /**
- * `POST /api/internal/claude-config` for the calling server: the configuration of its space's account.
- * Files of the skills the runner already holds with the same hash are omitted.
+ * `POST /api/internal/claude-config` for the calling server: the configuration of one of its accounts
+ * (`request.spaceId`, lot P1; omitted: its first account). An account that does not work on the
+ * caller's server answers like an unknown one (NOT_FOUND). Files of the skills the runner already
+ * holds with the same hash are omitted.
  */
-export async function runnerPayload(environment: Pick<CallerEnvironment, 'spaceId'>, request: CommonConfigRequest): Promise<CommonConfigPayload> {
-  if (!environment.spaceId) {
+export async function runnerPayload(environment: Pick<CallerEnvironment, 'spaceId'> & { id?: string }, request: CommonConfigRequest): Promise<CommonConfigPayload> {
+  let spaceId = environment.spaceId;
+  if (request.spaceId && request.spaceId !== environment.spaceId) {
+    if (!environment.id) throw new AppError('NOT_FOUND', 'Compte introuvable sur ce serveur.');
+    const [link] = await db
+      .select({ spaceId: environmentSpaces.spaceId })
+      .from(environmentSpaces)
+      .where(and(eq(environmentSpaces.environmentId, environment.id), eq(environmentSpaces.spaceId, request.spaceId)))
+      .limit(1);
+    if (!link) throw new AppError('NOT_FOUND', 'Compte introuvable sur ce serveur.');
+    spaceId = link.spaceId;
+  }
+  if (!spaceId) {
     const rows = await loadInstanceRows();
     return emptyPayload(rows.policy.revision);
   }
-  const resolved = await effectiveForSpace(environment.spaceId);
+  const resolved = await effectiveForSpace(spaceId);
   const applied = resolved.effective.skills.filter((skill) => skill.applied);
   const have = new Map((request.have ?? []).map((entry) => [entry.name, entry.hash]));
   const needed = applied.filter((skill) => have.get(skill.name) !== skill.hash).map((skill) => skill.id);
@@ -239,7 +252,7 @@ export interface MyClaudeConfigView {
 
 export async function getMyClaudeConfig(ctx: Pick<RequestContext, 'space' | 'environment'>): Promise<MyClaudeConfigView> {
   const resolved = await effectiveForSpace(ctx.space.id);
-  const status = ctx.environment ? await serverSyncStatus(ctx.environment.id) : null;
+  const status = ctx.environment ? await serverSyncStatus(ctx.environment.id, ctx.space.id) : null;
   return {
     effective: resolved.effective,
     summary: summaryLine({ rules: resolved.effective.counts.rules, skills: resolved.effective.counts.skills, mcp: resolved.effective.counts.mcp }),

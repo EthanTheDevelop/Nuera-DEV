@@ -115,6 +115,9 @@ export const AUDIT_ACTIONS = {
   serverRegistered: 'admin.server_registered',
   serverVerified: 'admin.server_verified',
   serverAssigned: 'admin.server_assigned',
+  /** Shared servers (lot P1): an account added to / removed from a server in service. */
+  serverAccountAdded: 'admin.server_account_added',
+  serverAccountRemoved: 'admin.server_account_removed',
   serverTokenRotated: 'admin.server_token_rotated',
   serverUpdated: 'admin.server_updated',
   serverRetired: 'admin.server_retired',

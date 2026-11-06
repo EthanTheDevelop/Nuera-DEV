@@ -1,8 +1,8 @@
 import 'server-only';
-import { environments } from '@nuera/db/schema';
+import { environmentSpaces, environments } from '@nuera/db/schema';
 import type { EnvironmentConfigSource, EnvironmentStatus } from '@nuera/db/schema';
 import { hashToken } from '@nuera/shared/tokens';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import { decryptSecret, encryptSecret, SecretScopes } from '@/server/security/crypto';
@@ -47,6 +47,13 @@ export interface RunnerEndpoint {
   fallbackToken: string | null;
   /** Why the endpoint cannot be used (French, no secret). */
   problem: string | null;
+  /**
+   * Shared servers (lot P1): the server works for several accounts. Its runner must then keep one
+   * Claude connection per account (contract ≥ 3, `contractVersion` from its last heartbeat): the
+   * client refuses every call but health to an older one (it would use one login for everybody).
+   */
+  shared?: boolean;
+  contractVersion?: number | null;
 }
 
 interface EnvironmentRow {
@@ -58,6 +65,8 @@ interface EnvironmentRow {
   url: string | null;
   tokenEncrypted: string | null;
   nextTokenEncrypted: string | null;
+  contractVersion: number | null;
+  accounts: number;
 }
 
 interface CachedRow {
@@ -114,6 +123,8 @@ async function loadRow(environmentId: string): Promise<CachedRow> {
       url: environments.url,
       tokenEncrypted: environments.tokenEncrypted,
       nextTokenEncrypted: environments.nextTokenEncrypted,
+      contractVersion: environments.contractVersion,
+      accounts: sql<number>`(select count(*)::int from ${environmentSpaces} as l where l.environment_id = ${environments}.${sql.identifier('id')})`,
     })
     .from(environments)
     .where(eq(environments.id, environmentId))
@@ -150,6 +161,8 @@ export async function getRunnerEndpoint(environmentId: string): Promise<RunnerEn
     isDefault: row.isDefault,
     configSource: row.configSource,
     status: row.status,
+    shared: Number(row.accounts ?? 0) > 1,
+    contractVersion: row.contractVersion ?? null,
   };
   if (row.configSource === 'env') {
     const config = getRunnerConfig();

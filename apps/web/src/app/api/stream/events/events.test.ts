@@ -123,7 +123,7 @@ describe('GET /api/stream/events · web channel per account', () => {
     const notifications = frames.filter((frame) => frame.type === 'notification.created');
     expect(notifications.map((frame) => [frame.data.title, frame.seq, frame.id])).toEqual([['Pour B', 0, null]]);
     expect(frames.find((frame) => frame.type === 'notification.read')).toMatchObject({ seq: 0, id: null, data: { all: true } });
-    expect(runner.requests.map((request) => request.path)).toEqual(['/v1/events']);
+    expect(runner.requests.map((request) => request.path)).toEqual([`/v1/events?spaceId=${b.space.id}`]);
   });
 
   it('serves the web channel to an account without a server, without contacting any runner', async () => {

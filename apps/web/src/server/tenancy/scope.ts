@@ -1,6 +1,7 @@
 import 'server-only';
 import {
   commandRuns,
+  environmentSpaces,
   environments,
   operations,
   permissionRequests,
@@ -9,7 +10,7 @@ import {
   worktrees,
 } from '@nuera/db/schema';
 import type { TerminalDto } from '@nuera/shared/runner';
-import { and, eq, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
@@ -195,8 +196,9 @@ export async function scopeOfRun(ctx: Pick<RequestContext, 'space'>, runId: stri
 }
 
 /**
- * An operation is scoped through its server (`operations.environment_id`), which also covers the
- * operations without project; when it has a project, that project must be in the space as well.
+ * An operation with a project is scoped through that project (it must be in the space). One without
+ * project (integration or MCP check, maintenance) belongs to its server: on a shared server (lot P1)
+ * only its first account (`environments.space_id`) sees it, never the other accounts.
  */
 export async function scopeOfOperation(ctx: Pick<RequestContext, 'space'>, operationId: string, options?: ScopeOptions): Promise<OperationScope> {
   if (!UUID.test(operationId)) throw notFound('operation', options);
@@ -205,17 +207,27 @@ export async function scopeOfOperation(ctx: Pick<RequestContext, 'space'>, opera
       operationId: operations.id,
       projectId: operations.projectId,
       projectSpaceId: projects.spaceId,
-      spaceId: environments.spaceId,
+      primarySpaceId: environments.spaceId,
       environmentId: environments.id,
       environmentName: environments.name,
     })
     .from(operations)
     .innerJoin(environments, eq(environments.id, operations.environmentId))
-    .leftJoin(projects, eq(projects.id, operations.projectId))
-    .where(and(eq(operations.id, operationId), eq(environments.spaceId, ctx.space.id)))
+    .leftJoin(projects, and(eq(projects.id, operations.projectId), eq(projects.environmentId, operations.environmentId)))
+    .where(eq(operations.id, operationId))
     .limit(1);
-  if (!row || !row.spaceId || (row.projectId !== null && row.projectSpaceId !== ctx.space.id)) throw notFound('operation', options);
-  return { ...serverOf(row.spaceId, row.environmentId, row.environmentName), operationId: row.operationId, projectId: row.projectId };
+  const allowed = row && (row.projectId !== null ? row.projectSpaceId === ctx.space.id : row.primarySpaceId === ctx.space.id);
+  if (!row || !allowed) throw notFound('operation', options);
+  return { ...serverOf(ctx.space.id, row.environmentId, row.environmentName), operationId: row.operationId, projectId: row.projectId };
+}
+
+/** Accounts a server works for (lot P1: 1 unless shared). */
+export async function serverAccountCount(environmentId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(environmentSpaces)
+    .where(eq(environmentSpaces.environmentId, environmentId));
+  return Number(row?.count ?? 0);
 }
 
 export async function scopeOfPermission(ctx: Pick<RequestContext, 'space'>, permissionId: string, options?: ScopeOptions): Promise<PermissionScope> {
@@ -262,9 +274,10 @@ export function invalidateTerminalScope(terminalId?: string): void {
 /**
  * Terminal of the server of ctx. Refused (NOT_FOUND « Terminal introuvable ou fermé. », same copy
  * as the runner's) when ctx has no server, when the runner does not know it, when it was opened by
- * another account (`ownerUserId`, when the runner reports it), or when its worktree/session is
- * not in the space. A server is used by one person only (MULTICOMPTE §1.2), so a terminal of the
- * space's server without owner (older runner, login terminals) belongs to that person.
+ * another account (`ownerUserId`, when the runner reports it), when it works for another space
+ * (`spaceId`, contract 3), or when its worktree/session is not in the space. A terminal that names
+ * neither owner, space, worktree nor session (older runner) is accepted only on a server that works
+ * for this account alone (lot P1: never on a shared server).
  */
 export async function scopeOfTerminal(
   ctx: Pick<RequestContext, 'space' | 'environment' | 'user'>,
@@ -282,6 +295,10 @@ export async function scopeOfTerminal(
     throw error;
   }
   if (terminal.ownerUserId && terminal.ownerUserId !== ctx.user.id) throw notFound('terminal', options);
+  if (terminal.spaceId && terminal.spaceId.toLowerCase() !== ctx.space.id.toLowerCase()) throw notFound('terminal', options);
+  if (!terminal.ownerUserId && !terminal.spaceId && !terminal.worktreeId && !terminal.sessionId && (await serverAccountCount(environment.id)) > 1) {
+    throw notFound('terminal', options);
+  }
   if (terminal.worktreeId) {
     await scopeOfWorktree(ctx, terminal.worktreeId).catch(() => {
       throw notFound('terminal', options);

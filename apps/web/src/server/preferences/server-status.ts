@@ -1,6 +1,10 @@
 import 'server-only';
 import type { LiveSessionsView, MetricsView, RunnerHealthView, UptimeView, WebProcessView } from '@/features/settings/lib/types';
+import { projects } from '@nuera/db/schema';
+import { eq } from 'drizzle-orm';
+import { db } from '@/server/db';
 import { requireEnvironment, type RequestContext } from '@/server/tenancy/context';
+import { ofSpace } from '@/server/tenancy/scope';
 
 /**
  * « Serveur VPS-3 »: only what the runner of the account's server and the web process really report
@@ -29,11 +33,18 @@ export async function getRunnerHealth(ctx: ServerContext): Promise<RunnerHealthV
   };
 }
 
-/** Live Claude processes of the server (the runner lists only its own sessions). */
-export async function getLiveSessions(ctx: ServerContext): Promise<LiveSessionsView> {
-  const { runner } = requireEnvironment(ctx);
-  const result = await runner.listSessions(undefined, { timeoutMs: RUNNER_TIMEOUT_MS });
-  const live = result.sessions.filter((session) => session.live);
+/**
+ * Live Claude processes of the account on its server (the runner lists every account of a shared
+ * server, lot P1: only the sessions of this space's projects are counted and named).
+ */
+export async function getLiveSessions(ctx: Pick<RequestContext, 'environment' | 'space'>): Promise<LiveSessionsView> {
+  const { environment, runner } = requireEnvironment(ctx);
+  const [result, own] = await Promise.all([
+    runner.listSessions(undefined, { timeoutMs: RUNNER_TIMEOUT_MS }),
+    db.select({ id: projects.id }).from(projects).where(ofSpace(ctx, eq(projects.environmentId, environment.id))),
+  ]);
+  const mine = new Set(own.map((row) => row.id));
+  const live = result.sessions.filter((session) => session.live && mine.has(session.projectId));
   const names = [...new Set(live.map((session) => session.worktree?.name).filter((name): name is string => Boolean(name)))];
   return { count: live.length, names };
 }

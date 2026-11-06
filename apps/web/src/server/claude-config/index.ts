@@ -1,5 +1,5 @@
 import 'server-only';
-import { environments, instanceConfigProposals } from '@nuera/db/schema';
+import { environmentSpaces, environments, instanceConfigProposals, spaces } from '@nuera/db/schema';
 import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { assertAdmin, type AdminActor } from '@/server/admin/common';
 import { db } from '@/server/db';
@@ -61,8 +61,11 @@ export { SKILL_ZIP_MAX_BYTES } from './skill-files';
 export interface ClaudeAdminOverview {
   rows: InstanceConfigRows;
   pendingProposals: number;
-  /** Servers in service, with the copy each one holds (read on demand: `servers`). */
-  servers: Array<{ id: string; name: string; spaceId: string }>;
+  /**
+   * Servers in service, one row per account they work for (lot P1: a shared server writes one copy
+   * per account), with the copy each one holds (read on demand: `servers`).
+   */
+  servers: Array<{ id: string; name: string; spaceId: string; spaceName: string; primary: boolean; shared: boolean }>;
   isOwner: boolean;
 }
 
@@ -72,15 +75,41 @@ export async function loadClaudeAdminOverview(actor: AdminActor): Promise<Claude
     loadInstanceRows(),
     db.select({ n: sql<number>`count(*)::int` }).from(instanceConfigProposals).where(eq(instanceConfigProposals.status, 'pending')),
     db
-      .select({ id: environments.id, name: environments.name, spaceId: environments.spaceId })
-      .from(environments)
-      .where(and(eq(environments.status, 'active'), isNotNull(environments.spaceId))),
+      .select({
+        id: environments.id,
+        name: environments.name,
+        primarySpaceId: environments.spaceId,
+        spaceId: environmentSpaces.spaceId,
+        spaceName: spaces.name,
+      })
+      .from(environmentSpaces)
+      .innerJoin(environments, eq(environments.id, environmentSpaces.environmentId))
+      .innerJoin(spaces, eq(spaces.id, environmentSpaces.spaceId))
+      .where(and(eq(environments.status, 'active'), isNotNull(environments.spaceId)))
+      .orderBy(environments.name, environmentSpaces.createdAt),
   ]);
-  return { rows, pendingProposals: pending?.n ?? 0, servers: servers.map((server) => ({ ...server, spaceId: server.spaceId! })), isOwner: actor.role === 'owner' };
+  const counts = new Map<string, number>();
+  for (const row of servers) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
+  return {
+    rows,
+    pendingProposals: pending?.n ?? 0,
+    servers: servers.map((row) => ({
+      id: row.id,
+      name: row.name,
+      spaceId: row.spaceId,
+      spaceName: row.spaceName,
+      primary: row.primarySpaceId === row.spaceId,
+      shared: (counts.get(row.id) ?? 0) > 1,
+    })),
+    isOwner: actor.role === 'owner',
+  };
 }
 
 export interface ServerCopyView {
   id: string;
+  /** `<server id>:<space id>` (a shared server has one copy per account). */
+  key: string;
+  /** « VPS-3 », or « VPS-3 · Espace d'Hugo » for an account of a shared server. */
   name: string;
   /** Configuration expected for the account of that server's space. */
   expectedHash: string;
@@ -103,10 +132,12 @@ export async function listServerCopies(actor: AdminActor, options: { sync?: bool
     overview.servers.map(async (server): Promise<ServerCopyView> => {
       const expected = await effectiveForSpace(server.spaceId);
       const result = synced.get(server.id);
-      const status = result ? result.status : await serverSyncStatus(server.id);
+      // The synchronisation answers for the server's first account: the others are read afterwards.
+      const status = result && server.primary ? result.status : await serverSyncStatus(server.id, server.spaceId);
       return {
         id: server.id,
-        name: server.name,
+        key: `${server.id}:${server.spaceId}`,
+        name: server.shared ? `${server.name} · ${server.spaceName}` : server.name,
         expectedHash: expected.hash,
         appliedRevision: status?.revision ?? null,
         appliedAt: status?.appliedAt ?? null,

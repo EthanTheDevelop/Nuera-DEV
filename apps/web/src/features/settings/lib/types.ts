@@ -66,6 +66,10 @@ export interface SettingsValues {
   /** Ceiling of « Sessions parallèles » fixed by an administrator. */
   maxConcurrentSessionsCap: number | null;
   sessionMemoryLimitMb: number | null;
+  /** Accounts sharing the server (lot P1; null: no server). « Sessions parallèles » is shared between them. */
+  serverAccounts?: number | null;
+  /** This account is the server's first one (it alone sets the server's limits); null: no server. */
+  serverPrimary?: boolean | null;
   // Space (space_settings).
   defaultModel: string | null;
   defaultEffort: string | null;

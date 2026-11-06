@@ -32,6 +32,7 @@ export {
   type CreatedInvitation,
 } from './invitations';
 export {
+  addServerAccount,
   allowedRunnerHosts,
   assignServer,
   assignServerSchema,
@@ -41,6 +42,7 @@ export {
   normaliseRunnerUrl,
   registerServer,
   registerServerSchema,
+  removeServerAccount,
   restrictServerDatabase,
   retireServer,
   rotateServerToken,
@@ -49,6 +51,7 @@ export {
   updateServerSchema,
   verifyServer,
   type AdminServerView,
+  type ServerAccountView,
   type RegisteredServer,
   type RestrictedDatabaseAccess,
   type RotatedToken,

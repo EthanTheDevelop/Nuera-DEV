@@ -1,6 +1,7 @@
 import 'server-only';
 import { environments, invitations, user } from '@nuera/db/schema';
 import type { InstanceRole } from '@nuera/db/schema';
+import { SHARED_SERVER_CONTRACT_VERSION } from '@nuera/shared/runner';
 import { generateLinkToken, hashToken } from '@nuera/shared/tokens';
 import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -11,6 +12,7 @@ import { AppError } from '@/server/errors';
 import { audit } from '@/server/security/audit';
 import { getInstanceSettings } from '@/server/settings';
 import { assertAdmin, assertAdminMutation, NOT_FOUND_INVITATION, NOT_FOUND_SERVER, UUID_PATTERN, type AdminActor } from './common';
+import { sharedServerOutdatedMessage } from './servers';
 
 /**
  * Administration › Comptes › invitations (docs/MULTICOMPTE.md §6): an owner or administrator invites
@@ -118,15 +120,27 @@ export async function createInvitation(actor: AdminActor, rawInput: CreateInvita
     let server: { id: string; name: string } | null = null;
     if (input.environmentId) {
       const [row] = await tx
-        .select({ id: environments.id, name: environments.name, status: environments.status, spaceId: environments.spaceId })
+        .select({
+          id: environments.id,
+          name: environments.name,
+          status: environments.status,
+          spaceId: environments.spaceId,
+          contractVersion: environments.contractVersion,
+        })
         .from(environments)
         .where(eq(environments.id, input.environmentId))
         .for('update');
       if (!row) throw new AppError('NOT_FOUND', NOT_FOUND_SERVER);
-      if (row.status !== 'pending' || row.spaceId) {
-        throw new AppError('CONFLICT', "Ce serveur n'est plus libre : seul un serveur jamais utilisé peut être attribué.");
+      // Shared servers (lot P1): a server in service may also welcome the invited account, which will
+      // have its own space and its own Claude Code connection there.
+      const shared = row.status === 'active' && row.spaceId !== null;
+      if (shared && (row.contractVersion ?? 1) < SHARED_SERVER_CONTRACT_VERSION) {
+        throw new AppError('CONFLICT', sharedServerOutdatedMessage(row.name), { reason: 'RUNNER_OUTDATED' });
       }
-      const [promised] = await tx
+      if (!shared && (row.status !== 'pending' || row.spaceId)) {
+        throw new AppError('CONFLICT', "Ce serveur n'est plus libre : choisissez un serveur jamais utilisé ou un serveur en service.");
+      }
+      const [promised] = shared ? [] : await tx
         .select({ id: invitations.id })
         .from(invitations)
         .where(

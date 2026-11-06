@@ -422,7 +422,8 @@ describe('Claude CLI', () => {
     const { getClaudeCli } = await import('./index');
     const view = await getClaudeCli(b.ctx, { refresh: true });
     expect(runnerMock.servers).toEqual([b.environment!.id]);
-    expect(runnerMock.claudeStatus).toHaveBeenCalledWith({ query: { refresh: true } }, {});
+    // The account's own Claude connection (lot P1: one per account of a shared server).
+    expect(runnerMock.claudeStatus).toHaveBeenCalledWith({ query: { refresh: true, spaceId: b.ctx.space.id } }, {});
     expect(view).toEqual({
       checkedAt: '2026-11-05T10:00:00.000Z',
       state: 'connected',

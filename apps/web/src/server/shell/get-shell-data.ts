@@ -88,13 +88,14 @@ async function loadNotifications(userId: string): Promise<ShellData['notificatio
 const NO_SERVER: ShellServer = { name: '', location: null, statusUrl: null, availability: 'unknown', metrics: null, lastContactAt: null };
 const UNKNOWN_CLAUDE: ShellClaude = { state: 'unknown', version: null, checkedAt: null, error: null };
 
-async function loadServer(environment: EnvironmentRef): Promise<{ server: ShellServer; claude: ShellClaude; environment: ShellEnvironment; max: number }> {
+async function loadServer(environment: EnvironmentRef, spaceId: string): Promise<{ server: ShellServer; claude: ShellClaude; environment: ShellEnvironment; max: number }> {
   const runner = getRunnerForEnvironment(environment.id);
   const [row, metricsOutcome, claudeOutcome] = await Promise.all([
     // Fresh row (a rename in Paramètres shows at once); the request context is cached 5 s.
     getEnvironmentSettings(environment.id).catch(() => null),
     tryRunner(() => runner.systemMetrics(undefined, { timeoutMs: RUNNER_TIMEOUT_MS })),
-    tryRunner(() => runner.claudeStatus({ query: { refresh: false } }, { timeoutMs: RUNNER_TIMEOUT_MS })),
+    // The account's own Claude Code connection (lot P1: one per account of a shared server).
+    tryRunner(() => runner.claudeStatus({ query: { refresh: false, spaceId } }, { timeoutMs: RUNNER_TIMEOUT_MS })),
   ]);
 
   let metrics: ShellMetrics | null = null;
@@ -157,7 +158,7 @@ async function loadServer(environment: EnvironmentRef): Promise<{ server: ShellS
  */
 export const getShellData = cache(async (ctx: RequestContext): Promise<ShellData> => {
   const [serverPart, activeIds, notifications] = await Promise.all([
-    ctx.environment ? loadServer(ctx.environment) : Promise.resolve(null),
+    ctx.environment ? loadServer(ctx.environment, ctx.space.id) : Promise.resolve(null),
     loadActiveSessionIds(ctx.space.id),
     loadNotifications(ctx.user.id),
   ]);

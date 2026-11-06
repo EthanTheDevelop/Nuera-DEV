@@ -90,6 +90,8 @@ function environmentRef(row: { id: string; name: string; location: string | null
     isDefault: row.isDefault,
     uptimeKey: uptimeServiceKey({ id: row.id, isDefault: row.isDefault }),
     maxConcurrentSessions: row.maxConcurrentSessions,
+    primary: true,
+    accounts: 1,
   };
 }
 
