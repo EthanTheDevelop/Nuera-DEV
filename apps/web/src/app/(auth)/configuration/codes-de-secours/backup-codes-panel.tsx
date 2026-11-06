@@ -6,6 +6,12 @@ import { SubmitButton } from '../../_components/submit-button';
 import { CompactButton, FormAlert } from '../../_components/ui';
 import { acknowledgeCodesAction } from '../actions';
 
+/** « nuera-dev-codes-de-secours-camille.txt » (local part of the e-mail, safe characters only). */
+export function backupCodesFileName(email: string): string {
+  const local = (email.split('@')[0] ?? '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return local ? `nuera-dev-codes-de-secours-${local}.txt` : 'nuera-dev-codes-de-secours.txt';
+}
+
 export function BackupCodesPanel({ codes, account }: { codes: string[]; account: string }) {
   const [feedback, setFeedback] = useState<string>('');
 
@@ -31,7 +37,8 @@ export function BackupCodesPanel({ codes, account }: { codes: string[]; account:
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'nuera-dev-codes-de-secours.txt';
+    // One file per account: two accounts on the same device never overwrite each other's codes.
+    link.download = backupCodesFileName(account);
     document.body.append(link);
     link.click();
     link.remove();

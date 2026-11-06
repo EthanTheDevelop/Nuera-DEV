@@ -6,7 +6,6 @@ import { getCurrentUser } from '@/server/auth/session';
 import { getSetupState } from '@/server/auth/setup';
 import { AuthCard, FormAlert } from '../_components/ui';
 import { SignInForm } from './sign-in-form';
-import { twoFactorRequired } from '@/server/auth/policy';
 
 export const metadata: Metadata = { title: 'Connexion' };
 
@@ -17,23 +16,30 @@ export default async function ConnexionPage({ searchParams }: { searchParams: Se
   const next = safeRedirectPath(Array.isArray(params.suivant) ? params.suivant[0] : params.suivant);
 
   const user = await getCurrentUser();
-  if (user && (user.twoFactorEnabled || !twoFactorRequired())) redirect(next);
+  if (user?.twoFactorEnabled) redirect(next);
   if (user) redirect('/configuration/double-facteur');
 
   const setup = await getSetupState();
   if (setup.kind === 'no_owner') redirect('/configuration');
 
   return (
-    <AuthCard title="Connexion" description="Accès réservé au propriétaire de Nuera Dev.">
+    <AuthCard title="Connexion" description="Accès réservé aux comptes de Nuera Dev.">
       {setup.kind === 'owner_without_2fa' ? (
         <FormAlert tone="info" title="Configuration inachevée">
-          La double authentification n'est pas encore activée.{' '}
+          La double authentification du compte propriétaire n'est pas encore activée.{' '}
           <Link href="/configuration" className="font-medium text-accent underline underline-offset-4">
             Reprendre la configuration
           </Link>
         </FormAlert>
       ) : null}
       <SignInForm next={next} />
+      <div className="flex flex-col gap-1.5 border-t border-border pt-4 text-app-12 leading-4 text-muted">
+        <p>Pas de compte ? Demandez une invitation à un administrateur de Nuera Dev.</p>
+        <p>
+          Pour utiliser deux comptes en même temps sur cet appareil, ouvrez le second dans un autre profil du navigateur ou une
+          fenêtre privée.
+        </p>
+      </div>
     </AuthCard>
   );
 }

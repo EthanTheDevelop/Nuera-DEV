@@ -1,6 +1,7 @@
 'use server';
 
-import { headers } from 'next/headers';
+import { createHash } from 'node:crypto';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { auth } from '@/server/auth/auth';
@@ -9,13 +10,13 @@ import { safeRedirectPath } from '@/server/auth/policy';
 import { normaliseBackupCode, normaliseTotpCode } from '@/server/auth/totp';
 import { isAppError } from '@/server/errors';
 import { assertSameOriginHeaders } from '@/server/security/origin';
-import { assertRateLimit, AUTH_RATE_LIMITS } from '@/server/security/rate-limit';
+import { accountRateLimitKey, assertRateLimit, AUTH_RATE_LIMITS } from '@/server/security/rate-limit';
 import { getClientIp } from '@/server/security/request-info';
 
 export interface SignInFormState {
   status: 'idle' | 'error';
   message?: string;
-  /** Set when the setup is not finished: the form links to /configuration. */
+  /** Set when the owner's setup is not finished: the form links to /configuration. */
   setupIncomplete?: boolean;
   email?: string;
 }
@@ -55,7 +56,10 @@ export async function signInWithPassword(_previous: SignInFormState, formData: F
   let destination: string;
   try {
     assertSameOriginHeaders(requestHeaders);
-    assertRateLimit('auth:sign-in', getClientIp(requestHeaders), AUTH_RATE_LIMITS.signIn);
+    const ip = getClientIp(requestHeaders);
+    // Per address and e-mail (several people behind one address never lock each other out), plus a net per address.
+    assertRateLimit('auth:sign-in', accountRateLimitKey(ip, parsed.data.email), AUTH_RATE_LIMITS.signIn);
+    assertRateLimit('auth:sign-in-ip', ip, AUTH_RATE_LIMITS.signInPerIp);
     const result = (await auth.api.signInEmail({
       body: { email: parsed.data.email, password: parsed.data.password, rememberMe: true },
       headers: requestHeaders,
@@ -70,6 +74,13 @@ export async function signInWithPassword(_previous: SignInFormState, formData: F
     };
   }
   redirect(destination);
+}
+
+/** Identifies the pending sign-in (cookie nuera.two_factor) without storing its value. */
+async function pendingSignInKey(): Promise<string | null> {
+  const jar = await cookies();
+  const value = jar.get('__Secure-nuera.two_factor')?.value ?? jar.get('nuera.two_factor')?.value;
+  return value ? createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 32) : null;
 }
 
 const RESTART_CODES = new Set(['INVALID_TWO_FACTOR_COOKIE', 'TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE']);
@@ -95,7 +106,9 @@ export async function verifySecondFactor(
 
   try {
     assertSameOriginHeaders(requestHeaders);
-    assertRateLimit('auth:2fa', getClientIp(requestHeaders), AUTH_RATE_LIMITS.secondFactor);
+    const ip = getClientIp(requestHeaders);
+    assertRateLimit('auth:2fa', accountRateLimitKey(ip, await pendingSignInKey()), AUTH_RATE_LIMITS.secondFactor);
+    assertRateLimit('auth:2fa-ip', ip, AUTH_RATE_LIMITS.secondFactorPerIp);
     if (mode === 'totp') {
       await auth.api.verifyTOTP({ body: { code, trustDevice }, headers: requestHeaders });
     } else {

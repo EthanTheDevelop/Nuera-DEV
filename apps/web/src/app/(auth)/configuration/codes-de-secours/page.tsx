@@ -19,7 +19,7 @@ export default async function CodesDeSecoursPage() {
   const codes = await getSetupBackupCodes(user.id);
   return (
     <AuthCard
-      header={<SetupProgress current={3} />}
+      header={<SetupProgress current={3} activation={user.role !== 'owner'} />}
       title="Codes de secours"
       description="Si vous perdez votre téléphone, chaque code permet une seule connexion à la place de l'application. Conservez-les hors de cet appareil, par exemple dans votre gestionnaire de mots de passe."
     >

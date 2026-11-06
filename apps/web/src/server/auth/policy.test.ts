@@ -72,6 +72,9 @@ describe('safeRedirectPath', () => {
     expect(safeRedirectPath('/connexion')).toBe('/');
     expect(safeRedirectPath('/configuration/double-facteur')).toBe('/');
     expect(safeRedirectPath('/deconnexion')).toBe('/');
+    expect(safeRedirectPath('/invitation/AbCdEf')).toBe('/');
+    expect(safeRedirectPath('/recuperation/AbCdEf')).toBe('/');
+    expect(safeRedirectPath('/invitations-recues')).toBe('/invitations-recues');
     expect(safeRedirectPath('/api/health')).toBe('/');
     expect(safeRedirectPath('/connexions-recentes')).toBe('/connexions-recentes');
   });

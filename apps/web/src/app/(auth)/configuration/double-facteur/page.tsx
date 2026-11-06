@@ -19,7 +19,7 @@ export default async function DoubleFacteurPage() {
   const pending = await getPendingEnrolment(user);
   return (
     <AuthCard
-      header={<SetupProgress current={2} />}
+      header={<SetupProgress current={2} activation={user.role !== 'owner'} />}
       title="Double authentification"
       description="Obligatoire sur Nuera Dev : chaque connexion demandera, après le mot de passe, le code de votre application d'authentification."
     >

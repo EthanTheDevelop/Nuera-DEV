@@ -35,6 +35,8 @@ const PASSKEY_MESSAGES: Record<string, string> = {
   SESSION_NOT_FRESH: "Par sécurité, reconnectez-vous avant d'ajouter une clé d'accès.",
   TWO_FACTOR_REQUIRED: "Activez d'abord la double authentification.",
   UNAUTHORIZED: 'Connexion requise.',
+  // A passkey sign-in of a disabled account is refused when its session is created (auth.ts).
+  ACCOUNT_DISABLED: 'Ce compte est désactivé. Contactez un administrateur.',
   ERROR_INVALID_DOMAIN: "Ce domaine ne permet pas les clés d'accès (ouvrez Nuera Dev à son adresse officielle).",
   ERROR_INVALID_RP_ID: "Ce domaine ne permet pas les clés d'accès (ouvrez Nuera Dev à son adresse officielle).",
   ERROR_PASSTHROUGH_SEE_CAUSE_PROPERTY: "Votre navigateur a refusé l'opération.",

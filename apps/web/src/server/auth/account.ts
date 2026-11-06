@@ -1,6 +1,6 @@
 import 'server-only';
 import { getAuthenticatorName } from '@better-auth/passkey';
-import { auditLog, passkey, session } from '@nuera/db/schema';
+import { auditLog, passkey, session, spaceMembers } from '@nuera/db/schema';
 import { isAPIError } from 'better-auth/api';
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { headers } from 'next/headers';
@@ -13,14 +13,15 @@ import { passwordProblems } from '@/server/auth/password-policy';
 import { evaluateSessionPolicy } from '@/server/auth/policy';
 import { requireUserForApi } from '@/server/auth/session';
 import { AppError, formatZodIssues } from '@/server/errors';
-import { audit, AUDIT_ACTIONS, listAudit, SECURITY_JOURNAL_PREFIXES, type AuditRecord } from '@/server/security/audit';
+import { deleteSubscriptionsForSession, moveSubscriptionsToSession } from '@/server/push';
+import { audit, AUDIT_ACTIONS, listUserJournal, type AuditRecord } from '@/server/security/audit';
 import { assertRateLimit, AUTH_RATE_LIMITS } from '@/server/security/rate-limit';
 import { displayableIp } from '@/server/security/request-info';
 import { getWebSessionPolicy } from '@/server/settings';
 
 /**
  * Account & security services for Paramètres · Compte et sécurité (D08 / M08).
- * Every function re-checks the owner session (AppError UNAUTHORIZED / FORBIDDEN otherwise), so
+ * Every function re-checks the signed-in account (AppError UNAUTHORIZED / FORBIDDEN otherwise), so
  * they can be called from server actions, Server Components and route handlers alike.
  * Mutations are audited (« Journal de sécurité »). Dates are returned as Date objects: format them
  * with @nuera/shared/format (« maintenant », « il y a 2 h », « hier 18:04 »).
@@ -31,7 +32,8 @@ import { getWebSessionPolicy } from '@/server/settings';
  *   regenerateBackupCodes({ password })     → new codes, shown once
  *   listPasskeys() / renamePasskey(id, name) / deletePasskey(id)
  *   changePassword({ currentPassword, newPassword, revokeOtherSessions? })
- *   listSecurityJournal({ limit?, before? })
+ *   listSecurityJournal({ limit?, before? }) → personal journal (MULTICOMPTE §9): my events, the ones
+ *                                           concerning my account, those of my space
  *
  * Adding a passkey happens in the browser: `authClient.passkey.addPasskey({ name })` from
  * src/lib/auth-client.ts (requires a session opened less than 1 h ago: error code SESSION_NOT_FRESH).
@@ -73,10 +75,12 @@ export async function listWebSessions(): Promise<WebSessionInfo[]> {
     else active.push({ row, expiresAt: new Date(Math.min(verdict.expiresAt.getTime(), row.expiresAt.getTime())) });
   }
   if (expiredIds.length) {
+    // Their push subscriptions go with them (sendPush would refuse and prune them anyway).
+    for (const id of expiredIds) await deleteSubscriptionsForSession(id);
     await db.delete(session).where(and(eq(session.userId, user.id), inArray(session.id, expiredIds)));
   }
 
-  const origins = await signInOrigins(active.map(({ row }) => row.id));
+  const origins = await signInOrigins(user.id, active.map(({ row }) => row.id));
   const items = active.map(({ row, expiresAt }): WebSessionInfo => {
     const device = describeDevice(row.userAgent);
     const origin = origins.get(row.id);
@@ -99,7 +103,7 @@ export async function listWebSessions(): Promise<WebSessionInfo[]> {
 }
 
 /** City and IP recorded (from trusted headers) when each session was opened by a sign-in. */
-async function signInOrigins(sessionIds: string[]): Promise<Map<string, { city: string | null; ip: string | null }>> {
+async function signInOrigins(userId: string, sessionIds: string[]): Promise<Map<string, { city: string | null; ip: string | null }>> {
   const map = new Map<string, { city: string | null; ip: string | null }>();
   if (sessionIds.length === 0) return map;
   const rows = await db
@@ -111,6 +115,7 @@ async function signInOrigins(sessionIds: string[]): Promise<Map<string, { city: 
     .from(auditLog)
     .where(
       and(
+        eq(auditLog.actorUserId, userId),
         inArray(auditLog.action, [AUDIT_ACTIONS.signIn, AUDIT_ACTIONS.signInNewDevice]),
         inArray(sql`${auditLog.metadata}->>'sessionId'`, sessionIds),
       ),
@@ -132,6 +137,8 @@ export async function revokeWebSession(sessionId: string): Promise<void> {
     .where(and(eq(session.id, id), eq(session.userId, user.id)))
     .returning({ id: session.id, userAgent: session.userAgent });
   if (!deleted) throw new AppError('NOT_FOUND', "Cet accès n'existe plus.");
+  // The device of a closed access no longer receives this account's notifications.
+  await deleteSubscriptionsForSession(deleted.id);
   await audit({
     action: AUDIT_ACTIONS.sessionRevoked,
     summary: `accès révoqué : ${describeDevice(deleted.userAgent).label}`,
@@ -147,6 +154,7 @@ export async function revokeOtherSessions(): Promise<{ revoked: number }> {
     .delete(session)
     .where(and(eq(session.userId, user.id), ne(session.id, user.authSessionId)))
     .returning({ id: session.id });
+  for (const row of deleted) await deleteSubscriptionsForSession(row.id);
   if (deleted.length > 0) {
     await audit({
       action: AUDIT_ACTIONS.otherSessionsRevoked,
@@ -282,17 +290,30 @@ export async function changePassword(input: {
     throw new AppError('VALIDATION', 'Nouveau mot de passe refusé.', { detail: `Il faut ${problems.join(', ')}.` });
   }
   assertRateLimit('auth:sensitive', user.id, AUTH_RATE_LIMITS.sensitive);
+  const revokeOthers = parsed.data.revokeOtherSessions ?? true;
+  // Better Auth closes EVERY access of the account (this one included) and opens a new one for this
+  // device: the devices of the closed accesses stop receiving notifications, this device's follow it.
+  const closing = revokeOthers
+    ? await db.select({ id: session.id }).from(session).where(and(eq(session.userId, user.id), ne(session.id, user.authSessionId)))
+    : [];
+  let result: { token?: string | null };
   try {
-    await auth.api.changePassword({
+    result = (await auth.api.changePassword({
       body: {
         currentPassword: parsed.data.currentPassword,
         newPassword: parsed.data.newPassword,
-        revokeOtherSessions: parsed.data.revokeOtherSessions ?? true,
+        revokeOtherSessions: revokeOthers,
       },
       headers: await headers(),
-    });
+    })) as { token?: string | null };
   } catch (error) {
     throw toAccountError(error);
+  }
+  if (!revokeOthers) return;
+  for (const row of closing) await deleteSubscriptionsForSession(row.id);
+  if (result.token) {
+    const [replacement] = await db.select({ id: session.id }).from(session).where(eq(session.token, result.token)).limit(1);
+    if (replacement) await moveSubscriptionsToSession(user.authSessionId, replacement.id);
   }
 }
 
@@ -303,8 +324,14 @@ export async function changePassword(input: {
 export async function listSecurityJournal(
   options: { limit?: number; before?: number } = {},
 ): Promise<{ items: AuditRecord[]; nextCursor: number | null }> {
-  await requireUserForApi();
-  return listAudit({ limit: options.limit ?? 20, before: options.before, prefixes: [...SECURITY_JOURNAL_PREFIXES] });
+  const user = await requireUserForApi();
+  const memberships = await db.select({ spaceId: spaceMembers.spaceId }).from(spaceMembers).where(eq(spaceMembers.userId, user.id));
+  return listUserJournal({
+    userId: user.id,
+    spaceIds: memberships.map((row) => row.spaceId),
+    limit: options.limit ?? 20,
+    ...(options.before !== undefined ? { before: options.before } : {}),
+  });
 }
 
 function toAccountError(error: unknown): unknown {
