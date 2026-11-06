@@ -38,6 +38,27 @@ describe('écrans de démarrage du CLI', () => {
     expect(startupScreenAction(cursorOnNo)).toMatchObject({ kind: 'trust', keys: '1' });
   });
 
+  it('confiance (CLI récent, options non numérotées, « No » surligné) : flèche bas puis Entrée', () => {
+    const quick = `Accessing workspace:
+
+/srv/dev/nuera-studio
+
+Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+project, or work from your team). If not, take a moment to review what's in this folder first.
+
+Claude Code'll be able to read, edit, and execute files here.
+
+Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+Enter to confirm · Esc to cancel`;
+    expect(startupScreenAction(quick)).toMatchObject({ kind: 'trust', keys: '\u001b[B' });
+    const moved = quick.replace(' ❯ No, exit', '   No, exit').replace('   Yes, I trust this folder', ' ❯ Yes, I trust this folder');
+    expect(startupScreenAction(moved)).toMatchObject({ kind: 'trust', keys: '\r' });
+  });
+
   it('« Press Enter to continue » : Entrée', () => {
     expect(startupScreenAction('Login successful. Press Enter to continue…')).toMatchObject({ kind: 'continue', keys: '\r' });
   });
