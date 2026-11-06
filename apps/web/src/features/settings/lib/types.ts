@@ -143,7 +143,7 @@ export interface PasskeyView {
 }
 
 export interface AccountView {
-  twoFactor: { enabled: boolean; backupCodesRemaining: number | null };
+  twoFactor: { enabled: boolean; backupCodesRemaining: number | null; required: boolean };
   passkeys: PasskeyView[];
   sessions: WebSessionView[];
 }

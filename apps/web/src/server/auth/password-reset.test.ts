@@ -48,6 +48,10 @@ const headersFor = () => helpers.requestFrom(env.APP_URL);
 const { createOwner } = await import('./setup');
 const { auth, getAuthContext } = await import('./auth');
 const { getSetupState } = await import('./setup');
+const { ENROLMENT_GRANT_HEADER, issueEnrolmentGrant } = await import('./enrolment-grant');
+const { getCurrentUser } = await import('./session');
+const { disableTwoFactor } = await import('./account');
+const { twoFactor } = await import('@nuera/db/schema');
 const reset = await import('./password-reset');
 const { db } = await import('@/server/db');
 
@@ -166,6 +170,34 @@ describe.skipIf(!available)('mot de passe oublié (Better Auth + PostgreSQL)', {
     try {
       expect(await signIn()).toMatchObject({ user: { email: OWNER.email } });
       expect(await getSetupState()).toMatchObject({ kind: 'complete' });
+    } finally {
+      delete process.env.NUERA_REQUIRE_2FA;
+    }
+  });
+
+  it('désactiver la 2FA depuis les paramètres : mot de passe exigé, refusé quand elle est obligatoire', async () => {
+    const signedIn = await auth.api.signInEmail({
+      body: { email: OWNER.email, password: NEW_PASSWORD, rememberMe: true },
+      headers: helpers.requestFrom(env.APP_URL, undefined, { [ENROLMENT_GRANT_HEADER]: issueEnrolmentGrant({ email: OWNER.email, purpose: 'setup' }) }),
+      returnHeaders: true,
+    });
+    request.headers = helpers.requestFrom(env.APP_URL, helpers.mergeCookies(signedIn.headers.getSetCookie()));
+    // 2FA active (as after an enrolment): flag + TOTP key row.
+    await db.update(user).set({ twoFactorEnabled: true }).where(eq(user.id, ownerId));
+    await db.insert(twoFactor).values({ id: 'tf-owner', userId: ownerId, secret: 'secret-chiffre', backupCodes: '[]', verified: true });
+    expect(await getCurrentUser()).toMatchObject({ twoFactorEnabled: true });
+
+    delete process.env.NUERA_REQUIRE_2FA;
+    await expect(disableTwoFactor({ password: NEW_PASSWORD })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    process.env.NUERA_REQUIRE_2FA = 'false';
+    try {
+      await expect(disableTwoFactor({ password: 'Mauvais-Mot-2026!' })).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'Mot de passe incorrect.' });
+      await expect(disableTwoFactor({ password: NEW_PASSWORD })).resolves.toEqual({ disabled: true });
+      const [row] = await db.select({ enabled: user.twoFactorEnabled }).from(user).where(eq(user.id, ownerId));
+      expect(row!.enabled).toBe(false);
+      expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, ownerId))).toHaveLength(0);
+      const [logged] = await db.select().from(auditLog).where(eq(auditLog.action, 'auth.2fa_disabled')).orderBy(desc(auditLog.id)).limit(1);
+      expect(logged).toMatchObject({ actorUserId: ownerId });
     } finally {
       delete process.env.NUERA_REQUIRE_2FA;
     }

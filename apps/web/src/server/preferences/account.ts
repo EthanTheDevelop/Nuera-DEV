@@ -39,7 +39,7 @@ export async function getPasskeys(): Promise<PasskeyView[]> {
 export async function getAccountView(): Promise<AccountView> {
   const [twoFactor, passkeys, sessions] = await Promise.all([getTwoFactorSummary(), getPasskeys(), getWebSessions()]);
   return {
-    twoFactor: { enabled: twoFactor.enabled, backupCodesRemaining: twoFactor.backupCodesRemaining },
+    twoFactor: { enabled: twoFactor.enabled, backupCodesRemaining: twoFactor.backupCodesRemaining, required: twoFactor.required },
     passkeys,
     sessions,
   };

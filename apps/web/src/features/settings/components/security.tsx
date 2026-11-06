@@ -28,6 +28,7 @@ import { PASSWORD_RULES_TEXT } from '@/server/auth/password-policy';
 import {
   changePasswordAction,
   deletePasskeyAction,
+  disableTwoFactorAction,
   loadJournalAction,
   loadPasskeysAction,
   reauthenticateAction,
@@ -257,7 +258,10 @@ function IdentityTile() {
 function TwoFactorTile() {
   const { data, refresh } = useSettings();
   const [open, setOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
   const account = data.account;
+  const enabled = account.ok ? account.data.twoFactor.enabled : false;
+  const required = account.ok ? account.data.twoFactor.required : true;
   return (
     <Card as="section" id={SECTION_IDS.twoFactor} aria-label="Double facteur" className="scroll-mt-6 gap-2">
       <TileHeader icon="shield" title="Double facteur" />
@@ -265,19 +269,45 @@ function TwoFactorTile() {
         <SettingsRows>
           <SettingsRow
             title="Application d'authentification"
-            caption={capitalize(backupCodesText(account.data.twoFactor.backupCodesRemaining) ?? 'codes de secours illisibles')}
-            control={account.data.twoFactor.enabled ? <Badge tone="success">Actif</Badge> : <Badge tone="danger">Inactif</Badge>}
+            caption={
+              enabled
+                ? capitalize(backupCodesText(account.data.twoFactor.backupCodesRemaining) ?? 'codes de secours illisibles')
+                : 'Non activée : la connexion ne demande que le mot de passe.'
+            }
+            control={enabled ? <Badge tone="success">Actif</Badge> : <Badge tone="danger">Inactif</Badge>}
           />
         </SettingsRows>
       ) : (
         <p className="m-0 font-sans text-app-13 text-danger">{account.error.message}</p>
       )}
-      <p className="m-0 font-sans text-app-12 text-muted">
-        Un code de secours remplace le code de l'application une seule fois. En générer de nouveaux invalide les anciens.
-      </p>
-      <CompactButton variant="secondaire" icon="refresh" className="self-start" onClick={() => setOpen(true)}>
-        Régénérer les codes de secours
-      </CompactButton>
+      {account.ok && enabled ? (
+        <>
+          <p className="m-0 font-sans text-app-12 text-muted">
+            Un code de secours remplace le code de l'application une seule fois. En générer de nouveaux invalide les anciens.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <CompactButton variant="secondaire" icon="refresh" onClick={() => setOpen(true)}>
+              Régénérer les codes de secours
+            </CompactButton>
+            {required ? null : (
+              <CompactButton variant="secondaire" onClick={() => setDisableOpen(true)}>
+                Désactiver la double authentification
+              </CompactButton>
+            )}
+          </div>
+          {required ? <p className="m-0 font-sans text-app-12 text-muted">Obligatoire sur ce serveur : elle ne peut pas être désactivée.</p> : null}
+        </>
+      ) : null}
+      {account.ok && !enabled ? (
+        <>
+          <p className="m-0 font-sans text-app-12 text-muted">
+            Recommandée : après le mot de passe, chaque connexion demandera le code de votre application d'authentification.
+          </p>
+          <CompactButton variant="principal" icon="shield" className="self-start" onClick={() => window.location.assign('/configuration/double-facteur')}>
+            Activer la double authentification
+          </CompactButton>
+        </>
+      ) : null}
       <BackupCodesDialog
         open={open}
         onOpenChange={(next) => {
@@ -286,7 +316,75 @@ function TwoFactorTile() {
         }}
         account={data.profile.email}
       />
+      <DisableTwoFactorDialog
+        open={disableOpen}
+        onOpenChange={setDisableOpen}
+        onDisabled={() => {
+          setDisableOpen(false);
+          toast({ message: 'Double authentification désactivée' });
+          refresh();
+        }}
+      />
     </Card>
+  );
+}
+
+function DisableTwoFactorDialog({ open, onOpenChange, onDisabled }: { open: boolean; onOpenChange: (open: boolean) => void; onDisabled: () => void }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function reset(next: boolean) {
+    if (!next) {
+      setPassword('');
+      setError(null);
+    }
+    onOpenChange(next);
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!password) return setError('Mot de passe requis.');
+    setBusy(true);
+    const result = await disableTwoFactorAction(password);
+    setBusy(false);
+    setPassword('');
+    if (!result.ok) return setError(result.error.message);
+    onDisabled();
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={reset}>
+      <DialogContent
+        size="sm"
+        title="Désactiver la double authentification"
+        description="Confirmez avec votre mot de passe. La clé de votre application et vos codes de secours ne fonctionneront plus : la connexion ne demandera que le mot de passe."
+        footer={
+          <>
+            <CompactButton variant="secondaire" onClick={() => reset(false)}>
+              Annuler
+            </CompactButton>
+            <CompactButton variant="principal" type="submit" form="nu-disable-2fa" loading={busy}>
+              Désactiver
+            </CompactButton>
+          </>
+        }
+      >
+        <form id="nu-disable-2fa" onSubmit={submit} className="flex flex-col gap-2" noValidate>
+          <Field label="Mot de passe" error={error}>
+            <SecretField
+              autoComplete="current-password"
+              autoFocus
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setError(null);
+              }}
+            />
+          </Field>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

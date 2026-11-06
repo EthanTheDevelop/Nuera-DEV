@@ -1,16 +1,16 @@
 import 'server-only';
 import { getAuthenticatorName } from '@better-auth/passkey';
-import { auditLog, passkey, session, spaceMembers } from '@nuera/db/schema';
+import { account, auditLog, passkey, session, spaceMembers, twoFactor, user as userTable, verification } from '@nuera/db/schema';
 import { isAPIError } from 'better-auth/api';
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, ne, sql } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { z } from 'zod';
 import { db } from '@/server/db';
-import { auth } from '@/server/auth/auth';
+import { auth, getAuthContext } from '@/server/auth/auth';
 import { describeDevice, type DeviceKind } from '@/server/auth/device';
 import { authErrorCode, authErrorMessage } from '@/server/auth/messages';
 import { passwordProblems } from '@/server/auth/password-policy';
-import { evaluateSessionPolicy } from '@/server/auth/policy';
+import { evaluateSessionPolicy, twoFactorRequired } from '@/server/auth/policy';
 import { requireUserForApi } from '@/server/auth/session';
 import { AppError, formatZodIssues } from '@/server/errors';
 import { deleteSubscriptionsForSession, moveSubscriptionsToSession } from '@/server/push';
@@ -175,6 +175,8 @@ export interface TwoFactorSummary {
   method: 'totp';
   /** Unused backup codes, null when they cannot be read. */
   backupCodesRemaining: number | null;
+  /** 2FA imposée par le serveur (NUERA_REQUIRE_2FA) : elle ne peut alors pas être désactivée. */
+  required: boolean;
 }
 
 export async function getTwoFactorSummary(): Promise<TwoFactorSummary> {
@@ -186,7 +188,7 @@ export async function getTwoFactorSummary(): Promise<TwoFactorSummary> {
   } catch (error) {
     if (!isAPIError(error)) throw error;
   }
-  return { enabled: user.twoFactorEnabled, method: 'totp', backupCodesRemaining: remaining };
+  return { enabled: user.twoFactorEnabled, method: 'totp', backupCodesRemaining: remaining, required: twoFactorRequired() };
 }
 
 const passwordInputSchema = z.object({ password: z.string().min(1, 'mot de passe requis').max(256) });
@@ -206,6 +208,44 @@ export async function regenerateBackupCodes(input: { password: string }): Promis
   } catch (error) {
     throw toAccountError(error);
   }
+}
+
+/**
+ * Désactive la double authentification du compte connecté (seulement quand le serveur la rend
+ * facultative). Mot de passe redemandé ; clé TOTP, codes de secours et appareils de confiance
+ * supprimés. Elle se réactive depuis /configuration/double-facteur.
+ */
+export async function disableTwoFactor(input: { password: string }): Promise<{ disabled: true }> {
+  const current = await requireUserForApi();
+  if (twoFactorRequired()) {
+    throw new AppError('FORBIDDEN', 'La double authentification est obligatoire sur ce serveur.');
+  }
+  const parsed = passwordInputSchema.safeParse(input);
+  if (!parsed.success) throw new AppError('VALIDATION', 'Mot de passe requis.', { detail: formatZodIssues(parsed.error) });
+  assertRateLimit('auth:sensitive', current.id, AUTH_RATE_LIMITS.sensitive);
+  if (!current.twoFactorEnabled) return { disabled: true };
+
+  const [credential] = await db
+    .select({ hash: account.password })
+    .from(account)
+    .where(and(eq(account.userId, current.id), eq(account.providerId, 'credential')))
+    .limit(1);
+  const context = await getAuthContext();
+  const valid = credential?.hash ? await context.password.verify({ hash: credential.hash, password: parsed.data.password }) : false;
+  if (!valid) throw new AppError('FORBIDDEN', 'Mot de passe incorrect.');
+
+  await db.transaction(async (tx) => {
+    await tx.delete(twoFactor).where(eq(twoFactor.userId, current.id));
+    await tx.update(userTable).set({ twoFactorEnabled: false, updatedAt: new Date() }).where(eq(userTable.id, current.id));
+    await tx.delete(verification).where(and(like(verification.identifier, 'trust-device-%'), eq(verification.value, current.id)));
+  });
+  await audit({
+    action: 'auth.2fa_disabled',
+    summary: 'double authentification désactivée depuis les paramètres',
+    actorUserId: current.id,
+    subjectUserId: current.id,
+  });
+  return { disabled: true };
 }
 
 // ---------------------------------------------------------------------------------------------

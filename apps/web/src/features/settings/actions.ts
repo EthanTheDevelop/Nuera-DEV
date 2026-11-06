@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   changePassword,
   deletePasskey,
+  disableTwoFactor,
   regenerateBackupCodes,
   renamePasskey,
   revokeOtherSessions,
@@ -138,6 +139,13 @@ export async function regenerateBackupCodesAction(password: string): Promise<Act
   return run(async () => {
     await guard();
     return regenerateBackupCodes({ password: typeof password === 'string' ? password : '' });
+  });
+}
+
+export async function disableTwoFactorAction(password: string): Promise<ActionResult<{ disabled: true }>> {
+  return run(async () => {
+    await guard();
+    return disableTwoFactor({ password: typeof password === 'string' ? password : '' });
   });
 }
 
