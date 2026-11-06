@@ -440,6 +440,9 @@ export function webEnv(input: StackEnvInput): Record<string, string> {
     GITHUB_FALLBACK_TOKEN: '',
     NUERA_RATE_LIMIT_FACTOR: '50',
     NUERA_KIT_PUBLIC: '1',
+    // « Aperçu »: the app runs on localhost:<port>, the preview on 127.0.0.1:<same port> — two
+    // distinct origins (and sites) served by the same next dev. E2E_PREVIEW_HOST overrides it ('' = off).
+    PREVIEW_HOST: process.env.E2E_PREVIEW_HOST ?? `127.0.0.1:${new URL(input.urls.web).port}`,
   };
   return { ...baseEnv(new Set(Object.keys(explicit))), ...explicit };
 }

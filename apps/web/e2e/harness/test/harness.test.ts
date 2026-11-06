@@ -77,6 +77,7 @@ describe('ports et dossiers de N serveurs', () => {
       expect(env.NUERA_ENVIRONMENT_ID).toBeUndefined();
       expect(env.NUERA_REQUIRE_2FA).toBeUndefined();
       expect(env.NUERA_WEB_SCHEDULER).toBe('off');
+      expect(env.PREVIEW_HOST).toBe(process.env.E2E_PREVIEW_HOST ?? '127.0.0.1:3301');
       expect(env.RUNNER_TOKEN).toBe('t');
     } finally {
       if (previous.id === undefined) delete process.env.NUERA_ENVIRONMENT_ID;
