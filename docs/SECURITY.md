@@ -370,6 +370,38 @@ confiance** (Claude ou le dépôt l'écrivent) : il ne s'exécute jamais sur l'o
   de production), le cookie est `SameSite=Lax`, `Secure` ; sinon (pile de test : `localhost` / `127.0.0.1`)
   `SameSite=None; Secure`, ce qui suppose que le navigateur accepte les cookies tiers.
 
+## 8 ter. Configuration Claude commune (lot K1)
+
+Règles, skills, serveurs MCP et permissions que l'administration donne à **toutes** les sessions (`docs/MULTICOMPTE.md`
+§14, lot K1).
+
+- **Qui écrit** : le propriétaire et les administrateurs seulement (`apiRoute({ auth: 'admin' })` + revérification
+  dans chaque fonction de `server/claude-config`, Origin, Zod, limite de débit dédiée) ; chaque modification est
+  versionnée et journalisée (`instance.claude_*`, journal d'instance). Un membre lit ce qui s'applique à lui et
+  **propose** ; rien n'agit avant l'approbation d'un administrateur.
+- **Modèle de confiance** : une règle ou un skill commun est du texte que Claude lit dans les sessions de **tous** les
+  comptes visés — c'est une instruction, donc un vecteur d'injection si un administrateur est compromis ou se trompe.
+  Les administrateurs sont déjà de confiance pour l'instance (ils gèrent comptes et serveurs) ; la configuration
+  commune n'élargit pas ce qu'ils voient (aucun contenu d'un espace), elle élargit ce qu'ils peuvent **dire** à Claude.
+  Garde-fous : auteur et différences de chaque version, retour arrière, désactivation par l'espace des éléments
+  « Par défaut », mode d'autorisation de chaque espace inchangé (une règle ne contourne aucune demande d'autorisation).
+- **Scripts** : refusés à l'import sauf « Autoriser les scripts » (avertissement) ; écrits exécutables sur chaque serveur
+  qui reçoit le skill. Claude ne peut les lancer que par Bash, soumis aux permissions de la session. Binaires, liens,
+  fichiers cachés et chemins sortants (`..`, absolus) sont refusés par le web **et** par le runner.
+- **Disque des serveurs** : le runner ne lit pas les tables de la configuration (route interne par jeton du serveur) et
+  n'écrit que `skills/<nom>/` marqués, `rules/nuera-commun.md` et son propre dossier ; jamais `.credentials.json`,
+  `.claude.json` ni `settings.json` (règle 1 de CLAUDE.md, test `apps/runner/test/common-config.test.ts`). Un skill du
+  compte (dossier sans marqueur) n'est jamais remplacé.
+- **Secrets MCP** : chiffrés (AES-256-GCM, liés à la ligne `instance_mcp_servers`), jamais renvoyés au navigateur
+  (seuls les noms d'en-têtes), jamais dans `--mcp-config` ni dans une version ; servis par
+  `/api/internal/mcp-headers` (`headersHelper: 'nuera'`) à une **session vivante** du serveur appelant, seulement si le
+  compte de l'espace de cette session est dans l'audience du serveur (réévaluée à chaque appel : un compte rétrogradé
+  est refusé à la connexion suivante) et si l'URL annoncée par le CLI est celle du serveur (épinglée).
+- **Coolify (administrateurs)** : audience forcée, jamais servi à un membre (configuration et en-têtes, testé) ; servi
+  seulement après un test réussi qui a lu ses outils ; lecture permise, secrets et écritures toujours derrière une
+  demande d'autorisation (`ask`), suppressions refusées (`deny`) sauf choix du propriétaire (alors `ask`) ; mode sans
+  autorisation bloqué pour toute session qui le reçoit, pour que chaque demande remonte au propriétaire dans Nuera Dev.
+
 ## 9. Notifications et push
 
 Une notification par destinataire (`createNotification(input, { spaceId?, userIds })`) : destinataires d'un événement
@@ -436,4 +468,7 @@ connectez-vous avec ce compte pour l'ouvrir. » ; « Se déconnecter » y ramèn
 | Dédoublonnage des notifications | L'unicité `(user_id, dedup_key)` ignore l'espace : deux événements de même clé venant de deux portées se fusionnent (rare : un serveur non attribué ne fait tourner aucune session). | Les alertes d'instance nomment le serveur dans leur clé. |
 | Aperçu : même site | L'hôte d'aperçu partage le domaine de l'application (`*.perso.nuera.studio`) : le code prévisualisé peut écrire des cookies sur le domaine parent (`document.cookie` avec `Domain=`) que l'application recevrait (fixation ou effacement d'un cookie ; les cookies de session restent signés et vérifiés en base) ; les requêtes de l'aperçu vers l'application sont « same-site » (cookies `SameSite=Lax` envoyés), mais toute mutation exige l'Origin d'`APP_URL`. Les `Set-Cookie` du serveur de développement sont privés de `Domain`. | Prendre un domaine d'aperçu d'un autre domaine enregistrable pour une isolation complète (le cookie passe alors en `SameSite=None`) ; suite : préfixe `__Host-` pour les cookies de session de l'application. |
 | Aperçu : un seul processus web | Nonces des jetons à usage unique et verdicts d'accès (5 s) en mémoire. | Garder `web` à une réplique (comme ci-dessus). |
+| Configuration commune : instructions partagées | Une règle ou un skill commun est lu par Claude dans les sessions de tous les comptes visés : un administrateur compromis peut y glisser des instructions (exfiltration, commandes). | Versions, auteur et journal de chaque changement ; les demandes d'autorisation et le mode de chaque espace restent en place ; suite : approbation à deux administrateurs pour les éléments « Imposé ». |
+| Configuration commune : outils Coolify nouveaux | Les règles `allow`/`ask`/`deny` de Coolify sont tirées des outils listés au dernier test : un outil ajouté ensuite par Coolify n'est dans aucune liste. En mode Manuel, le CLI le demande ; en mode `auto`, le classifieur du CLI décide. | Refaire « Tester la connexion » après une mise à jour de Coolify ; suite : refuser tout outil absent de la dernière liste (`deny` générique quand le CLI le permettra sans bloquer les lectures). |
+| Configuration commune : copie d'un serveur injoignable | Un runner injoignable au moment d'un changement garde l'ancienne copie jusqu'à son prochain démarrage ou sa prochaine session (empreinte attendue dans les options de lancement) ; une session démarrée pendant une panne du web part avec la copie du disque. | État par serveur dans Administration › Claude (« À synchroniser ») ; « Synchroniser les serveurs ». |
 | Tests | La suite tmux (adoption entre serveurs et refus d'une session tmux lancée pour une autre ligne compris) ne tourne que sous Linux ; le service worker et la garde multi-onglets ne sont testés que comme logique pure ; aucun essai contre les vrais GitHub, Coolify, Claude. | À exécuter sur le serveur réel avant la mise en production (`docs/DEPLOY.md` §11). |
