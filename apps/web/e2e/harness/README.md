@@ -14,6 +14,11 @@ pas. Une *pile* = une base PostgreSQL dédiée + un faux GitHub (plusieurs appli
 Le nombre de comptes (= serveurs) se choisit par `up --accounts N` (Playwright : `E2E_ACCOUNTS`) : **2 par défaut pour la
 pile `e2e`**, 1 pour toute autre pile (un lot qui n'a besoin que du propriétaire garde une pile légère).
 
+**Serveur partagé** (lot P1) : `up --accounts 2 --shared` invite B sur « VPS-3 » au lieu de lui enregistrer « VPS-4 » :
+un seul runner, deux comptes, chacun avec son dossier Claude (celui de B : `home/.claude-comptes/<id de son espace>`, neuf
+donc déconnecté pour le faux CLI) et ses clones dans `projects/espaces/<id>/`. L'option est gardée dans `state.json`
+(`options.shared`) ; `partage.spec.ts` ne tourne que sur une telle pile.
+
 ## 1. Démarrage rapide
 
 ```bash
