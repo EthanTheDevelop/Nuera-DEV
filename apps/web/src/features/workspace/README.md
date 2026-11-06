@@ -41,6 +41,7 @@ nouvel onglet, rechargement automatique), compositeur gardé dessous.
 |---|---|
 | `POST /api/sessions/[id]/instruction { text }` | saisie ; reprend une session terminée (lot SESSIONS) ; 409 `SESSION_BUSY_PERMISSION` |
 | `POST /api/sessions/[id]/interrupt` | Échap |
+| `POST /api/sessions/[id]/auto-resume { enabled: true\|false\|null }` · `{ resumeNow: true }` | reprise automatique après la limite pour cette session (null = défaut de l'espace ; audit `session.auto_resume_changed`) · « Reprendre maintenant » (audit `session.auto_resume_now`, 409 sans limite) |
 | `GET /api/sessions/[id]/events?afterVersion=` | fil (rechargement) |
 | `GET /api/sessions/[id]/terminal` | `{ terminalId, live }` du PTY de la session |
 | `POST /api/previews { runId, path? }` | passage de main vers l'aperçu (URL d'entrée à usage unique, 60 s) |
@@ -62,3 +63,11 @@ Les erreurs gardent `reason` (sous-code du runner) et la copie Figma (`server/wo
   Session sur le clone principal (branche par défaut) : interrupteur « Pousser » désactivé avec sa raison (le serveur
   refuse aussi ce push). Téléphone (S3) : bouton « Committer et pousser » même avec la pull request, comme Figma.
 - Indexer / Retirer de l'index : sous la liste des modifications (non dessiné).
+- Limite d'utilisation (`session/UsageLimitBanner.tsx`, `Dev · Bandeau` Alerte) : bandeau au-dessus du fil tant que
+  `session.limit.active` — heure de levée annoncée par le CLI (`formatClockDay`), heure de la reprise prévue, compte à
+  rebours à la seconde et « tentative n sur 5 », interrupteur « Reprise automatique » de la session et « Reprendre
+  maintenant » ; badge « Limite atteinte · reprise à 15 h 02 » dans l'en-tête (texte d'état sur téléphone) ; entrée
+  « Reprise automatique après la limite » dans le menu « … » et la feuille « Actions de session ». La valeur de
+  l'interrupteur est celle de la session, sinon celle de l'espace (Paramètres › Claude Code) ; revenir à la valeur
+  de l'espace enregistre `null`. Aucune heure n'est inventée : levée inconnue ⇒ « Le CLI n'a pas indiqué l'heure de
+  levée de la limite. » (libellés : `components/dev/lib/usage-limit.ts`).

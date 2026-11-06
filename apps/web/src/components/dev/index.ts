@@ -30,6 +30,12 @@ export { PhoneComposer, PHONE_COMPOSER_PLACEHOLDER, type PhoneComposerProps } fr
 export { DictatedTextarea, type DictatedTextareaProps } from './composer/DictatedTextarea';
 export { DictationButton, DictationStatus, type DictationButtonProps, type DictationStatusProps } from './composer/DictationButton';
 export { DICTATION_COPY } from './composer/dictation';
+export { type ComposerTools, type ComposerToolChip } from './composer/ComposerToolbar';
+export { ComposerChip, type ComposerChipProps, type ComposerChoice } from './composer/ComposerChip';
+export { useAttachments, type AttachmentsController } from './composer/use-attachments';
+export { ATTACHMENT_COPY, withAttachmentReferences, type ComposerAttachment } from './composer/attachments';
+export { buildPaletteItems, CURATED_COMMANDS, PALETTE_COPY, type PaletteItem, type TreeEntryLike } from './composer/palette';
+export { type PaletteSource } from './composer/use-palette';
 export { useDictation, useComposerDictation, type Dictation, type UseDictationOptions } from './composer/use-dictation';
 export {
   SessionPersistenceLine,
@@ -141,6 +147,17 @@ export {
   type CommandRunBadge,
 } from './lib/commands';
 export { projectSessionsSummary, type ProjectSessionsInput, type ProjectSessionsSummary } from './lib/projects';
+export {
+  countdownLabel,
+  effectiveAutoResume,
+  isUsageLimited,
+  limitResetAt,
+  nextAttemptLabel,
+  scheduledResumeAt,
+  usageLimitDetail,
+  usageLimitLabel,
+  type UsageLimit,
+} from './lib/usage-limit';
 export {
   parseUnifiedDiff,
   toSplitRows,

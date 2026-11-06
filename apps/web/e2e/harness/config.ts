@@ -384,6 +384,9 @@ function runnerSharedEnv(input: StackEnvInput): Record<string, string> {
     NUERA_DB_POOL_MAX: '5',
     LOG_LEVEL: 'info',
     DATABASE_CONNECT_TIMEOUT: '60',
+    // Automatic resumption after the usage limit: 2 s after the reset the fake CLI announces
+    // (instead of 2 min), so an e2e sees the scheduled resumption fire.
+    NUERA_AUTO_RESUME_MARGIN_SECONDS: '2',
   };
 }
 

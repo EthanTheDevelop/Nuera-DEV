@@ -1,6 +1,6 @@
 import 'server-only';
 import { permissionRequests, pullRequests, sessions, worktrees } from '@nuera/db/schema';
-import { CliStatusSchema, type PermissionRequestDto, type SessionDto, type SessionEventItem } from '@nuera/shared/runner';
+import { CliStatusSchema, parseUsageLimit, type PermissionRequestDto, type SessionDto, type SessionEventItem } from '@nuera/shared/runner';
 import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import type {
   SiblingSession,
@@ -14,6 +14,7 @@ import { db } from '@/server/db';
 import { previewSettingsView } from '@/server/preview/handoff';
 import { isRunnerUnavailable, type RunnerClient } from '@/server/runner/client';
 import { environmentMaxSessions, getGitIdentity } from '@/server/sessions';
+import { getEffectiveSessionPolicy } from '@/server/settings';
 import type { RequestContext } from '@/server/tenancy/context';
 import { findSessionContext, githubHtmlUrl, repoName, requireSessionContext, type SessionContext } from './access';
 
@@ -41,7 +42,7 @@ function parseCliStatus(value: unknown): WorkspaceSession['cliStatus'] {
   return parsed.success ? parsed.data : null;
 }
 
-function toWorkspaceSession(row: SessionContext['session'], dto: SessionDto | null): WorkspaceSession {
+function toWorkspaceSession(row: SessionContext['session'], dto: SessionDto | null, autoResumeDefault: boolean): WorkspaceSession {
   return {
     id: row.id,
     title: row.title,
@@ -61,6 +62,8 @@ function toWorkspaceSession(row: SessionContext['session'], dto: SessionDto | nu
     endedAt: dto?.endedAt ?? iso(row.endedAt),
     lastActivityAt: dto?.lastActivityAt ?? iso(row.lastActivityAt),
     createdAt: row.createdAt.toISOString(),
+    limit: dto && dto.limit !== undefined ? dto.limit : parseUsageLimit(row.usageLimit),
+    autoResume: { override: row.autoResume, spaceDefault: autoResumeDefault },
   };
 }
 
@@ -208,12 +211,16 @@ export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user
     countAllowed(sessionId),
     liveCount(scope.environmentId),
   ]);
-  const [max, identity] = await Promise.all([environmentMaxSessions(scope.environmentId, 4), getGitIdentity(ctx.user)]);
+  const [max, identity, policy] = await Promise.all([
+    environmentMaxSessions(scope.environmentId, 4),
+    getGitIdentity(ctx.user),
+    getEffectiveSessionPolicy(scope.spaceId),
+  ]);
 
   const permission: PermissionRequestDto | null = dto?.pendingPermission ?? null;
 
   return {
-    session: toWorkspaceSession(session, dto),
+    session: toWorkspaceSession(session, dto, policy.autoResumeAfterLimit),
     project: {
       id: project.id,
       name: project.name,

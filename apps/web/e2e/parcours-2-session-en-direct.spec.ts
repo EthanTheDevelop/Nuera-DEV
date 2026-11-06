@@ -298,9 +298,15 @@ test('Erreur montrée telle quelle : commande en échec puis limite d\'utilisati
 
   // The CLI itself stops on its usage limit: the thread says so, the session stays usable.
   await sendFromComposer(page, 'scenario:limite Continue la livraison.');
-  await expect(log.getByText("Limite d'utilisation atteinte : la session reprendra quand la limite sera levée.")).toBeVisible({ timeout: 60_000 });
+  await expect(log.getByText("Limite d'utilisation atteinte.", { exact: true })).toBeVisible({ timeout: 60_000 });
   const limited = await waitForSessionStatus(session.id, 'waiting_input', { timeoutMs: 60_000, where: (s) => s.errorCode === 'rate_limit' });
   expect(limited.live).toBe(true);
+  // The space does not resume by itself (default): the banner only says what the CLI exposed.
+  expect(limited.limit).toMatchObject({ active: true, autoResume: { enabled: false, outcome: 'off' } });
+  expect(limited.errorMessage).toMatch(/^Limite d'utilisation atteinte( : levée à .+)?\.$/);
+  const limitBanner = page.getByRole('alert').filter({ hasText: "Limite d'utilisation atteinte" }).filter({ has: page.getByRole('switch') });
+  await expect(limitBanner).toBeVisible();
+  await expect(limitBanner).toContainText('Reprenez la session quand vous le souhaitez.');
   await expect(statusBadge(page, "En attente d'instruction")).toBeVisible({ timeout: 30_000 });
   await expect(field(page)).not.toHaveAttribute('readonly', '');
 });

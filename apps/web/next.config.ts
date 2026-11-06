@@ -51,6 +51,10 @@ const nextConfig: NextConfig = {
     // would cut it after 30 s of silence (a first `next dev` compile can take longer). The runner
     // cuts at 60 s itself, with its own page: 70 s here.
     proxyTimeout: 70_000,
+    // src/proxy.ts sees every request: Next buffers its body up to this size (10 Mo by default, cut
+    // beyond). « Joindre » sends up to 20 Mo per file (+ multipart envelope); every route keeps its
+    // own, smaller limit (apiRoute: 1 Mo JSON by default).
+    proxyClientMaxBodySize: 21 * 1024 * 1024,
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

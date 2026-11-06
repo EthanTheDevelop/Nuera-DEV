@@ -7,8 +7,9 @@ import {
   CliStatusSchema,
   PermissionRequestDtoSchema,
   SessionEventItemSchema,
+  UsageLimitSchema,
 } from '../runner/sessions';
-import { IsoDateSchema, SessionStatusSchema, UuidSchema } from '../runner/common';
+import { IsoDateSchema, PermissionModeSchema, SessionStatusSchema, UuidSchema } from '../runner/common';
 
 export * from './format';
 
@@ -45,6 +46,12 @@ export const SessionStatusEventSchema = z.object({
   pendingPermissionId: UuidSchema.nullable(),
   remoteControlUrl: z.string().nullable(),
   queuedInstructions: z.number().int(),
+  /** Usage limit of the subscription and its automatic resumption; absent from older runners. */
+  limit: UsageLimitSchema.nullable().optional(),
+  /** Permission mode the CLI reports (hooks, Maj+Tab confirmed on screen); absent from older runners. */
+  permissionMode: PermissionModeSchema.optional(),
+  /** `--model` of the next launch (`/model` typed from the composer updates it); absent from older runners. */
+  model: z.string().nullable().optional(),
 });
 export type SessionStatusEvent = z.infer<typeof SessionStatusEventSchema>;
 

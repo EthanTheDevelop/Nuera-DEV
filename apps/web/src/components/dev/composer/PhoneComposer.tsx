@@ -6,6 +6,7 @@ import { cn } from '@/lib/cn';
 import { useAutoGrow } from '../hooks/use-auto-grow';
 import { useKeyboardInset } from '../hooks/use-keyboard-inset';
 import { SEND_DISABLED_CLASSES } from './Composer';
+import { attachmentSubmitOptions, useComposerTools, type ComposerTools } from './ComposerToolbar';
 import { DictationButton, DictationStatus } from './DictationButton';
 import { useComposer, type ComposerState } from './use-composer';
 import { useComposerDictation } from './use-dictation';
@@ -30,6 +31,8 @@ export interface PhoneComposerProps {
   sending?: boolean;
   /** Attachment picker; omitted → no paperclip. */
   onAttach?: () => void;
+  /** Compact row of tools above the field (Joindre, model, mode, « / »), 44 px targets; replaces the paperclip. */
+  tools?: ComposerTools;
   /**
    * Follow the on-screen keyboard (S1): the bottom safe-area spacer collapses while it is up.
    * The page keeps the composer pinned (100dvh + `interactive-widget=resizes-content`, or
@@ -57,16 +60,18 @@ export function PhoneComposer({
   disabledReason,
   sending,
   onAttach,
+  tools,
   keyboardAware = true,
   maxHeight = 120,
   textareaRef,
   label = 'Instruction pour Claude',
   className,
 }: PhoneComposerProps) {
-  const composer = useComposer({ state, value, defaultValue, onValueChange, onSubmit, sending, textareaRef });
+  const composer = useComposer({ state, value, defaultValue, onValueChange, onSubmit, sending, textareaRef, ...attachmentSubmitOptions(tools?.attachments) });
   useAutoGrow(composer.innerRef, composer.value, maxHeight);
   // No focus on start: it would open the on-screen keyboard over the thread.
   const { dictation, submit, onKeyDown } = useComposerDictation(composer);
+  const toolbar = useComposerTools(composer, tools, 'phone');
   const keyboard = useKeyboardInset();
   const keyboardOpen = keyboardAware && keyboard.open;
   const blocked = !composer.accepts;
@@ -78,14 +83,22 @@ export function PhoneComposer({
       data-keyboard={keyboardOpen ? 'open' : 'closed'}
       onBlur={dictation.onBlur}
       className={cn(
-        'w-full border-t border-border bg-bg px-3 pt-2',
+        'relative w-full border-t border-border bg-bg px-3 pt-2',
         keyboardOpen ? 'pb-0' : 'pb-[max(env(safe-area-inset-bottom),8px)]',
         className,
       )}
     >
+      {toolbar.panel}
+      {tools ? (
+        <div className="-mx-1 flex min-w-0 items-center gap-1 pb-1.5" data-composer-tools>
+          {toolbar.left}
+        </div>
+      ) : null}
+      {toolbar.chips ? <div className="px-1 pb-2">{toolbar.chips}</div> : null}
+      {toolbar.noteLine ? <div className="px-1 pb-2">{toolbar.noteLine}</div> : null}
       <DictationStatus dictation={dictation} className="px-1 pb-2" />
       <div className="flex items-end gap-1.5">
-        {onAttach ? (
+        {!tools && onAttach ? (
           <IconButton
             icon="paperclip"
             label="Joindre un fichier"
@@ -107,7 +120,11 @@ export function PhoneComposer({
             // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
             value={composer.value}
             onChange={composer.onChange}
-            onKeyDown={onKeyDown}
+            {...toolbar.fieldProps}
+            onKeyDown={(event) => {
+              if (toolbar.handleKeyDown(event)) return;
+              onKeyDown(event);
+            }}
             placeholder={shownPlaceholder}
             readOnly={blocked}
             aria-disabled={blocked || undefined}

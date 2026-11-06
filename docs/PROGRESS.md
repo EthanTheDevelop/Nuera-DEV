@@ -112,6 +112,20 @@ rechargement à chaud traverse la chaîne (sans lui `next dev` 16 ne s'hydrate p
 runner écrit les pages d'erreur et le script de position ; la barre d'outils signale un cadre resté sans page 15 s.
 Tests : e2e « un vrai next dev » (`apercu.spec.ts`), runner « direct mode » et WebSocket, `gate` (web).
 
+## Reprise automatique après la limite d'utilisation (lot Z1, 6 novembre 2026)
+
+Quand le CLI officiel s'arrête sur la limite de l'abonnement (`StopFailure` `rate_limit`, avis « 5-hour limit
+reached ∙ resets 3pm » du journal ou de l'écran, `resets_at` de la status line — rien d'autre, aucune estimation),
+le runner l'enregistre (`sessions.usage_limit`, migration `0006`) et, si l'option est active, tape l'instruction de
+reprise 2 min après la levée (ou `claude --resume` si le CLI a disparu) ; 5 tentatives au plus, levée inconnue : un
+essai toutes les 30 min pendant 6 h ; persistant au redémarrage ; annulé par une instruction, un arrêt, un archivage
+ou l'option coupée. Défaut de l'espace désactivé + « Instruction de reprise » (Paramètres › Claude Code), choix par
+session (`sessions.auto_resume`). Web : bandeau du Workspace, badge, menu « … », feuille téléphone, Sessions, Accueil,
+route `POST /api/sessions/[id]/auto-resume`, journal `session.auto_resume_*`. Tests : runner `usage-limit.test.ts`,
+`restricted.test.ts` ; db migrations ; web `settings.test.ts`, `sessions.test.ts`, `internal.test.ts`, isolation,
+`usage-limit.test.ts` ; e2e `reprise.spec.ts` (pile `reprise`, web 3640, bureau + téléphone) et
+`parcours-2-session-en-direct.spec.ts`. Détails : `docs/MULTICOMPTE.md` §14, lot Z1.
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :

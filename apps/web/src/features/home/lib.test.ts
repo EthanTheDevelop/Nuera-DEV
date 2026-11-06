@@ -44,6 +44,7 @@ function session(overrides: Partial<HomeSession> = {}): HomeSession {
     startedAt: '2026-11-04T09:00:05.000Z',
     lastActivityAt: '2026-11-04T09:10:00.000Z',
     pendingPermission: null,
+    limit: null,
     ...overrides,
   };
 }
@@ -77,6 +78,10 @@ describe('Accueil · copie', () => {
     expect(progressLine(session({ planTotal: null, planDone: null }))).toBe('Écrit les tests de pipeline-totals.ts');
     expect(progressLine(session({ currentActivity: null }))).toBe('Plan 3 / 5');
     expect(progressLine(session({ currentActivity: null, planTotal: null }))).toBeNull();
+    // Stopped by the usage limit: what the CLI announced, instead of a plan that no longer moves.
+    const limit = { active: true, detectedAt: '2026-11-04T13:00:00Z', resetsAt: '2026-11-04T14:00:00.000Z', source: 'hook' as const, window: 'five_hour' as const, message: null, autoResume: null };
+    expect(progressLine(session({ limit }))).toMatch(/^Limite atteinte · levée à (.+ )?15 h 00$/);
+    expect(progressLine(session({ limit: { ...limit, active: false } }))).toBe('Plan 3 / 5 · écrit les tests de pipeline-totals.ts');
   });
 
   it('ne met pas en minuscule un sigle', () => {

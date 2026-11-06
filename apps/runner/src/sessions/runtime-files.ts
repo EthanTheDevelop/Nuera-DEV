@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { GitIdentitySchema, McpConfigSchema, type GitIdentity } from '@nuera/shared/runner';
+import { AutoResumeOptionsSchema, GitIdentitySchema, McpConfigSchema, type AutoResumeOptions, type GitIdentity } from '@nuera/shared/runner';
 import { z } from 'zod';
 
 /** MCP config as received (input type: `args` may be omitted), validated again here. */
@@ -51,6 +51,8 @@ export const LaunchFileSchema = z.object({
   blockBypassPermissions: z.boolean().optional(),
   /** Author of Claude's commits (GIT_AUTHOR_* / GIT_COMMITTER_*). Contract 2. */
   gitIdentity: GitIdentitySchema.nullable().optional(),
+  /** « Reprise automatique après la limite d'utilisation » (effective value from the web; absent: off). */
+  autoResume: AutoResumeOptionsSchema.nullable().optional(),
 });
 export type LaunchFile = z.infer<typeof LaunchFileSchema>;
 
@@ -134,6 +136,7 @@ export async function writeSessionFiles(
     hookToken: string | null;
     blockBypassPermissions?: boolean;
     gitIdentity?: GitIdentity | null;
+    autoResume?: AutoResumeOptions | null;
   },
 ): Promise<SessionFiles> {
   validateSessionEnv(input.launch.env);
@@ -165,6 +168,7 @@ export async function writeSessionFiles(
     updatedAt: new Date().toISOString(),
     ...(input.blockBypassPermissions !== undefined ? { blockBypassPermissions: input.blockBypassPermissions } : {}),
     ...(input.gitIdentity ? { gitIdentity: GitIdentitySchema.parse(input.gitIdentity) } : {}),
+    ...(input.autoResume ? { autoResume: AutoResumeOptionsSchema.parse(input.autoResume) } : {}),
   };
   await writeFile(files.launch, JSON.stringify(launch, null, 2), 'utf8');
   if (input.hookToken) {

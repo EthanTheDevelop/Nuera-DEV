@@ -17,6 +17,7 @@ const runnerMock = {
   stopSession: vi.fn<RunnerClient['stopSession']>(),
   worktreeChanges: vi.fn<RunnerClient['worktreeChanges']>(),
   announceSession: vi.fn<RunnerClient['announceSession']>(),
+  setSessionAutoResume: vi.fn<RunnerClient['setSessionAutoResume']>(),
 };
 /** Server whose client each call asked for (the runner of the server holding the resource). */
 const servers = vi.hoisted(() => ({ asked: [] as string[] }));
@@ -382,6 +383,87 @@ describe('archive, rename, stop, resume', () => {
     expect(new Set(servers.asked)).toEqual(new Set([TEST_ENVIRONMENT_ID]));
     await expect(startNewSession(ctx, archived.id)).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(runnerMock.startSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("reprise automatique après la limite d'utilisation", () => {
+  const limit = (scheduled: boolean) => ({
+    active: true,
+    detectedAt: '2026-11-06T12:40:00.000Z',
+    resetsAt: '2026-11-06T14:00:00.000Z',
+    source: 'hook',
+    window: 'five_hour',
+    message: '5-hour limit reached ∙ resets 3pm',
+    autoResume: {
+      enabled: scheduled,
+      nextAttemptAt: scheduled ? '2026-11-06T14:02:00.000Z' : null,
+      mode: scheduled ? 'reset' : null,
+      attempts: 0,
+      maxAttempts: 5,
+      lastAttemptAt: null,
+      giveUpAt: null,
+      outcome: scheduled ? 'scheduled' : 'off',
+    },
+  });
+
+  it('sends the effective value (session choice, else the space default) at launch and on change, audited', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/a');
+    await (await db()).update(spaceSettings).set({ autoResumeAfterLimit: true, autoResumeInstruction: 'Reprends les tests.' }).where(eq(spaceSettings.spaceId, TEST_SPACE_ID));
+    const { invalidateSettingsCache } = await import('@/server/settings');
+    invalidateSettingsCache();
+    const row = await createSessionRow(project.id, wt.id, { status: 'waiting_input', usageLimit: limit(true) });
+    runnerMock.getSession.mockResolvedValue(dto({ id: row.id, projectId: project.id, status: 'waiting_input', live: true, limit: limit(false) as SessionDto['limit'] }));
+    runnerMock.setSessionAutoResume.mockResolvedValue(dto({ id: row.id, projectId: project.id, status: 'waiting_input', live: true }));
+    const { setSessionAutoResume, buildLaunchOptions } = await import('./index');
+
+    const result = await setSessionAutoResume(ctx, row.id, false);
+    expect(runnerMock.setSessionAutoResume.mock.calls[0]![0]).toMatchObject({ params: { sessionId: row.id }, body: { enabled: false, instruction: 'Reprends les tests.' } });
+    expect(result.session).toMatchObject({ autoResume: false, limit: { active: true, autoResume: { outcome: 'off' } } });
+    const [stored] = await (await db()).select({ autoResume: sessions.autoResume }).from(sessions).where(eq(sessions.id, row.id));
+    expect(stored?.autoResume).toBe(false);
+    expect((await buildLaunchOptions(ctx, { projectId: project.id, spaceId: TEST_SPACE_ID }, { autoResume: false })).autoResume).toEqual({ enabled: false, instruction: 'Reprends les tests.' });
+    expect((await buildLaunchOptions(ctx, { projectId: project.id, spaceId: TEST_SPACE_ID })).autoResume).toEqual({ enabled: true, instruction: 'Reprends les tests.' });
+
+    // Back to the space default (null): the runner gets the space's value.
+    await setSessionAutoResume(ctx, row.id, null);
+    expect(runnerMock.setSessionAutoResume.mock.calls[1]![0].body).toEqual({ enabled: true, instruction: 'Reprends les tests.' });
+    const entries = await (await db()).select().from(auditLog).where(eq(auditLog.action, 'session.auto_resume_changed'));
+    expect(entries.map((e) => e.summary)).toEqual([
+      'reprise automatique après la limite : désactivée · « Session »',
+      "reprise automatique après la limite : défaut de l'espace (activée) · « Session »",
+    ]);
+  });
+
+  it('« Reprendre maintenant » types the instruction of the space while the limit stops the session, refused otherwise', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/a');
+    const limited = await createSessionRow(project.id, wt.id, { status: 'waiting_input', usageLimit: limit(true) });
+    const free = await createSessionRow(project.id, wt.id, { status: 'waiting_input' });
+    runnerMock.getSession.mockResolvedValue(dto({ id: limited.id, projectId: project.id, status: 'waiting_input', live: true }));
+    const { resumeAfterLimitNow } = await import('./index');
+    const sent: string[] = [];
+    await resumeAfterLimitNow(ctx, limited.id, async (text) => sent.push(text));
+    expect(sent).toEqual(["Continue là où tu t'es arrêté."]);
+    await expect(resumeAfterLimitNow(ctx, free.id, async (text) => sent.push(text))).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(sent).toHaveLength(1);
+    const [entry] = await (await db()).select().from(auditLog).where(eq(auditLog.action, 'session.auto_resume_now'));
+    expect(entry?.metadata).toMatchObject({ resetsAt: '2026-11-06T14:00:00.000Z', scheduledAt: '2026-11-06T14:02:00.000Z' });
+  });
+
+  it('drops the limit with the archive: an archived session never resumes by itself', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/a');
+    const row = await createSessionRow(project.id, wt.id, { status: 'interrupted', usageLimit: limit(true) });
+    runnerMock.getSession.mockResolvedValue(dto({ id: row.id, projectId: project.id, status: 'interrupted' }));
+    runnerMock.announceSession.mockResolvedValue(dto({ id: row.id, projectId: project.id, status: 'archived' }));
+    const { archiveSession, setSessionAutoResume } = await import('./index');
+    const archived = await archiveSession(ctx, row.id);
+    expect(archived.session.limit).toBeNull();
+    const [stored] = await (await db()).select({ usageLimit: sessions.usageLimit }).from(sessions).where(eq(sessions.id, row.id));
+    expect(stored?.usageLimit).toBeNull();
+    await expect(setSessionAutoResume(ctx, row.id, true)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(runnerMock.setSessionAutoResume).not.toHaveBeenCalled();
   });
 });
 

@@ -95,6 +95,16 @@ export function stopSessionRequest(sessionId: string, options: { force?: boolean
   );
 }
 
+/** « Reprise automatique après la limite d'utilisation » of this session (null = the space default). */
+export function setAutoResumeRequest(sessionId: string, enabled: boolean | null): Promise<SessionActionResponse> {
+  return call(`${sessionUrl(sessionId)}/auto-resume`, { method: 'POST', body: JSON.stringify({ enabled }) }, "Le réglage de reprise automatique n'a pas pu être enregistré.");
+}
+
+/** « Reprendre maintenant » while the usage limit stops the session. */
+export function resumeAfterLimitRequest(sessionId: string): Promise<SessionActionResponse> {
+  return call(`${sessionUrl(sessionId)}/auto-resume`, { method: 'POST', body: JSON.stringify({ resumeNow: true }) }, "La session n'a pas pu reprendre.");
+}
+
 export function archiveSessionRequest(sessionId: string): Promise<SessionActionResponse> {
   return call(sessionUrl(sessionId), { method: 'DELETE' }, "La session n'a pas pu être archivée.");
 }

@@ -61,6 +61,8 @@ export function toSettingsValues(view: SettingsView): SettingsValues {
     permissionWaitSeconds: view.space.permissionWaitSeconds,
     remoteControlByDefault: view.space.remoteControlByDefault,
     worktreeStaleDays: view.space.worktreeStaleDays,
+    autoResumeAfterLimit: view.space.autoResumeAfterLimit,
+    autoResumeInstruction: view.space.autoResumeInstruction,
     theme: view.user.theme,
     locale: view.user.locale,
     gitAuthorName: view.user.gitAuthorName,

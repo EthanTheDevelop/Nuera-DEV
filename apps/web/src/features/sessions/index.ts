@@ -10,7 +10,9 @@ export {
   createSessionRequest,
   fetchSessionSummary,
   renameSessionRequest,
+  resumeAfterLimitRequest,
   resumeSessionRequest,
+  setAutoResumeRequest,
   stopSessionRequest,
 } from './api';
 export {

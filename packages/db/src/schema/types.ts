@@ -149,6 +149,10 @@ export type NotificationKind =
   | 'session_finished'
   | 'session_failed'
   | 'session_interrupted'
+  /** Stopped on the Claude subscription usage limit (reset time, automatic resumption). */
+  | 'session_usage_limit'
+  /** Resumed by itself once the usage limit was lifted. */
+  | 'session_auto_resumed'
   | 'operation_failed'
   | 'operation_succeeded'
   | 'integration_expiring'

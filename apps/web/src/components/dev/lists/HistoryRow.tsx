@@ -46,6 +46,11 @@ export interface HistoryRowProps {
   href?: string;
   /** `table` = D06 `Dev · Ligne d'historique` (215:1791) · `list` = M06 two-line row. */
   variant?: 'table' | 'list';
+  /**
+   * Replaces the status badge (warn) while something stops the session that its status does not
+   * say: the usage limit (« Limite atteinte · reprise à 15 h 02 »).
+   */
+  statusNote?: string | null;
   className?: string;
 }
 
@@ -64,9 +69,11 @@ export function HistoryRow({
   action,
   href,
   variant = 'table',
+  statusNote,
   className,
 }: HistoryRowProps) {
   const meta = historyStatusMeta(status, resumable);
+  const badge = statusNote ? { tone: 'warn' as const, label: statusNote, shortLabel: statusNote } : meta;
   const duration = typeof durationMs === 'number' ? formatDuration(durationMs) : null;
 
   if (variant === 'list') {
@@ -91,7 +98,7 @@ export function HistoryRow({
           )}
           <span className="truncate font-mono text-app-11 text-muted">{joinParts(projectName, branch)}</span>
           <div className="flex min-w-0 items-center gap-2">
-            <Badge tone={meta.tone}>{meta.shortLabel}</Badge>
+            <Badge tone={badge.tone}>{badge.shortLabel}</Badge>
             <span className="truncate font-sans text-app-12 text-muted">
               <LiveTime value={startedAt} format="day" />
               {duration ? `${SEP}${duration}` : null}
@@ -136,7 +143,7 @@ export function HistoryRow({
         {duration ? `${SEP}${duration}` : null}
       </p>
       <div className="flex min-w-0">
-        <Badge tone={meta.tone}>{meta.label}</Badge>
+        <Badge tone={badge.tone} title={statusNote ?? undefined}>{badge.label}</Badge>
       </div>
       <div className="flex min-w-0 justify-end">{resolved ? <RowActionButton action={resolved} /> : null}</div>
     </div>

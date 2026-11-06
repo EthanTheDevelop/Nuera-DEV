@@ -4,6 +4,7 @@
  * inline T4 panels; `reason` is the runner sub-code (SESSION_BUSY_PERMISSION, BRANCH_PROTECTED…).
  */
 import type { ChangesResponse, FileContent, FileDiff, TreeEntry } from '@nuera/shared/runner';
+import type { AttachmentDto, ComposerPaletteData, SwitchablePermissionMode } from './lib/composer';
 import type {
   CommitInput,
   CommitResultView,
@@ -59,7 +60,8 @@ async function call<T>(url: string, init: RequestInit, fallbackMessage: string):
       ...init,
       cache: 'no-store',
       credentials: 'same-origin',
-      headers: { accept: 'application/json', ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+      // FormData (« Joindre »): the browser sets its own multipart boundary.
+      headers: { accept: 'application/json', ...(typeof init.body === 'string' ? { 'content-type': 'application/json' } : {}), ...init.headers },
     });
   } catch (error) {
     if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
@@ -205,4 +207,27 @@ export function stopRunRequest(runId: string): Promise<void> {
 /** « Aperçu » handoff: single-use URL of the preview host (60 s) for a live dev server. */
 export function previewHandoffRequest(runId: string, path?: string): Promise<{ url: string; origin: string; expiresAt: string }> {
   return call('/api/previews', post({ runId, ...(path ? { path } : {}) }), "L'aperçu n'a pas pu être ouvert.");
+}
+
+// --- Composer (« Joindre », model and mode chips, palette) --------------------------------------
+
+export function uploadAttachmentRequest(sessionId: string, file: File, signal?: AbortSignal): Promise<AttachmentDto> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  return call(`${sessionUrl(sessionId)}/attachments`, { method: 'POST', body, ...(signal ? { signal } : {}) }, "La pièce jointe n'a pas pu être envoyée.");
+}
+
+export function setModelRequest(sessionId: string, model: string): Promise<{ applied: 'live' | 'next_launch'; session: { model: string | null } }> {
+  return call(`${sessionUrl(sessionId)}/model`, post({ model }), "Le modèle n'a pas pu être changé.");
+}
+
+export function setPermissionModeRequest(
+  sessionId: string,
+  mode: SwitchablePermissionMode,
+): Promise<{ applied: 'live' | 'next_launch'; presses: number; mode: string; session: { permissionMode: string } }> {
+  return call(`${sessionUrl(sessionId)}/permission-mode`, post({ mode }), "Le mode n'a pas pu être changé.");
+}
+
+export function fetchComposerPalette(sessionId: string, signal?: AbortSignal): Promise<ComposerPaletteData> {
+  return call(`${sessionUrl(sessionId)}/composer`, get(signal), 'Les commandes de la palette sont indisponibles.');
 }

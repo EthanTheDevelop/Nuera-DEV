@@ -1,4 +1,4 @@
-import { auditLog, environments, notifications, projectMcpServers, projects } from '@nuera/db/schema';
+import { auditLog, environments, notifications, projectMcpServers, projects, sessions } from '@nuera/db/schema';
 import { NextRequest } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -207,6 +207,32 @@ describe('internal routes · notify', () => {
     const rows = await db.select().from(notifications);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ userId: b.user.id, spaceId: b.space.id, sessionId: resB.sessionId, projectId: resB.projectId });
+  });
+
+  it('journals the automatic resumption after the usage limit in the space, once per stop', async () => {
+    const { notify } = await routes();
+    const usageLimit = {
+      active: true,
+      detectedAt: '2026-11-06T12:40:00.000Z',
+      resetsAt: '2026-11-06T14:00:00.000Z',
+      source: 'hook',
+      window: 'five_hour',
+      message: '5-hour limit reached ∙ resets 3pm',
+      autoResume: { enabled: true, nextAttemptAt: '2026-11-06T14:02:00.000Z', mode: 'reset', attempts: 0, maxAttempts: 5, lastAttemptAt: null, giveUpAt: null, outcome: 'scheduled' },
+    };
+    await db.update(sessions).set({ usageLimit }).where(eq(sessions.id, resB.sessionId));
+    const limitBody = { kind: 'session_usage_limit', severity: 'warning', title: "x : limite d'utilisation atteinte", sessionId: resB.sessionId, dedupKey: `session:${resB.sessionId}:limit:1` };
+    expect((await call(notify, '/api/internal/notify', limitBody, `Bearer ${b.token}`)).status).toBe(200);
+    expect((await call(notify, '/api/internal/notify', limitBody, `Bearer ${b.token}`)).status).toBe(200);
+    const firedBody = { kind: 'session_auto_resumed', severity: 'success', title: 'Session reprise automatiquement', sessionId: resB.sessionId, dedupKey: `session:${resB.sessionId}:auto-resume:1:1` };
+    expect((await call(notify, '/api/internal/notify', firedBody, `Bearer ${b.token}`)).status).toBe(200);
+    const entries = await db.select().from(auditLog).where(eq(auditLog.targetId, resB.sessionId));
+    expect(entries.map((e) => [e.action, e.spaceId, e.actorKind])).toEqual([
+      ['session.auto_resume_scheduled', b.space.id, 'runner'],
+      ['session.auto_resume_fired', b.space.id, 'runner'],
+    ]);
+    expect(entries[0]?.summary).toMatch(/^reprise automatique prévue à .*15 h 02 après la limite d'utilisation : « /);
+    expect(entries[0]?.metadata).toMatchObject({ nextAttemptAt: '2026-11-06T14:02:00.000Z', resetsAt: '2026-11-06T14:00:00.000Z' });
   });
 
   it("refuses A's session or project from runner B (404, journalled) and notifies nobody", async () => {

@@ -15,6 +15,8 @@
  *   { wait: { command, seconds, every?, output?: [] } }      long step with streaming terminal output
  *                                                   (cancelled by Échap: no hook follows, like the CLI)
  *   { fail: { error: 'authentication_failed'|'rate_limit'|…, details? } }   StopFailure
+ *   { fail: { error: 'rate_limit', resetInSeconds } }   usage limit that lasts: every prompt stops on
+ *                                                   it (notice, status line at 100 %) until the reset
  *   { final: '…' }                                  last message (Stop hook)
  *   { pause: ms }
  * `denied` = message when the owner refuses a permission. Built-in names `full`, `long`, `fail`
@@ -41,7 +43,7 @@ export type ScriptStep =
   | { remove: { file: string; description?: string }; ask?: boolean; suggestions?: unknown[] }
   | { bash: { command: string; description?: string; run?: boolean; output?: string; exitCode?: number; durationMs?: number; timeoutSec?: number }; ask?: boolean; suggestions?: unknown[] }
   | { wait: { command: string; description?: string; seconds: number; every?: number; output?: string[] } }
-  | { fail: { error: string; details?: string } }
+  | { fail: { error: string; details?: string; resetInSeconds?: number } }
   | { final: string }
   | { pause: number };
 
@@ -369,6 +371,16 @@ export const BUILTIN_SCRIPTS: Record<string, FakeCliScript> = {
   limite: {
     description: "Limite d'utilisation atteinte.",
     steps: [{ fail: { error: 'rate_limit', details: 'You have hit your session limit' } }],
+  },
+
+  /**
+   * Usage limit with a reset time (« 5-hour limit reached ∙ resets … »), lifted 20 s later: with the
+   * stack's margin (NUERA_AUTO_RESUME_MARGIN_SECONDS=2) an automatic resumption fires 22 s after it.
+   * `scenario:limit:<s>` (built into the fake CLI) does the same with any delay.
+   */
+  'limite-levee': {
+    description: "Limite d'utilisation atteinte, levée 20 s plus tard.",
+    steps: [{ say: 'Je commence la livraison.' }, { fail: { error: 'rate_limit', resetInSeconds: 20 } }],
   },
 };
 

@@ -5,8 +5,9 @@ import { CLAUDE_RECONNECT_HREF, ClaudeDisconnected } from '@/components/shell';
 import { Banner, CompactButton } from '@/components/ui';
 import { useNow } from '@/hooks/useNow';
 import { cn } from '@/lib/cn';
-import { useWorkspace } from '../WorkspaceContext';
+import { useWorkspace, type ActionError } from '../WorkspaceContext';
 import { persistenceContextFor } from '../lib/thread';
+import { useWorkspaceComposerTools } from './useWorkspaceComposerTools';
 
 /** Error of the last send (T4 in place: what failed, what was not touched). */
 function SendError() {
@@ -25,6 +26,25 @@ function SendError() {
       className="w-full"
     >
       {[message, untouched].filter(Boolean).join(' ')}
+    </Banner>
+  );
+}
+
+/** Error of a composer tool (model, mode): what failed, what was not touched. */
+function ToolError({ error, onClose }: { error: ActionError | null; onClose: () => void }) {
+  if (!error) return null;
+  return (
+    <Banner
+      tone="danger"
+      title={error.title}
+      action={
+        <CompactButton variant="discret" onClick={onClose}>
+          Fermer
+        </CompactButton>
+      }
+      className="w-full"
+    >
+      {[error.message, error.untouched].filter(Boolean).join(' ')}
     </Banner>
   );
 }
@@ -51,17 +71,20 @@ export function ComposerArea({ variant }: { variant: 'desktop' | 'phone' }) {
   const persistence = usePersistence();
   const { session } = ws.ctl.state;
   const canInterrupt = ws.canInterrupt && ws.composer.state === 'running';
+  const { tools, error: toolError, clearError } = useWorkspaceComposerTools(variant);
 
   if (variant === 'phone') {
     return (
       <div className="flex w-full flex-col">
-        {ws.claudeProblem || ws.sendError ? (
+        {ws.claudeProblem || ws.sendError || toolError ? (
           <div className="flex flex-col gap-2 px-3 pb-2">
             {ws.claudeProblem ? <ClaudeDisconnected state={ws.claudeProblem} reconnectHref={CLAUDE_RECONNECT_HREF} serverName={ws.host} variant="banner" /> : null}
             <SendError />
+            <ToolError error={toolError} onClose={clearError} />
           </div>
         ) : null}
         <PhoneComposer
+          tools={tools}
           state={ws.composer.state}
           disabledReason={ws.composer.reason}
           onSubmit={ws.send}
@@ -80,7 +103,9 @@ export function ComposerArea({ variant }: { variant: 'desktop' | 'phone' }) {
       <div className={cn('flex w-full max-w-[720px] flex-col gap-2')}>
         {ws.claudeProblem ? <ClaudeDisconnected state={ws.claudeProblem} reconnectHref={CLAUDE_RECONNECT_HREF} serverName={ws.host} variant="card" /> : null}
         <SendError />
+        <ToolError error={toolError} onClose={clearError} />
         <Composer
+          tools={tools}
           state={ws.composer.state}
           disabledReason={ws.composer.reason}
           onSubmit={ws.send}

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../index';
 import { environments, spaceMembers, spaceSettings, spaces, user, userPreferences } from '../schema';
 import type { EnvironmentConfigSource, EnvironmentStatus, InstanceRole } from '../schema/types';
@@ -73,7 +73,9 @@ export async function seedSpace(db: DbOrTx, options: { userId: string; name?: st
     .returning({ id: spaces.id });
   const spaceId = row!.id;
   await db.insert(spaceMembers).values({ spaceId, userId: options.userId, role: 'owner' });
-  await db.insert(spaceSettings).values({ spaceId });
+  // Only the key (the schema defaults do the rest): seeds stay valid on a database migrated to an
+  // earlier step (upgrade tests), whose space_settings lacks the columns added since.
+  await db.execute(sql`insert into ${spaceSettings} (space_id) values (${spaceId})`);
   await db.insert(userPreferences).values({ userId: options.userId }).onConflictDoNothing();
   return spaceId;
 }

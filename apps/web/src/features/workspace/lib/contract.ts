@@ -11,6 +11,7 @@ import type {
   GitStatus,
   PermissionRequestDto,
   SessionEventItem,
+  UsageLimit,
 } from '@nuera/shared/runner';
 import { isSafeRelativePath, isValidBranchName } from '@nuera/shared/paths';
 import { z } from 'zod';
@@ -52,6 +53,10 @@ export interface WorkspaceSession {
   endedAt: string | null;
   lastActivityAt: string | null;
   createdAt: string;
+  /** Stopped on the subscription usage limit and its automatic resumption (runner); null = none. */
+  limit: UsageLimit | null;
+  /** « Reprise automatique après la limite d'utilisation »: this session's choice (null = the space's). */
+  autoResume: { override: boolean | null; spaceDefault: boolean };
 }
 
 export interface WorkspaceProject {

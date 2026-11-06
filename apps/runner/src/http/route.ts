@@ -26,6 +26,7 @@ export function defineRoute<K extends RunnerRouteName>(app: FastifyInstance, nam
   app.route({
     method: def.method,
     url: def.path,
+    ...(def.bodyLimit ? { bodyLimit: def.bodyLimit } : {}),
     handler: async (request, reply) => {
       const params = def.params ? def.params.parse(request.params ?? {}) : {};
       const query = def.query ? def.query.parse(request.query ?? {}) : {};
