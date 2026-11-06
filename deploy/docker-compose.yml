@@ -61,6 +61,9 @@ services:
       MAIL_FROM: ${MAIL_FROM:-}
       TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-real-ip}
       NUERA_SERVER_STATUS_URL: ${NUERA_SERVER_STATUS_URL:-}
+      # « Aperçu »: host of the preview origin (e.g. nuera-dev-apercu.perso.nuera.studio), also added to this service's
+      # domains in Coolify; empty = preview off (the Workspace says why).
+      PREVIEW_HOST: ${PREVIEW_HOST:-}
       # Optional fallback PAT: only for the default server's space, never served to an MCP server.
       GITHUB_FALLBACK_TOKEN: ${GITHUB_FALLBACK_TOKEN:-}
       # Private hosts the outbound-request (SSRF) guard still lets through, comma-separated; empty = none.

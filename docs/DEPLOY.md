@@ -103,6 +103,7 @@ Les trois volumes du serveur par défaut gardent leurs noms d'avant la version m
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | web | **secret** (privée) — `npx web-push generate-vapid-keys` (notifications téléphone) |
 | `VAPID_SUBJECT` | web | optionnel : `mailto:<adresse du propriétaire>` ou URL https (défaut : `APP_URL`) |
 | `NUERA_SERVER_STATUS_URL` | web | optionnel : page d'état de l'hébergeur (https), proposée quand le serveur est injoignable |
+| `PREVIEW_HOST` | web | optionnel : hôte de l'**Aperçu** (site en développement d'un worktree), par exemple `nuera-dev-apercu.perso.nuera.studio` ; un autre hôte que celui d'`APP_URL`, de préférence un sous-domaine du même domaine (cookie `SameSite=Lax`). Le même service `web` le sert : ajouter ce domaine au service **web** (voir « Aperçu » ci-dessous). Vide = aperçu désactivé, la raison s'affiche dans le Workspace |
 | `GITHUB_FALLBACK_TOKEN` | web | optionnel, **secret** : PAT de secours (déconseillé), réservé à l'espace du serveur par défaut, jamais servi au MCP GitHub — laisser vide avec l'application GitHub |
 | `NUERA_PRIVATE_HOSTS` | web | optionnel : hôtes privés que la garde des requêtes sortantes (serveurs MCP, Coolify) laisse quand même joindre, séparés par des virgules ; vide = aucun |
 | `NUERA_WEB_SCHEDULER` | web | optionnel : `on` (défaut) — vérifications périodiques des intégrations ; `off` réservé aux tests |
@@ -120,6 +121,13 @@ Les trois volumes du serveur par défaut gardent leurs noms d'avant la version m
 premières par sécurité ; les deux dernières désactiveraient Remote Control), ni `NUERA_CLAUDE_CONFIG_DIR`
 (développement et tests seulement : en production, chaque conteneur garde la connexion Claude dans son HOME). La
 double authentification est obligatoire pour tous les comptes : aucune variable ne la désactive.
+
+**Aperçu (`PREVIEW_HOST`)** : le code du projet prévisualisé n'est pas de confiance, il ne s'exécute donc jamais sur
+l'origine de l'application. Dans Coolify, service **web** → *Domains* : ajouter, à côté de l'URL de l'application, le
+domaine d'aperçu (séparés par une virgule, port 3000, certificat Let's Encrypt automatique), puis poser
+`PREVIEW_HOST` au même nom (sans `https://`). Le web répond sur ce domaine uniquement par le relais de l'aperçu (aucune
+page ni route de l'application) et l'application n'y sert rien d'autre. DNS : `*.perso.nuera.studio` couvre déjà
+`nuera-dev-apercu.perso.nuera.studio` et `nuera-dev-staging-apercu.perso.nuera.studio`.
 
 5. Déployer. Vérifier : `migrate` termine en succès (« Migrations appliquées. »), `web` et `runner` passent *healthy*
    (le premier démarrage du runner télécharge le CLI Claude Code : ~15 s, dans la marge de 90 s du healthcheck).
@@ -633,6 +641,14 @@ sa propre base, ses secrets, son runner et son CloudBeaver :
 | CloudBeaver | https://db-dev-staging.perso.nuera.studio | https://db-dev.perso.nuera.studio |
 | Runner | 2 cœurs / 3 Go | 4 cœurs / 6 Go |
 | Déploiement | automatique à chaque push sur `staging` | automatique à chaque push sur `main` |
+
+Aperçu : chaque environnement a son domaine d'aperçu, ajouté au service **web** de son app Coolify et recopié dans
+sa variable `PREVIEW_HOST` :
+
+| | Staging | Production |
+|---|---|---|
+| Domaines du service web | `https://nuera-dev-staging.perso.nuera.studio,https://nuera-dev-staging-apercu.perso.nuera.studio` | `https://nuera-dev.perso.nuera.studio,https://nuera-dev-apercu.perso.nuera.studio` |
+| `PREVIEW_HOST` | `nuera-dev-staging-apercu.perso.nuera.studio` | `nuera-dev-apercu.perso.nuera.studio` |
 
 Flux de travail : on développe et on pousse sur `staging` (ou une branche fusionnée dans `staging`), on vérifie sur
 l'URL de staging, puis on fusionne `staging` dans `main` par pull request : seul ce merge met à jour la production.

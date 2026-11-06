@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { loadEnvConfig } from '@next/env';
 import type { NextConfig } from 'next';
+import { appContentSecurityPolicy, githubWebOrigin } from './src/lib/security-headers';
 
 // Monorepo: the single .env lives at the repository root (see .env.example).
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -10,33 +11,12 @@ loadEnvConfig(repoRoot, process.env.NODE_ENV !== 'production', undefined, true);
 
 const isProd = process.env.NODE_ENV === 'production';
 
-/** Browser redirects of the GitHub App flows go to github.com (a local fake in e2e: GITHUB_WEB_URL). */
-function githubWebOrigin(): string {
-  try {
-    return new URL(process.env.GITHUB_WEB_URL?.trim() || 'https://github.com').origin;
-  } catch {
-    return 'https://github.com';
-  }
-}
-
 /**
- * Content-Security-Policy. Scripts/styles are self-hosted (next/font self-hosts Google fonts).
- * 'unsafe-inline' for styles is required by Next.js style injection and Radix positioning.
+ * Content-Security-Policy (src/lib/security-headers.ts). Fixed at build time: the « Aperçu » frame
+ * source (PREVIEW_HOST, a run-time variable) is added to the page responses by src/proxy.ts.
+ * Browser redirects of the GitHub App flows go to github.com (a local fake in e2e: GITHUB_WEB_URL).
  */
-const csp = [
-  "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isProd ? '' : " 'unsafe-eval'"}`,
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://avatars.githubusercontent.com",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "worker-src 'self' blob:",
-  "manifest-src 'self'",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  `form-action 'self' ${githubWebOrigin()}`,
-  'object-src \'none\'',
-].join('; ');
+const csp = appContentSecurityPolicy({ isProd, githubOrigin: githubWebOrigin() });
 
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: csp },

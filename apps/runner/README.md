@@ -143,6 +143,7 @@ Toutes exigent le Bearer et valident leurs entrées avec Zod. **Cloisonnement** 
 | Terminaux | `POST /terminals`, `GET /terminals`, `GET /terminals/:id`, `GET /terminals/:id/stream` (SSE), `POST …/input\|resize`, `DELETE /terminals/:id` |
 | Sessions | `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `POST …/start\|resume\|instruction\|interrupt\|stop`, `GET …/events?afterVersion=`, `GET …/stream` (SSE), `GET …/terminal`, `POST /permissions/:id/decision` |
 | Processus | `POST /runs`, `GET /runs/:id`, `GET /runs/:id/stream` (SSE), `DELETE /runs/:id` |
+| Aperçu | `<toute méthode> /runs/:id/preview/*` — relais brut vers le serveur de développement du lancement (hors `RUNNER_ROUTES`, contrat `RUNNER_PREVIEW_ROUTE`) |
 | CLI Claude | `GET /claude/status?refresh=`, `POST /claude/mcp/sync`, `GET /claude/mcp/:name` |
 
 Écoute locale (127.0.0.1:`RUNNER_HOOK_PORT`, jeton de session en Bearer) : `POST /internal/hooks/:sessionId`,
@@ -275,6 +276,14 @@ worktree ; sinon la session affiche « Action requise dans le terminal » et l'i
 
 - `POST /runs` : commande du projet dans un PTY (couleurs conservées), détection de port (« port 3000 »), lecture
   des résultats Vitest / Jest / Playwright / node:test en direct (« 10 / 10 réussis »), ligne `command_runs`.
+- **Aperçu** (`src/preview/proxy.ts`) : `/v1/runs/:runId/preview/<chemin>` relaie toute méthode
+  (`GET HEAD POST PUT PATCH DELETE OPTIONS`) vers `127.0.0.1` (sinon `::1`) **au port détecté de ce lancement**, qui
+  doit être un `dev` vivant de ce serveur (`PREVIEW_NOT_DEV`, `PREVIEW_NOT_RUNNING`, `PREVIEW_NO_PORT`, 404 pour un
+  inconnu, 502 `PREVIEW_UNREACHABLE`) ; aucun analyseur de corps (flux bruts dans les deux sens, 10 Mo / 256 Mo,
+  60 s sans octet, 10 min par échange) ; en-têtes hop-by-hop, `Authorization` du saut, `X-Forwarded-*`, `x-nuera-*`
+  et cookies de Nuera Dev retirés ; `Host: localhost:<port>`, `Origin`/`Referer` réécrits, `Accept-Encoding:
+  identity` ; réponse marquée `x-nuera-preview: upstream`, sans `X-Frame-Options`/CSP/HSTS, `Location` locale rendue
+  relative, `Set-Cookie` sans `Domain`.
 - Métriques : CPU échantillonné, mémoire limitée par cgroup si applicable, disque de la racine des projets
   (`fs.statfs`), charge, uptime. Disponibilité : battement par minute dans `uptime_daily` sous la clé
   `uptimeServiceKey()` (`runner` pour le serveur par défaut, historique conservé ; `runner:<id>` pour les autres),

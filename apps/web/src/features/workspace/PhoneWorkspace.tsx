@@ -17,6 +17,7 @@ import { FileExplorer } from './panel/FileExplorer';
 import { toDiffViewFile, useFileDiff, useSelectedChange } from './panel/useFileDiff';
 import { ComposerArea } from './session/ComposerArea';
 import { ActionErrorBanner } from './session/SessionColumn';
+import { PreviewPanel } from './preview/PreviewPanel';
 import { SessionTerminal } from './session/SessionTerminal';
 import { Thread } from './thread/Thread';
 import { useWorkspace } from './WorkspaceContext';
@@ -208,6 +209,7 @@ export function PhoneWorkspace() {
   if (tab === 'fichiers') content = <FileExplorer variant="phone" />;
   else if (tab === 'diff') content = <PhoneDiff />;
   else if (tab === 'git') content = <PhoneGit flow={git} />;
+  else if (tab === 'apercu') content = <PreviewPanel variant="phone" />;
   else
     content = (
       <>
@@ -233,17 +235,19 @@ export function PhoneWorkspace() {
       >
         <div className="shrink-0 border-b border-border bg-bg px-4 pb-2.5">
           <TabsList variant="segmented" aria-label="Onglets du Workspace">
-            <TabsTrigger value="session">Session</TabsTrigger>
-            <TabsTrigger value="fichiers">Fichiers</TabsTrigger>
-            <TabsTrigger value="diff" {...(count > 0 ? { count } : {})}>
+            {/* Five equal tabs: tighter padding so they keep their labels at 360 px. */}
+            <TabsTrigger value="session" className="px-1">Session</TabsTrigger>
+            <TabsTrigger value="fichiers" className="px-1">Fichiers</TabsTrigger>
+            <TabsTrigger value="diff" className="px-1" {...(count > 0 ? { count } : {})}>
               Diff
             </TabsTrigger>
-            <TabsTrigger value="git">Git</TabsTrigger>
+            <TabsTrigger value="git" className="px-1">Git</TabsTrigger>
+            <TabsTrigger value="apercu" className="px-1">Aperçu</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent
           value={tab}
-          className={tab === 'session' || tab === 'fichiers' ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3'}
+          className={tab === 'session' || tab === 'fichiers' || tab === 'apercu' ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3'}
         >
           {content}
         </TabsContent>

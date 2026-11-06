@@ -353,6 +353,8 @@ export const RUNNER_ROUTES = {
   getRun: { method: 'GET', path: '/v1/runs/:runId', params: RunParamsSchema, response: RunDtoSchema },
   runStream: { method: 'GET', path: '/v1/runs/:runId/stream', params: RunParamsSchema, stream: true },
   stopRun: { method: 'DELETE', path: '/v1/runs/:runId', params: RunParamsSchema, response: RunDtoSchema, timeoutMs: 30_000 },
+  // « Aperçu » relay (`/v1/runs/:runId/preview/*`, any method, raw streamed bodies): outside this table,
+  // see RUNNER_PREVIEW_ROUTE in ./preview.ts.
 
   // --- Claude CLI -------------------------------------------------------------------------
   claudeStatus: { method: 'GET', path: '/v1/claude/status', query: ClaudeStatusQuerySchema, response: ClaudeStatusSchema, timeoutMs: 45_000 },
