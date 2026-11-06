@@ -11,6 +11,7 @@ import type {
   WorkspaceSession,
 } from '@/features/workspace/lib/contract';
 import { db } from '@/server/db';
+import { previewSettingsView } from '@/server/preview/handoff';
 import { isRunnerUnavailable, type RunnerClient } from '@/server/runner/client';
 import { environmentMaxSessions, getGitIdentity } from '@/server/sessions';
 import type { RequestContext } from '@/server/tenancy/context';
@@ -252,6 +253,7 @@ export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user
     runner: runnerDown ? 'unavailable' : 'available',
     author: identity ?? { name: ctx.user.name, email: ctx.user.email },
     environment: { id: scope.environmentId, name: scope.environmentName },
+    preview: previewSettingsView(),
     generatedAt: new Date().toISOString(),
   };
 }

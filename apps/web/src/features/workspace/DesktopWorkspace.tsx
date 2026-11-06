@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { CommitDialog } from './commit/CommitDialog';
 import { SessionHeader } from './header/SessionHeader';
 import { ContextPanel } from './panel/ContextPanel';
+import { PreviewPanel } from './preview/PreviewPanel';
 import { ReviewMode } from './review/ReviewMode';
 import { SessionColumn } from './session/SessionColumn';
 import { useWorkspace } from './WorkspaceContext';
@@ -28,7 +29,10 @@ function useEscapeInterrupts() {
   }, [canInterrupt, interrupt, url.view]);
 }
 
-/** D05 desktop composition (1440): header, session column + 460 px context panel, or W4 review. */
+/**
+ * D05 desktop composition (1440): header, session column (or the « Aperçu » enlarged, `?vue=apercu`)
+ * + 460 px context panel, or W4 review.
+ */
 export function DesktopWorkspace() {
   const ws = useWorkspace();
   useEscapeInterrupts();
@@ -41,7 +45,7 @@ export function DesktopWorkspace() {
           <ReviewMode />
         ) : (
           <>
-            <SessionColumn />
+            {ws.url.view === 'apercu' ? <PreviewPanel variant="main" /> : <SessionColumn />}
             {panelShown ? <ContextPanel /> : null}
           </>
         )}

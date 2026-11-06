@@ -159,6 +159,8 @@ export interface RunListItem {
   status: 'running' | 'succeeded' | 'failed' | 'stopped';
   exitCode: number | null;
   summary: string | null;
+  /** Port detected in the output (dev server). */
+  port: number | null;
   worktreeId: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -190,4 +192,17 @@ export function fetchRun(runId: string, signal?: AbortSignal): Promise<RunDetail
 
 export function startTestsRequest(projectId: string, worktreeId: string): Promise<{ runId: string }> {
   return call('/api/runs', post({ projectId, worktreeId, kind: 'test' }), "Les tests n'ont pas pu être lancés.");
+}
+
+export function startDevServerRequest(projectId: string, worktreeId: string): Promise<{ runId: string; run: { id: string; status: RunListItem['status']; port: number | null } }> {
+  return call('/api/runs', post({ projectId, worktreeId, kind: 'dev' }), "Le serveur de développement n'a pas pu être lancé.");
+}
+
+export function stopRunRequest(runId: string): Promise<void> {
+  return call(`/api/runs/${enc(runId)}`, { method: 'DELETE' }, "Le serveur de développement n'a pas pu être arrêté.");
+}
+
+/** « Aperçu » handoff: single-use URL of the preview host (60 s) for a live dev server. */
+export function previewHandoffRequest(runId: string, path?: string): Promise<{ url: string; origin: string; expiresAt: string }> {
+  return call('/api/previews', post({ runId, ...(path ? { path } : {}) }), "L'aperçu n'a pas pu être ouvert.");
 }
