@@ -132,6 +132,10 @@ export class Git {
   buildEnv(options: Omit<GitRunOptions, 'cwd'>): Record<string, string> {
     const config: Array<[string, string]> = [
       ['credential.helper', ''],
+      // Byte fidelity with the repository on every platform (Git for Windows defaults to `true`):
+      // no CRLF conversion on checkout or commit, whatever the global config says. `core.eol` is
+      // left alone (it only matters with `text` attributes, which the repository decides).
+      ['core.autocrlf', 'false'],
       ['core.fsmonitor', 'false'],
       ['core.quotePath', 'false'],
       ['color.ui', 'false'],

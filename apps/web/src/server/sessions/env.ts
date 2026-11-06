@@ -3,7 +3,8 @@ import { projectEnvVars } from '@nuera/db/schema';
 import { isRejectedSessionEnvName } from '@nuera/shared/env';
 import { eq } from 'drizzle-orm';
 import { db } from '@/server/db';
-import { decryptSecret } from '@/server/security/crypto';
+import { decryptSecret, SecretScopes } from '@/server/security/crypto';
+import type { ProjectScope } from '@/server/tenancy/scope';
 
 /**
  * Environment of a Claude session = the project's variables (decrypted here, sent only to the
@@ -45,8 +46,14 @@ export function buildSessionEnv(...sources: Array<Record<string, string>>): Sess
   return { env, skipped };
 }
 
-/** The project's variables, decrypted (server only). An unreadable value is skipped, never guessed. */
-export async function readProjectEnv(projectId: string): Promise<SessionEnvResult> {
+/**
+ * The variables of a project of the space, decrypted (server only). Only reachable with a scope
+ * (`scopeOfProject()`, `readScopedProject()`): the project id comes out of a query that checked
+ * the space. Each value is bound to its row (`SecretScopes.projectEnvVar`); the legacy format
+ * stays readable. An unreadable value is skipped, never guessed.
+ */
+export async function readProjectEnv(scope: Pick<ProjectScope, 'projectId'>): Promise<SessionEnvResult> {
+  const projectId = scope.projectId;
   const rows = await db
     .select({ key: projectEnvVars.key, valueEncrypted: projectEnvVars.valueEncrypted })
     .from(projectEnvVars)
@@ -55,7 +62,7 @@ export async function readProjectEnv(projectId: string): Promise<SessionEnvResul
   const skipped: string[] = [];
   for (const row of rows) {
     try {
-      env[row.key] = decryptSecret(row.valueEncrypted);
+      env[row.key] = decryptSecret(row.valueEncrypted, SecretScopes.projectEnvVar(projectId, row.key));
     } catch {
       skipped.push(row.key);
     }

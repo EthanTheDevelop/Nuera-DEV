@@ -39,6 +39,7 @@ export const SECTION_IDS = {
   password: 'mot-de-passe',
   sessions: 'acces-ouverts',
   journal: 'journal-de-securite',
+  gitIdentity: 'identite-git',
   services: 'etat-du-serveur',
   worktrees: 'worktrees-inactifs',
   logs: 'journaux',

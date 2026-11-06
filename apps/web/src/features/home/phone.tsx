@@ -6,7 +6,7 @@ import { Icon } from '@/components/icons';
 import { Badge, Card, CompactButton, LinkButton, SectionLabel, StatusDot } from '@/components/ui';
 import { workspaceUrl } from '@/features/sessions';
 import { cn } from '@/lib/cn';
-import { activeOverline, claudePill, pendingContext, progressLine, serverPill } from './lib';
+import { activeOverline, claudePill, NO_SERVER_PILL, pendingContext, progressLine, serverPill } from './lib';
 import { HomeProjectRow, HomeSessionCard, PartUnavailable, ResumeSessionButton } from './parts';
 import type { HomeActivity, HomePendingPermission, HomeProjects, HomeSession, HomeSessions } from './types';
 import type { HomeLive } from './useHomeLive';
@@ -29,8 +29,15 @@ function StatusPill({ label, tone }: { label: string; tone: keyof typeof PILL_TO
   );
 }
 
-/** `États`: « VPS-3 en ligne » · « Claude Code connecté ». */
+/** `États`: « VPS-3 en ligne » · « Claude Code connecté » (« Aucun serveur attribué » without a server). */
 export function StatusPills({ live }: { live: HomeLive }) {
+  if (!live.server) {
+    return (
+      <div aria-live="polite" className="flex flex-wrap items-center gap-2">
+        <StatusPill label={NO_SERVER_PILL.label} tone={NO_SERVER_PILL.tone} />
+      </div>
+    );
+  }
   const server = serverPill(live.server.name, live.availability);
   const claude = claudePill(live.claudeState, live.availability);
   return (

@@ -6,11 +6,10 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/server/db';
 import { describeDevice } from '@/server/auth/device';
 import { evaluateSessionPolicy } from '@/server/auth/policy';
-import { consumeSetupNonce, SETUP_NONCE_HEADER } from '@/server/auth/setup-nonce';
+import { deleteSubscriptionsForSession } from '@/server/push';
 import { audit, AUDIT_ACTIONS } from '@/server/security/audit';
 import { displayableIp, getClientCity, getClientIp, getUserAgent } from '@/server/security/request-info';
 import { getWebSessionPolicy } from '@/server/settings';
-import { twoFactorRequired } from '@/server/auth/policy';
 
 /**
  * Nuera Dev rules layered on Better Auth (placed after twoFactor/passkey, before nextCookies):
@@ -18,9 +17,13 @@ import { twoFactorRequired } from '@/server/auth/policy';
  * before every auth call (HTTP or `auth.api.*`):
  *   - web-session policy: idle expiry (webSessionIdleHours) and absolute expiry (webSessionMaxDays)
  *     are enforced on the session cookie; activity (session.updatedAt) is refreshed every 5 min;
+ *     an expired access takes its push subscriptions with it (the device stops receiving them);
  *   - 2FA cannot be disabled (mandatory);
- *   - password sign-in is refused while the owner has no 2FA, except from the token-gated setup;
+ *   - the session of a disabled account (and its push subscriptions) is deleted on its next request;
  *   - passkeys can only be registered once 2FA is active.
+ * (Refusing a disabled account or a password sign-in without 2FA happens in auth.ts,
+ * `databaseHooks.session.create.before`: after the credential check, so the refusal never tells
+ * whether an e-mail exists.)
  * after every auth call: audit of sign-ins (new device detection), failures, 2FA, passkeys,
  *   password changes, revocations, sign-out.
  */
@@ -50,11 +53,51 @@ async function readSessionCookie(ctx: HookContext): Promise<string | null> {
   return typeof token === 'string' && token ? token : null;
 }
 
-async function enforceSessionPolicy(ctx: HookContext): Promise<void> {
+function toDate(value: unknown): Date | null {
+  if (value === null || value === undefined || value === '') return null;
+  const date = value instanceof Date ? value : new Date(value as string);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Id of the account behind an e-mail tried at sign-in (its owner sees the attempt in its journal). */
+async function accountIdOfEmail(ctx: HookContext, email: string | null): Promise<string | null> {
+  if (!email) return null;
+  try {
+    const found = await ctx.context.internalAdapter.findUserByEmail(email.trim().toLowerCase());
+    return found?.user.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const SIGN_IN_REFUSALS: Record<string, string> = {
+  ACCOUNT_DISABLED: 'connexion refusée : compte désactivé',
+  SETUP_INCOMPLETE: 'connexion refusée : double authentification non activée',
+  ACTIVATION_INCOMPLETE: 'connexion refusée : double authentification non activée',
+};
+
+/** The devices registered through an access that is being closed: they stop receiving its notifications. */
+async function closeAccessDevices(sessionId: string): Promise<void> {
+  try {
+    await deleteSubscriptionsForSession(sessionId);
+  } catch (error) {
+    // sendPush also refuses a subscription whose access no longer exists.
+    console.error('[auth] abonnements push non retirés', error instanceof Error ? error.message : error);
+  }
+}
+
+/** Exported for tests only. */
+export async function enforceSessionPolicy(ctx: HookContext): Promise<void> {
   const token = await readSessionCookie(ctx);
   if (!token) return;
   const found = (await ctx.context.internalAdapter.findSession(token)) as FoundSession | null;
   if (!found) return;
+  if (toDate((found.user as { disabledAt?: unknown }).disabledAt)) {
+    // Disabled while this access was open (the administration deletes them; this closes a race).
+    await closeAccessDevices(found.session.id);
+    await ctx.context.internalAdapter.deleteSession(token);
+    return;
+  }
   const policy = await getWebSessionPolicy();
   const now = new Date();
   const verdict = evaluateSessionPolicy(
@@ -63,6 +106,7 @@ async function enforceSessionPolicy(ctx: HookContext): Promise<void> {
     now,
   );
   if (!verdict.valid) {
+    await closeAccessDevices(found.session.id);
     await ctx.context.internalAdapter.deleteSession(token);
     const device = describeDevice(found.session.userAgent);
     await audit({
@@ -145,10 +189,15 @@ async function auditAfter(ctx: HookContext): Promise<void> {
     case '/sign-in/email': {
       if (failed) {
         const email = typeof ctx.body?.email === 'string' ? ctx.body.email.slice(0, 200) : null;
+        const code = (ctx.context.returned as { body?: { code?: unknown } }).body?.code;
+        const refusal = typeof code === 'string' ? SIGN_IN_REFUSALS[code] : undefined;
+        const subjectUserId = await accountIdOfEmail(ctx, email);
         await audit({
           action: AUDIT_ACTIONS.signInFailed,
-          summary: 'échec de connexion : e-mail ou mot de passe refusé',
-          metadata: { method: 'password', email },
+          summary: refusal ?? 'échec de connexion : e-mail ou mot de passe refusé',
+          metadata: { method: 'password', email, ...(typeof code === 'string' ? { reason: code } : {}) },
+          subjectUserId,
+          ...(subjectUserId ? { targetType: 'user', targetId: subjectUserId } : {}),
           ...info,
         });
       } else if (ctx.context.newSession) {
@@ -327,20 +376,6 @@ export const nueraAuthPlugin = () =>
             }
 
             await enforceSessionPolicy(ctx);
-
-            if (ctx.path === '/sign-in/email') {
-              const email = typeof ctx.body?.email === 'string' ? ctx.body.email.trim().toLowerCase() : '';
-              if (!email) return;
-              const found = await ctx.context.internalAdapter.findUserByEmail(email);
-              const twoFactorEnabled = (found?.user as { twoFactorEnabled?: boolean | null } | undefined)?.twoFactorEnabled;
-              if (found && !twoFactorEnabled && twoFactorRequired() && !consumeSetupNonce(ctx.headers?.get(SETUP_NONCE_HEADER))) {
-                throw new APIError('FORBIDDEN', {
-                  message: 'Configuration inachevée : terminez-la depuis la page de configuration, avec le jeton.',
-                  code: 'SETUP_INCOMPLETE',
-                });
-              }
-              return;
-            }
 
             if (ctx.path === '/passkey/generate-register-options' || ctx.path === '/passkey/verify-registration') {
               const current = await getSessionFromCtx(ctx);

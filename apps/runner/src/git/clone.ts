@@ -8,6 +8,7 @@ import { formatShortDuration } from '@nuera/shared/events';
 import type { CloneResult, DestinationCheck, OperationStepDto } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { getProject } from '../db/lookups';
+import type { EnvironmentScope } from '../environment';
 import { RunnerError } from '../errors';
 import type { OperationHandle, OperationService } from '../operations/service';
 import { buildChildEnv } from '../safety/env';
@@ -65,7 +66,7 @@ export function parseInstalledPackages(output: string): number | null {
 
 export class CloneService {
   constructor(
-    private readonly deps: { db: Database; git: Git; paths: PathGuard; ops: OperationService; logger: Logger },
+    private readonly deps: { db: Database; environment: EnvironmentScope; git: Git; paths: PathGuard; ops: OperationService; logger: Logger },
   ) {}
 
   /** A4: is the destination usable? (never writes anything) */
@@ -126,7 +127,8 @@ export class CloneService {
 
   /** Starts the clone in the background; the operation id is returned immediately (A2). */
   async start(input: CloneInput): Promise<OperationHandle> {
-    const project = await getProject(this.deps.db, input.projectId);
+    const project = await getProject(this.deps.db, this.deps.environment.id, input.projectId);
+    await this.deps.environment.assertCanStartWork();
     if (project.githubFullName.toLowerCase() !== input.fullName.toLowerCase()) {
       throw new RunnerError('VALIDATION', 'Le dépôt ne correspond pas au projet.');
     }
@@ -214,10 +216,19 @@ export class CloneService {
       const [headSha = null, headMessage = null, headDate = null] = headLine ? headLine.split('\x1f') : [];
       const files = new Set(await readdir(target));
       const detected = detectPackageManager(files);
-      const project = await getProject(this.deps.db, input.projectId);
+      const project = await getProject(this.deps.db, this.deps.environment.id, input.projectId);
       const [worktree] = await this.deps.db
         .insert(worktrees)
-        .values({ projectId: project.id, name: project.slug, branch: branch ?? project.defaultBranch, path: target, isPrimary: true, status: 'active', lastUsedAt: new Date() })
+        .values({
+          projectId: project.id,
+          environmentId: project.environmentId,
+          name: project.slug,
+          branch: branch ?? project.defaultBranch,
+          path: target,
+          isPrimary: true,
+          status: 'active',
+          lastUsedAt: new Date(),
+        })
         .returning();
       if (!worktree) throw new RunnerError('INTERNAL', 'Worktree principal non enregistré.');
       clonedPath = target;

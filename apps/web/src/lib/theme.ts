@@ -1,7 +1,9 @@
 /**
  * Theme preference (Paramètres · Préférences « Thème » : « Suit les modes clair et sombre du système de
- * design »). Persisted in app_settings.theme and mirrored in a cookie so the root layout can write
- * `data-theme` on <html> during SSR (no flash). `system` is resolved by CSS (prefers-color-scheme).
+ * design »). Persisted per account in `user_preferences.theme` (docs/MULTICOMPTE.md §8): the root
+ * layout writes `data-theme` on <html> during SSR (no flash) from the signed-in account's preference;
+ * the cookie mirror is used only when signed out (server/shell/theme.ts). `system` is resolved by
+ * CSS (prefers-color-scheme).
  */
 export const THEME_COOKIE = 'nuera-theme';
 export const THEME_PREFERENCES = ['light', 'dark', 'system'] as const;

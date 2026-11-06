@@ -2,9 +2,40 @@
 
 import { ChangedFileRow, formatLineDelta, toChangeStatus } from '@/components/dev';
 import { Checkbox, ErrorPanel, Field, Input, LinkButton, Switch, Textarea } from '@/components/ui';
+import { SECTION_IDS, settingsHref } from '@/features/settings/lib/tabs';
 import { cn } from '@/lib/cn';
 import { useId } from 'react';
 import type { CommitFlow } from './useCommitFlow';
+
+/** Where the Git identity of the account is changed (Paramètres · Compte et sécurité · Identité Git). */
+export const GIT_IDENTITY_HREF = settingsHref('compte-et-securite', SECTION_IDS.gitIdentity);
+
+/** « Camille L. <camille@atelier.test> » (pure). */
+export function commitAuthorLabel(author: { name: string; email: string }): string {
+  return `${author.name} <${author.email}>`;
+}
+
+/**
+ * « Auteur : {nom} <{e-mail}> » under the files: the identity that signs this commit (the account's
+ * Git identity, else its name and e-mail), with « Modifier » to Paramètres. Hidden link while the
+ * flow runs (leaving the page would not stop it).
+ */
+export function CommitAuthorLine({ author, variant, busy }: { author: { name: string; email: string }; variant: 'dialog' | 'phone'; busy?: boolean }) {
+  const label = commitAuthorLabel(author);
+  return (
+    <div className={cn('flex min-w-0 items-center gap-2 font-sans text-muted', variant === 'phone' ? 'text-app-13' : 'text-app-12')}>
+      <span className="min-w-0 flex-1 truncate" title={label}>
+        {'Auteur : '}
+        <span className="font-mono text-text">{label}</span>
+      </span>
+      {busy ? null : (
+        <LinkButton size={13} href={GIT_IDENTITY_HREF} aria-label="Modifier l'identité Git">
+          Modifier
+        </LinkButton>
+      )}
+    </div>
+  );
+}
 
 function OptionRow({
   title,
@@ -85,6 +116,7 @@ export function CommitForm({ flow, variant }: { flow: CommitFlow; variant: 'dial
             Aucun fichier modifié : seuls les commits déjà faits sur {flow.branch ?? 'cette branche'} partiront.
           </p>
         )}
+        {files.length > 0 ? <CommitAuthorLine author={flow.author} variant={variant} busy={busy} /> : null}
       </div>
 
       {files.length > 0 ? (

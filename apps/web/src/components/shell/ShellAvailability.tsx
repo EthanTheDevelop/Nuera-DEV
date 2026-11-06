@@ -10,14 +10,16 @@ import type { ClaudeState, ServerAvailability } from './types';
  * Availability sentence of the home header, live:
  *  - desktop (D01): « Mercredi 4 novembre 2026 · VPS-3 et Claude Code sont disponibles »
  *  - phone (M01):   « Mer. 4 nov. · tout est disponible »
- * Degraded wordings are not drawn in Figma; they state exactly what the runner reports.
+ * Degraded wordings are not drawn in Figma; they state exactly what the runner reports. Without a
+ * server (`server` null): « aucun serveur attribué » (long) / « aucun serveur » (short).
  */
 export function availabilitySentence(
-  server: string,
+  server: string | null,
   runner: ServerAvailability,
   claude: ClaudeState,
   short: boolean,
 ): string {
+  if (server === null) return short ? 'aucun serveur' : 'aucun serveur attribué';
   if (runner === 'unavailable') return `${server} ne répond pas`;
   if (runner === 'unknown') return `connexion à ${server}…`;
   if (claude === 'connected') return short ? 'tout est disponible' : `${server} et Claude Code sont disponibles`;
@@ -37,7 +39,7 @@ export function ShellAvailability({ variant }: { variant: 'long' | 'short' }) {
   const date = variant === 'long' ? formatLongDate(now) : formatShortDay(now);
   return (
     <span suppressHydrationWarning>
-      {`${date} · ${availabilitySentence(data.server.name, live.runner, live.claude.state, variant === 'short')}`}
+      {`${date} · ${availabilitySentence(data.environment ? data.server.name : null, live.runner, live.claude.state, variant === 'short')}`}
     </span>
   );
 }

@@ -29,6 +29,7 @@ import type { HomeLive } from './useHomeLive';
 export function ServerTile({ live, generatedAt }: { live: HomeLive; generatedAt: string }) {
   const now = useNow(60_000, Date.parse(generatedAt));
   const { server } = live;
+  if (!server) return null;
   const badge = serverBadge(server.availability);
   const meters = serverMeters(server.availability === 'unavailable' ? null : server.metrics);
   const footer = serverFooter({ location: server.location, availability: server.availability, uptimeSec: server.uptimeSec, lastContactAt: server.lastContactAt, now });
@@ -81,7 +82,7 @@ export function ClaudeTile({ live, capacityMax, defaultModel }: { live: HomeLive
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {reconnect ? (
-          <CompactButton variant="principal" icon="terminal" onClick={() => terminal.open(claudeLoginTerminal({ serverName: live.server.name, onExit: () => router.refresh() }))}>
+          <CompactButton variant="principal" icon="terminal" onClick={() => terminal.open(claudeLoginTerminal({ serverName: live.server?.name, onExit: () => router.refresh() }))}>
             Se reconnecter dans un terminal
           </CompactButton>
         ) : first ? (
@@ -274,6 +275,19 @@ export function IntegrationsTile({ integrations, onRetry }: { integrations: Home
       ) : (
         <PartUnavailable error="failed" title="Intégrations indisponibles" onRetry={onRetry} />
       )}
+    </Card>
+  );
+}
+
+/**
+ * Server and Claude Code tiles of an account whose space has no server yet (no Figma: the tile
+ * primitives): the state, never T5, and no « Réessayer » (an administrator assigns the server).
+ */
+export function NoServerTile({ className }: { className?: string }) {
+  return (
+    <Card variant="tile" as="section" aria-labelledby="accueil-sans-serveur" className={cn('gap-3', className)}>
+      <TileHeader icon="server" title={<span id="accueil-sans-serveur">Aucun serveur attribué</span>} action={<Badge tone="neutral">En attente</Badge>} />
+      <PartUnavailable error="no_environment" title="Serveur et Claude Code" onRetry={() => undefined} />
     </Card>
   );
 }

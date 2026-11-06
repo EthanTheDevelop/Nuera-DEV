@@ -16,26 +16,88 @@ export interface LoadError {
   raw?: string;
   /** The runner did not answer (T5 is shown by the shell; the page shows a sober inline state). */
   unavailable?: boolean;
+  /** No server is assigned to the account yet (reason NO_ENVIRONMENT): « Aucun serveur ne vous est encore attribué… ». */
+  noEnvironment?: boolean;
 }
 
-/** Fields of `app_settings` this page reads and edits (the projects root is read from the runner). */
+/** Instance role of the signed-in account (docs/MULTICOMPTE.md §2). */
+export type AccountRole = 'owner' | 'admin' | 'member';
+
+/**
+ * Flat keys of PATCH /api/settings (and `updateSettingsAction`), each routed to its scope on the
+ * server (docs/MULTICOMPTE.md §8): instance (owner/admin), server (name and location: owner/admin;
+ * limits: owner of the space, up to the administrator's ceiling), space (owner of the space), user.
+ */
+export type SettingKey =
+  | 'webSessionIdleHours'
+  | 'webSessionMaxDays'
+  | 'invitationTtlHours'
+  | 'forceBlockBypassPermissions'
+  | 'serverName'
+  | 'serverLocation'
+  | 'maxConcurrentSessions'
+  | 'sessionMemoryLimitMb'
+  | 'defaultModel'
+  | 'defaultEffort'
+  | 'defaultPermissionMode'
+  | 'blockBypassPermissions'
+  | 'permissionWaitSeconds'
+  | 'remoteControlByDefault'
+  | 'worktreeStaleDays'
+  | 'theme'
+  | 'locale'
+  | 'gitAuthorName'
+  | 'gitAuthorEmail';
+
+/** The settings this page reads and edits, each from its scope. */
 export interface SettingsValues {
-  maxConcurrentSessions: number;
+  // Instance (app_settings).
+  webSessionIdleHours: number;
+  webSessionMaxDays: number;
+  invitationTtlHours: number;
+  /** The administrators block the bypass mode for every space (effective block = instance OR space). */
+  forceBlockBypassPermissions: boolean;
+  // Server of the account's space (null: no server assigned yet).
+  serverName: string | null;
+  serverLocation: string | null;
+  maxConcurrentSessions: number | null;
+  /** Ceiling of « Sessions parallèles » fixed by an administrator. */
+  maxConcurrentSessionsCap: number | null;
+  sessionMemoryLimitMb: number | null;
+  // Space (space_settings).
   defaultModel: string | null;
   defaultEffort: string | null;
   defaultPermissionMode: PermissionMode;
+  /** The space's own block (shown with the instance block: see `forceBlockBypassPermissions`). */
   blockBypassPermissions: boolean;
   permissionWaitSeconds: number;
   remoteControlByDefault: boolean;
-  webSessionIdleHours: number;
-  webSessionMaxDays: number;
-  serverName: string;
-  serverLocation: string | null;
-  sessionMemoryLimitMb: number | null;
   worktreeStaleDays: number;
+  // Account (user_preferences).
   theme: ThemeValue;
   locale: string;
+  /** null = the account's name. */
+  gitAuthorName: string | null;
+  /** null = the account's e-mail. */
+  gitAuthorEmail: string | null;
+  /** What this account may change (false: read-only « Réglé par un administrateur »). */
+  editable: Record<SettingKey, boolean>;
   updatedAt: string;
+}
+
+/** The signed-in account (Compte et sécurité only ever shows this one). */
+export interface ProfileView {
+  name: string;
+  email: string;
+  role: AccountRole;
+}
+
+/** The server of the account's space (null in SettingsPageData when none is assigned). */
+export interface EnvironmentView {
+  id: string;
+  name: string;
+  location: string | null;
+  isDefault: boolean;
 }
 
 /** `claude auth status --json` + `claude --version`, as the runner reports them (whitelisted fields). */
@@ -91,6 +153,8 @@ export interface JournalEntry {
   at: string;
   summary: string;
   action: string;
+  /** Another account acted on mine (an administrator): its frozen label (e-mail), else null. */
+  by: string | null;
 }
 
 export interface JournalPage {
@@ -232,7 +296,12 @@ export interface LiveStatusView {
 export interface SettingsPageData {
   /** Server time of the snapshot (relative times rendered identically on SSR and hydration). */
   now: string;
-  owner: { name: string; email: string };
+  /** The signed-in account. */
+  profile: ProfileView;
+  /** Its space (v1: the personal space). */
+  space: { id: string; name: string };
+  /** The server of the space, null while none is assigned. */
+  environment: EnvironmentView | null;
   settings: SettingsValues;
   claude: Load<ClaudeCliView>;
   seenModels: SeenModel[];

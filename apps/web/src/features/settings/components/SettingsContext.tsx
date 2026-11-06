@@ -3,28 +3,30 @@
 import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { claudeLoginTerminal, claudeStatusTerminal, useTerminalLauncher, type TerminalLauncher } from '@/components/terminal';
-import { useOptionalShellData } from '@/components/shell';
 import { toast } from '@/components/ui';
 import { useNow } from '@/hooks/useNow';
 import { loadLiveStatusAction, refreshClaudeStatusAction, updateSettingsAction } from '../actions';
-import type { ClaudeCliView, LiveStatusView, SettingsPageData, SettingsValues } from '../lib/types';
+import type { ClaudeCliView, LiveStatusView, SettingKey, SettingsPageData, SettingsValues } from '../lib/types';
 
 /**
  * Shared state of Paramètres: the server snapshot, an optimistic copy of the settings (save on
- * change + T3 toast, reverted with an inline error on failure), the clock for relative times, the
- * terminal window (claude auth login, /status) and a throttled refresh.
+ * change + T3 toast, reverted with an inline error on failure), what this account may change
+ * (`canEdit`: false → read-only « Réglé par un administrateur »), the clock for relative times, the
+ * terminal window (claude auth login, /status, on the server of the account's space) and a
+ * throttled refresh.
  */
-
-type SettingKey = keyof SettingsValues;
 
 export interface SettingsContextValue {
   data: SettingsPageData;
   settings: SettingsValues;
-  save: (patch: Partial<SettingsValues>, successMessage: string) => Promise<boolean>;
+  save: (patch: Partial<Omit<SettingsValues, 'editable' | 'updatedAt'>>, successMessage: string) => Promise<boolean>;
   pending: ReadonlySet<SettingKey>;
   errorFor: (key: SettingKey) => string | null;
+  /** This account may change `key` (its scope and role allow it). */
+  canEdit: (key: SettingKey) => boolean;
   now: number;
-  serverName: string;
+  /** Server of the account's space (« VPS-3 »); null while none is assigned. */
+  serverName: string | null;
   terminal: TerminalLauncher;
   claude: ClaudeCliView | null;
   openLogin: () => void;
@@ -54,8 +56,7 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
     () => (live && live.snapshot === snapshotData ? { ...snapshotData, ...live.view } : snapshotData),
     [live, snapshotData],
   );
-  const shell = useOptionalShellData();
-  const serverName = data.settings.serverName || shell?.server.name || 'VPS-3';
+  const serverName = data.environment?.name ?? null;
   const now = useNow(30_000, Date.parse(data.now));
   const terminal = useTerminalLauncher();
 
@@ -111,7 +112,7 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
   }, []);
 
   const save = useCallback(
-    async (patch: Partial<SettingsValues>, successMessage: string) => {
+    async (patch: Partial<Omit<SettingsValues, 'editable' | 'updatedAt'>>, successMessage: string) => {
       const keys = Object.keys(patch) as SettingKey[];
       const previous = settings;
       setSettings((current) => ({ ...current, ...patch }));
@@ -142,6 +143,7 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
   );
 
   const errorFor = useCallback((key: SettingKey) => errors[key] ?? null, [errors]);
+  const canEdit = useCallback((key: SettingKey) => settings.editable[key] === true, [settings.editable]);
 
   const [claude, setClaude] = useState<ClaudeCliView | null>(data.claude.ok ? data.claude.data : null);
   const [claudeSnapshot, setClaudeSnapshot] = useState(data.claude);
@@ -164,19 +166,22 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
     refresh();
   }, [refresh]);
 
+  // No server: there is no CLI to log in (the buttons are not offered; this is a no-op guard).
   const openLogin = useCallback(() => {
+    if (!serverName) return;
     terminal.open(claudeLoginTerminal({ serverName, onExit: () => void refreshClaude() }));
   }, [terminal, serverName, refreshClaude]);
   const openStatus = useCallback(() => {
+    if (!serverName) return;
     terminal.open(claudeStatusTerminal({ serverName }));
   }, [terminal, serverName]);
 
   // The login window closed without the process exiting: re-read the CLI state anyway.
   const wasOpen = useRef(false);
   useEffect(() => {
-    if (wasOpen.current && !terminal.isOpen) void refreshClaude();
+    if (wasOpen.current && !terminal.isOpen && serverName) void refreshClaude();
     wasOpen.current = terminal.isOpen;
-  }, [terminal.isOpen, refreshClaude]);
+  }, [terminal.isOpen, refreshClaude, serverName]);
 
   const value = useMemo<SettingsContextValue>(
     () => ({
@@ -185,6 +190,7 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
       save,
       pending,
       errorFor,
+      canEdit,
       now,
       serverName,
       terminal,
@@ -197,7 +203,7 @@ export function SettingsProvider({ data: snapshotData, children }: { data: Setti
       refresh,
       refreshLive,
     }),
-    [data, settings, save, pending, errorFor, now, serverName, terminal, claude, openLogin, openStatus, refreshClaude, refreshingClaude, claudeRefreshError, refresh, refreshLive],
+    [data, settings, save, pending, errorFor, canEdit, now, serverName, terminal, claude, openLogin, openStatus, refreshClaude, refreshingClaude, claudeRefreshError, refresh, refreshLive],
   );
 
   return (

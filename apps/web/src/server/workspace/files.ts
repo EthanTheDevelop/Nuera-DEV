@@ -1,12 +1,13 @@
 import 'server-only';
 import type { FileContent, TreeEntry } from '@nuera/shared/runner';
-import { runner } from '@/server/runner/client';
+import type { RequestContext } from '@/server/tenancy/context';
 import { requireWorktreeContext } from './access';
 
 /**
  * « Fichiers » (W1 `Explorateur de fichiers`): tree and read-only preview of a worktree. Every read
  * goes through the runner (paths confined by `realpath`, `.git` never served, size cap and binary
- * detection there); the web adds its own display cap.
+ * detection there); the web adds its own display cap. The worktree must be one of the space, and
+ * the runner asked is the one of its server.
  */
 
 /** Text shown in the preview at most (the runner caps reads too). */
@@ -21,9 +22,9 @@ export interface TreeView {
   truncated: boolean;
 }
 
-export async function getTree(worktreeId: string, path: string): Promise<TreeView> {
-  await requireWorktreeContext(worktreeId);
-  const tree = await runner.fileTree({ params: { worktreeId }, query: { path } }, { timeoutMs: 15_000 });
+export async function getTree(ctx: Pick<RequestContext, 'space'>, worktreeId: string, path: string): Promise<TreeView> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  const tree = await scope.runner.fileTree({ params: { worktreeId }, query: { path } }, { timeoutMs: 15_000 });
   // Folders first, then files, each alphabetically (the runner order is kept within a kind).
   const entries = [...tree.entries].sort((a, b) => {
     const da = a.kind === 'dir' ? 0 : 1;
@@ -43,9 +44,9 @@ export function isSecretFile(path: string): boolean {
   return /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /\.(pem|key|p12|pfx)$/.test(name);
 }
 
-export async function getFile(worktreeId: string, path: string): Promise<WorkspaceFileContent> {
-  await requireWorktreeContext(worktreeId);
-  const file = await runner.readFile({ params: { worktreeId }, query: { path } }, { timeoutMs: 15_000 });
+export async function getFile(ctx: Pick<RequestContext, 'space'>, worktreeId: string, path: string): Promise<WorkspaceFileContent> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  const file = await scope.runner.readFile({ params: { worktreeId }, query: { path } }, { timeoutMs: 15_000 });
   if (isSecretFile(file.path)) return { ...file, content: null, truncated: false, secret: true };
   if (file.content !== null && file.content.length > PREVIEW_MAX_CHARS) {
     return { ...file, content: file.content.slice(0, PREVIEW_MAX_CHARS), truncated: true };

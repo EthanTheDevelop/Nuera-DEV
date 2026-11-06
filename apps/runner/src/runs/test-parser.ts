@@ -8,9 +8,29 @@ import type { TestCase, TestReport } from '@nuera/shared/runner';
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[PX^_][^\u001b]*\u001b\\|\u001b[@-Z\\-_]/g;
+// eslint-disable-next-line no-control-regex
+const CSI = /^\u001b\[([0-?]*)[ -/]*([@-~])$/;
 
+/**
+ * Plain text of a terminal output. Cursor movements are not mere decoration: a Windows PTY
+ * (ConPTY) repaints the screen and replaces blank lines by « go to row N » (`ESC[5;1H`) instead of
+ * `\r\n`, and compresses runs of spaces into « move right » (`ESC[6C`). Removing them would glue
+ * two lines together (« … produit 2ms Test Files … »), so a move to another row ends the line and
+ * a move right keeps its spaces.
+ */
 export function stripAnsi(text: string): string {
-  return text.replace(ANSI, '').replace(/\r(?!\n)/g, '\n');
+  return text
+    .replace(ANSI, (sequence) => {
+      const csi = CSI.exec(sequence);
+      if (!csi) return '';
+      const [, params = '', final] = csi;
+      // CUP / HVP (row;col), CNL, CPL, VPA, CUU, CUD: another row.
+      if (final === 'H' || final === 'f' || final === 'E' || final === 'F' || final === 'd' || final === 'A' || final === 'B') return '\n';
+      // CUF: cursor forward = that many blanks (bounded).
+      if (final === 'C') return ' '.repeat(Math.min(200, Math.max(1, Number.parseInt(params, 10) || 1)));
+      return '';
+    })
+    .replace(/\r(?!\n)/g, '\n');
 }
 
 function toMs(value: string, unit: string): number {

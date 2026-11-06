@@ -6,7 +6,8 @@ import type { IntegrationsOverview } from '@/server/integrations';
 /**
  * `Tuile · Intégrations` (D01): GitHub, then the MCP servers enabled in a project (those needing attention first),
  * at most 4 rows, plus the footer sentence of the most urgent problem. Built from
- * `getIntegrationsOverview()` (database only, no network call).
+ * `getIntegrationsOverview(ctx)` of the account's space (database only, no network call). GitHub is
+ * one row with the aggregate status of the space's sources (the worst one), as in Figma.
  */
 
 export const INTEGRATION_ROWS = 4;
@@ -46,15 +47,17 @@ export function integrationFooter(overview: Pick<IntegrationsOverview, 'diagnost
   const reconnect = banner.actions.find((a) => a.kind === 'reconnect' && a.href?.startsWith('/'));
   const href = reconnect?.href ?? '/integrations';
   const coolify = banner.target === 'coolify' || banner.target === 'mcp:coolify';
+  // One banner per failing GitHub source (target `github:<sourceId>`), or the legacy `github`.
+  const github = banner.target === 'github' || banner.target.startsWith('github:');
   const label =
-    banner.target === 'github'
+    github
       ? 'GitHub'
       : banner.target === 'coolify'
         ? 'Coolify'
         : (overview.mcp.servers.find((s) => `mcp:${s.name}` === banner.target)?.label ?? banner.target.replace(/^mcp:/, ''));
   if (banner.tone === 'warn') return { text: `${label} : autorisation bientôt expirée, renouvelez-la.`, href };
   if (coolify) return { text: 'Coolify : reconnecter pour relancer les déploiements de développement.', href };
-  if (banner.target === 'github') return { text: "GitHub : rétablir l'accès pour cloner, pousser et ouvrir des pull requests.", href };
+  if (github) return { text: "GitHub : rétablir l'accès pour cloner, pousser et ouvrir des pull requests.", href };
   return { text: `${label} : reconnecter pour rétablir l'accès des sessions.`, href };
 }
 

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { operations, type Database } from '@nuera/db';
 import type { OperationDto, OperationSnapshot, OperationStepDto } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
+import { findOperationRow } from '../db/lookups';
+import type { EnvironmentScope } from '../environment';
 import { GLOBAL, operationChannel, type EventBus } from '../events/bus';
 import { RunnerError, toRunnerError } from '../errors';
 import { redactSecrets, tailText } from '../safety/redact';
@@ -198,6 +200,8 @@ export class OperationService {
     private readonly db: Database,
     private readonly bus: EventBus,
     private readonly logger: Logger,
+    /** Server of this runner: operations are recorded, read and reconciled within it only. */
+    private readonly environment: EnvironmentScope,
   ) {}
 
   async create(input: CreateOperationInput): Promise<OperationHandle> {
@@ -207,6 +211,7 @@ export class OperationService {
       .insert(operations)
       .values({
         id,
+        environmentId: this.environment.id,
         kind: input.kind,
         status: 'running',
         projectId: input.projectId ?? null,
@@ -246,12 +251,12 @@ export class OperationService {
   async get(id: string): Promise<OperationSnapshot | null> {
     const live = this.live.get(id);
     if (live) return live.snapshot;
-    const [row] = await this.db.select().from(operations).where(eq(operations.id, id)).limit(1);
+    const row = await findOperationRow(this.db, this.environment.id, id);
     if (!row) return null;
     return { ...operationRowToDto(row), log: row.log, liveLine: null };
   }
 
-  /** Operations left `running`/`queued` by a previous runner process. */
+  /** Operations left `running`/`queued` by a previous runner process of THIS server. */
   async failInterrupted(): Promise<number> {
     const rows = await this.db
       .update(operations)
@@ -260,7 +265,7 @@ export class OperationService {
         finishedAt: new Date(),
         error: { code: 'INTERNAL', message: 'Opération interrompue par un redémarrage du runner.' },
       })
-      .where(inArray(operations.status, ['running', 'queued']))
+      .where(and(eq(operations.environmentId, this.environment.id), inArray(operations.status, ['running', 'queued'])))
       .returning({ id: operations.id });
     return rows.length;
   }

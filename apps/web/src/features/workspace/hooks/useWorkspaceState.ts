@@ -104,7 +104,7 @@ function init(data: WorkspaceData): WorkspaceState {
     session: data.session,
     thread,
     version: data.events?.version ?? 0,
-    threadError: data.events ? null : 'Le fil de la session est indisponible : VPS-3 ne répond pas.',
+    threadError: data.events ? null : `Le fil de la session est indisponible : ${data.environment.name} ne répond pas.`,
     threadLoading: false,
     permission: data.permission,
     pending: [],

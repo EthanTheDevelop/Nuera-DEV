@@ -87,15 +87,20 @@ export async function killTree(pid: number, options: { graceMs?: number } = {}):
   }
 }
 
-/** `netstat -ano` → { port → pids } of LISTENING TCP sockets (IPv4 and IPv6). Exported for tests. */
+/**
+ * `netstat -ano` → { port → pids } of listening TCP sockets (IPv4 and IPv6). The state word can be
+ * localised (LISTENING, ABHÖREN…): a socket listens when its state says so or when its foreign
+ * address is unspecified (`0.0.0.0:0`, `[::]:0`). Exported for tests.
+ */
 export function parseNetstatListening(output: string): Map<number, Set<number>> {
   const result = new Map<number, Set<number>>();
   for (const line of output.split(/\r?\n/)) {
-    const match = /^\s*TCP\s+(\S+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i.exec(line);
+    const match = /^\s*TCP\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s*$/i.exec(line);
     if (!match) continue;
-    const local = match[1]!;
+    const [, local = '', foreign = '', state = ''] = match;
+    if (!/^LISTEN/i.test(state) && !/^(?:0\.0\.0\.0|\[::\]):0$/.test(foreign)) continue;
     const port = Number(local.slice(local.lastIndexOf(':') + 1));
-    const pid = Number(match[2]);
+    const pid = Number(match[4]);
     if (!Number.isInteger(port) || !pid) continue;
     if (!result.has(port)) result.set(port, new Set());
     result.get(port)!.add(pid);
@@ -211,4 +216,36 @@ export async function processImage(pid: number): Promise<string | null> {
   const { stdout } = await run('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], 30_000);
   const match = /^"([^"]+)"/m.exec(stdout.trim());
   return match ? match[1]! : null;
+}
+
+/** Start time of a process (UTC), null when unknown. Windows: PowerShell Get-Process (wmic is absent on Windows 11). */
+export async function processStartTime(pid: number): Promise<Date | null> {
+  if (!pidAlive(pid)) return null;
+  if (isWindows) {
+    const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`], 30_000);
+    const date = new Date(stdout.trim());
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const { stdout } = await run('ps', ['-p', String(pid), '-o', 'lstart='], 10_000);
+  const date = new Date(stdout.trim());
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * True when `pid` is still the process the stack started (Windows recycles PIDs quickly): a node
+ * process, of the recorded image, started within 5 minutes of the record or listening on one of the
+ * component's ports. Never true for a process of another image.
+ */
+export async function isRecordedProcess(pid: number, record: { startedAt: string; image?: string | null }, ports: number[] = []): Promise<boolean> {
+  const image = await processImage(pid);
+  if (!image) return false;
+  if (record.image && image.toLowerCase() !== record.image.toLowerCase()) return false;
+  if (!/^node(?:\.exe)?$/i.test(path.basename(image))) return false;
+  const started = await processStartTime(pid);
+  if (started && Math.abs(started.getTime() - Date.parse(record.startedAt)) < 5 * 60_000) return true;
+  if (ports.length) {
+    const listening = await listeningPids(ports);
+    for (const pids of listening.values()) if (pids.has(pid)) return true;
+  }
+  return false;
 }

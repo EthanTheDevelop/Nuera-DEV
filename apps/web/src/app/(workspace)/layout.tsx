@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
 import { AppShell } from '@/components/shell/AppShell';
 import { GlobalSearch } from '@/features/search/GlobalSearch';
-import { requireUser } from '@/server/auth/session';
 import { getShellData } from '@/server/shell/get-shell-data';
+import { requireContext } from '@/server/tenancy/context';
 
 /**
  * Workspace (`/workspace/[sessionId]`): « Ouvert depuis un projet ou une session, jamais depuis la
@@ -11,8 +11,8 @@ import { getShellData } from '@/server/shell/get-shell-data';
  * (`ConnectionLostBanner context="workspace"`) from `useLiveEvents()`.
  */
 export default async function WorkspaceLayout({ children }: { children: ReactNode }) {
-  const user = await requireUser();
-  const shell = await getShellData(user);
+  const ctx = await requireContext();
+  const shell = await getShellData(ctx);
   return (
     <AppShell data={shell} variant="rail" globals={<GlobalSearch />}>
       {children}

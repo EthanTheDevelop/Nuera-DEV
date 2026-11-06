@@ -1,7 +1,15 @@
 /**
- * Local fake of the GitHub REST API (tests only): manifest conversion, app JWT verification
- * (RS256 with the generated key), installations, down-scoped installation tokens, repositories,
- * pull requests, checks and statuses. Every request is recorded for assertions.
+ * Local fake of the GitHub REST API (tests only) serving SEVERAL GitHub Apps, as GitHub does:
+ * manifest conversion (each code creates or returns one app; an app name already taken → 422), app
+ * JWT verification (RS256, the app is picked by the `iss` claim), installations of each app (an app
+ * only sees its own: `/app/installations`, `/app/installations/{id}`, `/repos/{o}/{r}/installation`),
+ * down-scoped installation tokens (recorded with their app), repositories (GitHub-wide: one
+ * repository can be reached through two apps), pull requests, checks and statuses. Every request is
+ * recorded for assertions.
+ *
+ * The first app (`appId`, `slug`, `pem`, `rejectJwt`, `conversionCodes`) is the default one, as
+ * before (apps/web/e2e/harness/github-front.ts wraps one instance per app); `addApp()` and
+ * `appCodes` (code → new app) add the others.
  */
 import { createPublicKey, createVerify, generateKeyPairSync, randomBytes, type KeyObject } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -20,6 +28,8 @@ export interface FakeRepo {
 
 export interface FakeInstallation {
   id: number;
+  /** App the installation belongs to (default: the first app). */
+  appId?: number;
   account: { login: string; id: number; type: 'Organization' | 'User' };
   permissions: Record<string, string>;
   repositorySelection?: 'all' | 'selected';
@@ -29,6 +39,8 @@ export interface FakeInstallation {
 
 export interface IssuedToken {
   token: string;
+  /** App that issued the token (absent in states persisted by older harnesses: the default app). */
+  appId?: number;
   installationId: number;
   repositories: string[] | null;
   permissions: Record<string, string> | null;
@@ -42,11 +54,44 @@ export interface RecordedRequest {
   body: unknown;
 }
 
+export interface FakeGithubAccount {
+  login: string;
+  id: number;
+  type: 'Organization' | 'User';
+}
+
+export interface FakeApp {
+  appId: number;
+  slug: string;
+  name: string;
+  clientId: string;
+  pem: string;
+  verifyKey: KeyObject;
+  owner: FakeGithubAccount;
+  /** Simulates a revoked private key of this app (the default app uses `FakeGithub.rejectJwt`). */
+  rejectJwt: boolean;
+}
+
+/** What a conversion code creates (`appCodes`): a new app with its own key pair. */
+export interface FakeAppSpec {
+  appId: number;
+  slug: string;
+  name: string;
+  owner?: FakeGithubAccount;
+}
+
 export interface FakeGithub {
   url: string;
+  /** Default app. */
   appId: number;
   slug: string;
   pem: string;
+  /** Every app, the default one first. */
+  apps: FakeApp[];
+  /** Codes creating a new app at conversion (once each). */
+  appCodes: Map<string, FakeAppSpec>;
+  /** Registers an app directly (as if converted earlier); duplicate name or id → throws. */
+  addApp(spec: FakeAppSpec): FakeApp;
   requests: RecordedRequest[];
   tokens: IssuedToken[];
   installations: FakeInstallation[];
@@ -55,10 +100,11 @@ export interface FakeGithub {
   checkRuns: Array<{ name: string; status: string; conclusion: string | null }>;
   statuses: Array<{ context: string; state: string }>;
   reviews: Array<{ user: string; state: string; submittedAt: string }>;
-  /** Simulates a revoked private key: every JWT is refused. */
+  /** Simulates a revoked private key of the default app: its JWTs are refused. */
   rejectJwt: boolean;
   /** Fallback PAT accepted by GET /user, with its expiry header. */
   pat: { token: string; login: string; expiration: string | null } | null;
+  /** Codes converted to the default app. */
   conversionCodes: Set<string>;
   close(): Promise<void>;
 }
@@ -69,19 +115,39 @@ function base64urlJson(part: string): unknown {
   return JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
 }
 
-export async function startFakeGithub(options: { appId?: number; slug?: string; owner?: { login: string; id: number; type: 'Organization' | 'User' } } = {}): Promise<FakeGithub> {
+function keyPair(): { pem: string; verifyKey: KeyObject } {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   // GitHub hands out PKCS#1 keys.
-  const pem = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
-  const verifyKey: KeyObject = createPublicKey(publicKey.export({ type: 'spki', format: 'pem' }));
+  return {
+    pem: privateKey.export({ type: 'pkcs1', format: 'pem' }).toString(),
+    verifyKey: createPublicKey(publicKey.export({ type: 'spki', format: 'pem' })),
+  };
+}
+
+export async function startFakeGithub(
+  options: { appId?: number; slug?: string; owner?: FakeGithubAccount; name?: string } = {},
+): Promise<FakeGithub> {
+  const { pem, verifyKey } = keyPair();
   const appId = options.appId ?? 4242;
   const slug = options.slug ?? 'nuera-dev-test';
   const owner = options.owner ?? { login: 'nuera-studio', id: 1001, type: 'Organization' as const };
+  const defaultApp: FakeApp = {
+    appId,
+    slug,
+    name: options.name ?? 'Nuera Dev · localhost:3104',
+    clientId: 'Iv23liFakeClientId',
+    pem,
+    verifyKey,
+    owner,
+    rejectJwt: false,
+  };
 
-  const state: Omit<FakeGithub, 'url' | 'close'> = {
+  const state: Omit<FakeGithub, 'url' | 'close' | 'addApp'> = {
     appId,
     slug,
     pem,
+    apps: [defaultApp],
+    appCodes: new Map(),
     requests: [],
     tokens: [],
     installations: [],
@@ -95,19 +161,48 @@ export async function startFakeGithub(options: { appId?: number; slug?: string; 
     conversionCodes: new Set(['valid-code']),
   };
 
-  function verifyJwt(header: string | null): boolean {
-    if (state.rejectJwt) return false;
+  const rejected = (app: FakeApp) => (app === defaultApp ? state.rejectJwt : app.rejectJwt);
+
+  function addApp(spec: FakeAppSpec): FakeApp {
+    if (state.apps.some((app) => app.appId === spec.appId)) throw new Error(`application ${spec.appId} déjà présente`);
+    if (state.apps.some((app) => app.name === spec.name)) throw new Error(`nom d'application déjà pris : ${spec.name}`);
+    const keys = keyPair();
+    const app: FakeApp = {
+      appId: spec.appId,
+      slug: spec.slug,
+      name: spec.name,
+      clientId: `Iv23li${spec.appId}`,
+      pem: keys.pem,
+      verifyKey: keys.verifyKey,
+      owner: spec.owner ?? owner,
+      rejectJwt: false,
+    };
+    state.apps.push(app);
+    return app;
+  }
+
+  /** The app whose valid JWT authorises the request, or null. */
+  function verifyJwt(header: string | null): FakeApp | null {
     const match = /^bearer\s+(.+)$/i.exec(header ?? '');
-    if (!match) return false;
+    if (!match) return null;
     const [h, p, s] = match[1]!.split('.');
-    if (!h || !p || !s) return false;
+    if (!h || !p || !s) return null;
+    let payload: { iss?: unknown; exp?: number; iat?: number };
+    try {
+      payload = base64urlJson(p) as typeof payload;
+    } catch {
+      return null;
+    }
+    const app = state.apps.find((item) => String(item.appId) === String(payload.iss));
+    if (!app || rejected(app)) return null;
     const verifier = createVerify('RSA-SHA256');
     verifier.update(`${h}.${p}`);
-    if (!verifier.verify(verifyKey, Buffer.from(s, 'base64url'))) return false;
-    const payload = base64urlJson(p) as { iss?: unknown; exp?: number; iat?: number };
+    if (!verifier.verify(app.verifyKey, Buffer.from(s, 'base64url'))) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    return String(payload.iss) === String(appId) && typeof payload.exp === 'number' && payload.exp > nowSec && payload.exp - (payload.iat ?? 0) <= 660;
+    return typeof payload.exp === 'number' && payload.exp > nowSec && payload.exp - (payload.iat ?? 0) <= 660 ? app : null;
   }
+
+  const appOf = (installation: FakeInstallation) => installation.appId ?? appId;
 
   function tokenOf(header: string | null): IssuedToken | null {
     const match = /^(?:token|bearer)\s+(.+)$/i.exec(header ?? '');
@@ -127,7 +222,22 @@ export async function startFakeGithub(options: { appId?: number; slug?: string; 
     suspended_at: item.suspendedAt ?? null,
     suspended_by: item.suspendedAt ? { login: 'someone' } : null,
     html_url: `https://github.com/organizations/${item.account.login}/settings/installations/${item.id}`,
-    app_id: appId,
+    app_id: appOf(item),
+  });
+
+  const conversionJson = (app: FakeApp) => ({
+    id: app.appId,
+    slug: app.slug,
+    node_id: 'A_kgDO',
+    client_id: app.clientId,
+    client_secret: 'fake-client-secret-0123456789abcdef',
+    webhook_secret: 'fake-webhook-secret-0123456789',
+    pem: app.pem,
+    name: app.name,
+    html_url: `https://github.com/apps/${app.slug}`,
+    owner: app.owner,
+    permissions: { contents: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read', issues: 'read' },
+    events: [],
   });
 
   const repoJson = (repo: FakeRepo) => ({
@@ -178,39 +288,38 @@ export async function startFakeGithub(options: { appId?: number; slug?: string; 
     // --- Manifest conversion (no auth) -------------------------------------------------------
     if (method === 'POST' && (match = /^\/app-manifests\/([^/]+)\/conversions$/.exec(path))) {
       const code = decodeURIComponent(match[1]!);
+      const spec = state.appCodes.get(code);
+      if (spec) {
+        state.appCodes.delete(code);
+        // GitHub App names are unique across GitHub.
+        if (state.apps.some((app) => app.name === spec.name)) {
+          return send(res, 422, { message: 'Validation Failed', errors: [{ resource: 'Integration', code: 'custom', message: 'Name has already been taken' }] });
+        }
+        return send(res, 201, conversionJson(addApp(spec)));
+      }
       if (!state.conversionCodes.has(code)) return send(res, 404, { message: 'Not Found' });
       state.conversionCodes.delete(code);
-      return send(res, 201, {
-        id: appId,
-        slug,
-        node_id: 'A_kgDO',
-        client_id: 'Iv23liFakeClientId',
-        client_secret: 'fake-client-secret-0123456789abcdef',
-        webhook_secret: 'fake-webhook-secret-0123456789',
-        pem,
-        name: 'Nuera Dev · localhost:3104',
-        html_url: `https://github.com/apps/${slug}`,
-        owner,
-        permissions: { contents: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read', issues: 'read' },
-        events: [],
-      });
+      return send(res, 201, conversionJson(defaultApp));
     }
 
     // --- App (JWT) -----------------------------------------------------------------------------
     if (path === '/app' || path.startsWith('/app/') || /^\/repos\/[^/]+\/[^/]+\/installation$/.test(path)) {
-      if (!verifyJwt(authorization)) return send(res, 401, { message: 'A JSON web token could not be decoded' });
-      if (method === 'GET' && path === '/app') return send(res, 200, { id: appId, slug, name: 'Nuera Dev', owner });
-      if (method === 'GET' && path === '/app/installations') return send(res, 200, state.installations.map(installationJson));
+      const app = verifyJwt(authorization);
+      if (!app) return send(res, 401, { message: 'A JSON web token could not be decoded' });
+      // An app only ever sees its own installations (404 for another app's, as on GitHub).
+      const own = state.installations.filter((inst) => appOf(inst) === app.appId);
+      if (method === 'GET' && path === '/app') return send(res, 200, { id: app.appId, slug: app.slug, name: app.name, owner: app.owner });
+      if (method === 'GET' && path === '/app/installations') return send(res, 200, own.map(installationJson));
       if (method === 'GET' && (match = /^\/app\/installations\/(\d+)$/.exec(path))) {
-        const item = state.installations.find((inst) => inst.id === Number(match![1]));
+        const item = own.find((inst) => inst.id === Number(match![1]));
         return item ? send(res, 200, installationJson(item)) : send(res, 404, { message: 'Not Found' });
       }
       if (method === 'GET' && (match = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(path))) {
-        const item = state.installations.find((inst) => inst.account.login === match![1] && inst.repos.includes(match![2]!));
+        const item = own.find((inst) => inst.account.login === match![1] && inst.repos.includes(match![2]!));
         return item ? send(res, 200, installationJson(item)) : send(res, 404, { message: 'Not Found' });
       }
       if (method === 'POST' && (match = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(path))) {
-        const item = state.installations.find((inst) => inst.id === Number(match![1]));
+        const item = own.find((inst) => inst.id === Number(match![1]));
         if (!item) return send(res, 404, { message: 'Not Found' });
         if (item.suspendedAt) return send(res, 403, { message: 'This installation has been suspended' });
         const requested = (body ?? {}) as { repositories?: string[]; permissions?: Record<string, string> };
@@ -224,7 +333,7 @@ export async function startFakeGithub(options: { appId?: number; slug?: string; 
           }
         }
         const token = `ghs_${randomBytes(24).toString('hex')}.${randomBytes(8).toString('hex')}`;
-        state.tokens.push({ token, installationId: item.id, repositories: requested.repositories ?? null, permissions: requested.permissions ?? null });
+        state.tokens.push({ token, appId: app.appId, installationId: item.id, repositories: requested.repositories ?? null, permissions: requested.permissions ?? null });
         return send(res, 201, {
           token,
           expires_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -332,13 +441,22 @@ export async function startFakeGithub(options: { appId?: number; slug?: string; 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   const fake = state as FakeGithub;
+  fake.addApp = addApp;
   fake.url = `http://127.0.0.1:${port}`;
   fake.close = () => new Promise<void>((resolve) => server.close(() => resolve()));
   return fake;
 }
 
-/** Adds an installation (and its repositories) to the fake. */
+/**
+ * Adds an installation (of the default app, or of `installation.appId`) and its repositories to the
+ * fake. Installation ids are unique across GitHub; a repository already known (same owner and name,
+ * reached through another app) is not duplicated.
+ */
 export function addInstallation(fake: FakeGithub, installation: FakeInstallation, repos: Array<Omit<FakeRepo, 'owner'>>): void {
+  if (fake.installations.some((item) => item.id === installation.id)) throw new Error(`installation ${installation.id} déjà présente`);
   fake.installations.push(installation);
-  for (const repo of repos) fake.repos.push({ ...repo, owner: installation.account.login, ownerType: installation.account.type });
+  for (const repo of repos) {
+    if (fake.repos.some((item) => item.owner === installation.account.login && item.name === repo.name)) continue;
+    fake.repos.push({ ...repo, owner: installation.account.login, ownerType: installation.account.type });
+  }
 }

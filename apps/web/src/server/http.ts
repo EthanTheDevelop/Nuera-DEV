@@ -1,12 +1,13 @@
 import 'server-only';
 import type { NextRequest } from 'next/server';
 import type { z, ZodType } from 'zod';
-import { requireUserForApi, type CurrentUser } from '@/server/auth/session';
+import { isInstanceAdmin, requireUserForApi, type CurrentUser } from '@/server/auth/session';
 import { AppError, formatZodIssues, toAppError, toErrorResponse } from '@/server/errors';
 import { checkRequestOrigin } from '@/server/security/origin';
 import { assertRateLimit, type RateLimitRule } from '@/server/security/rate-limit';
 import { getClientIp } from '@/server/security/request-info';
-import { isValidRunnerAuthorization } from '@/server/security/runner-token';
+import { isValidRunnerAuthorization, resolveRunnerCaller, type CallerEnvironment } from '@/server/security/runner-token';
+import { requireContextForApi, type RequestContext } from '@/server/tenancy/context';
 
 /**
  * Route handler wrappers.
@@ -15,17 +16,25 @@ import { isValidRunnerAuthorization } from '@/server/security/runner-token';
  *   export const POST = apiRoute({
  *     params: z.object({ id: z.uuid() }),
  *     body: z.object({ favorite: z.boolean() }),
- *     handler: async ({ params, body, user }) => setFavorite(params.id, body.favorite, user),
+ *     handler: async ({ params, body, ctx }) => setFavorite(ctx, params.id, body.favorite),
  *   });
  *
- * apiRoute: session required (2FA active) unless `auth: false`; Origin check on every non-GET
- * method; Zod parsing of params / query / JSON body (422 VALIDATION with a French detail);
+ * apiRoute: identity by `auth` level (docs/MULTICOMPTE.md §5):
+ *   - `'space'` (DEFAULT): signed-in account (2FA active) + its request context (space, server) → `ctx`;
+ *   - `'user'`: signed-in account only (`ctx` null) — account-level routes (push, notifications…);
+ *   - `'admin'`: owner or administrator of the instance, else 403 (`ctx` null);
+ *   - `false`: public (`user` and `ctx` null).
+ * Origin check on every non-GET method (before the session is read); rate limit per IP + account;
+ * Zod parsing of params / query / JSON body (422 VALIDATION with a French detail);
  * optional rate limit (per IP + route); AppError → JSON `{ error: { code, message, … } }`;
  * unexpected errors → 500 INTERNAL without stack trace (logged on the server).
  * The handler may return a Response (passed through), `undefined` (204) or any JSON value (200).
  *
- * internalRoute: runner → web callbacks under /api/internal/*: `Authorization: Bearer RUNNER_TOKEN`
- * compared in constant time, no user session, no Origin check.
+ * internalRoute: runner → web callbacks under /api/internal/*: `Authorization: Bearer <jeton du
+ * serveur>` resolved to the calling server (`environment`: RUNNER_TOKEN in constant time for the
+ * default server, sha256 lookup for the others), no user session, no Origin check. 401 « Jeton du
+ * runner invalide. » for an unknown token, 403 « Ce serveur est suspendu. » for a suspended or
+ * retired server. Each route then checks that the resource belongs to that server.
  */
 
 type RouteParams = Record<string, string | string[] | undefined>;
@@ -37,23 +46,32 @@ export interface RouteContextLike {
 
 export type RouteHandler = (request: NextRequest, context: RouteContextLike) => Promise<Response>;
 
-export interface ApiHandlerContext<TBody, TQuery, TParams, TUser> {
+/** Identity required by a route (see the module comment). */
+export type RouteAuth = false | 'user' | 'space' | 'admin';
+
+/** What the handler receives for each level. */
+export type RouteIdentity<TAuth extends RouteAuth> = TAuth extends false
+  ? { user: null; ctx: null }
+  : TAuth extends 'space'
+    ? { user: CurrentUser; ctx: RequestContext }
+    : { user: CurrentUser; ctx: null };
+
+export type ApiHandlerContext<TBody, TQuery, TParams, TAuth extends RouteAuth = 'space'> = {
   request: NextRequest;
   body: TBody;
   query: TQuery;
   params: TParams;
-  user: TUser;
   /** Client IP from the trusted proxy header (null in local development). */
   ip: string | null;
-}
+} & RouteIdentity<TAuth>;
 
 export interface ApiRouteOptions<
-  TAuth extends boolean,
+  TAuth extends RouteAuth,
   TBodySchema extends ZodType | undefined,
   TQuerySchema extends ZodType | undefined,
   TParamsSchema extends ZodType | undefined,
 > {
-  /** Default true: requires the owner session (2FA active). */
+  /** Default `'space'`: account (2FA active) + request context. */
   auth?: TAuth;
   body?: TBodySchema;
   query?: TQuerySchema;
@@ -71,7 +89,7 @@ export interface ApiRouteOptions<
       Infer<TBodySchema, undefined>,
       Infer<TQuerySchema, Record<string, string>>,
       Infer<TParamsSchema, RouteParams>,
-      TAuth extends false ? null : CurrentUser
+      TAuth
     >,
   ) => unknown;
 }
@@ -180,8 +198,22 @@ function logUnexpected(request: NextRequest, error: unknown): void {
   }
 }
 
+/** Resolves the identity of a request for `auth` (throws AppError 401 / 403). */
+async function resolveIdentity(auth: RouteAuth): Promise<{ user: CurrentUser | null; ctx: RequestContext | null }> {
+  if (auth === false) return { user: null, ctx: null };
+  if (auth === 'space') {
+    const ctx = await requireContextForApi();
+    return { user: ctx.user, ctx };
+  }
+  const user = await requireUserForApi();
+  if (auth === 'admin' && !isInstanceAdmin(user)) {
+    throw new AppError('FORBIDDEN', 'Action réservée aux administrateurs.');
+  }
+  return { user, ctx: null };
+}
+
 export function apiRoute<
-  TAuth extends boolean = true,
+  TAuth extends RouteAuth = 'space',
   TBodySchema extends ZodType | undefined = undefined,
   TQuerySchema extends ZodType | undefined = undefined,
   TParamsSchema extends ZodType | undefined = undefined,
@@ -195,7 +227,7 @@ export function apiRoute<
       }
 
       const ip = getClientIp(request.headers);
-      const user = options.auth === false ? null : await requireUserForApi();
+      const { user, ctx } = await resolveIdentity(options.auth ?? 'space');
 
       const rule = effectiveRouteRateLimit(method, options.rateLimit);
       if (rule) {
@@ -219,9 +251,16 @@ export function apiRoute<
         body: body as Infer<TBodySchema, undefined>,
         query: query as Infer<TQuerySchema, Record<string, string>>,
         params: params as Infer<TParamsSchema, RouteParams>,
-        user: user as TAuth extends false ? null : CurrentUser,
         ip,
-      });
+        user,
+        ctx,
+        // The identity matches TAuth by construction (resolveIdentity).
+      } as unknown as ApiHandlerContext<
+        Infer<TBodySchema, undefined>,
+        Infer<TQuerySchema, Record<string, string>>,
+        Infer<TParamsSchema, RouteParams>,
+        TAuth
+      >);
       return toResponse(result);
     } catch (error) {
       if (isNextControlFlow(error)) throw error;
@@ -237,11 +276,13 @@ function isNextControlFlow(error: unknown): boolean {
   return typeof digest === 'string' && (digest.startsWith('NEXT_REDIRECT') || digest.startsWith('NEXT_HTTP_ERROR_FALLBACK'));
 }
 
-export { isValidRunnerAuthorization };
+export { isValidRunnerAuthorization, type CallerEnvironment };
 
 export interface InternalHandlerContext<TBody> {
   request: NextRequest;
   body: TBody;
+  /** Server whose runner called (resolved from its token). */
+  environment: CallerEnvironment;
 }
 
 export interface InternalRouteOptions<TBodySchema extends ZodType | undefined> {
@@ -255,15 +296,14 @@ export function internalRoute<TBodySchema extends ZodType | undefined = undefine
 ): RouteHandler {
   return async (request) => {
     try {
-      if (!isValidRunnerAuthorization(request.headers.get('authorization'))) {
-        throw new AppError('UNAUTHORIZED', 'Jeton du runner invalide.');
-      }
+      const environment = await resolveRunnerCaller(request.headers.get('authorization'));
+      if (!environment) throw new AppError('UNAUTHORIZED', 'Jeton du runner invalide.');
       let body: unknown = undefined;
       if (options.body) {
         const raw = await readJsonBody(request, options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
         body = parseWith(options.body, raw, 'Données');
       }
-      const result = await options.handler({ request, body: body as Infer<TBodySchema, undefined> });
+      const result = await options.handler({ request, body: body as Infer<TBodySchema, undefined>, environment });
       return toResponse(result);
     } catch (error) {
       if (isNextControlFlow(error)) throw error;

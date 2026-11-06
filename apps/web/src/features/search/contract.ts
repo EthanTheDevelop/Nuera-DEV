@@ -95,6 +95,17 @@ export const SEARCH_ACTIONS: readonly SearchAction[] = [
   },
 ];
 
+/** Actions that need a server assigned to the space (cloning a repository happens on it). */
+const SERVER_ACTIONS = new Set(['ajouter-projet']);
+
+/**
+ * Actions offered to an account: without a server, « Ajouter un projet » is left out (it would open
+ * a flow that cannot clone anything).
+ */
+export function actionsFor(input: { hasEnvironment: boolean }, actions: readonly SearchAction[] = SEARCH_ACTIONS): SearchAction[] {
+  return actions.filter((action) => input.hasEnvironment || !SERVER_ACTIONS.has(action.id));
+}
+
 /** Lower case, accents removed, spaces collapsed (« Créé » → « cree »). */
 export function fold(text: string): string {
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();

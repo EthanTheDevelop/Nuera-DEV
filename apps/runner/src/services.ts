@@ -1,10 +1,10 @@
 import { sql } from 'drizzle-orm';
 import { createDb, type Database } from '@nuera/db';
-import type { HealthResponse } from '@nuera/shared/runner';
+import { RUNNER_CONTRACT_VERSION, uptimeServiceKey, type HealthResponse } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { ClaudeCli } from './claude/cli';
 import type { RunnerConfig } from './config';
-import { readAppSettings } from './db/lookups';
+import { EnvironmentContext, RunnerFatalError } from './environment';
 import { EventBus, GLOBAL } from './events/bus';
 import { RunnerError } from './errors';
 import { FileService } from './files/service';
@@ -16,7 +16,7 @@ import { RunManager } from './runs/manager';
 import { buildChildEnv } from './safety/env';
 import { execCommand, succeeded } from './safety/exec';
 import { PathGuard } from './safety/paths';
-import { PtyBackend, TmuxBackend, type SessionBackend } from './sessions/backend';
+import { defaultTmuxSocket, PtyBackend, TmuxBackend, type SessionBackend } from './sessions/backend';
 import { DiskUsage } from './system/disk-usage';
 import { SessionEventStore } from './sessions/event-store';
 import { SessionManager } from './sessions/manager';
@@ -30,6 +30,8 @@ export interface RunnerServices {
   config: RunnerConfig;
   logger: Logger;
   db: Database;
+  /** Server served by this runner (identity, lease, markers, settings, heartbeat). */
+  environment: EnvironmentContext;
   bus: EventBus;
   paths: PathGuard;
   gitCli: Git;
@@ -51,6 +53,12 @@ export interface RunnerServices {
   /** Set once the hook listener is bound (port 0 in tests). */
   hookPort: { value: number };
   health(): Promise<HealthResponse>;
+  /**
+   * Server heartbeat (every 60 s, scheduler or not): status and settings re-read, then last_seen_at /
+   * versions / capabilities written. A failed re-read (database hiccup) does not skip the write; a
+   * fatal one (RunnerFatalError) is thrown.
+   */
+  heartbeat(): Promise<void>;
 }
 
 async function toolVersion(file: string, args: string[]): Promise<{ available: boolean; version: string | null; error: string | null }> {
@@ -59,7 +67,30 @@ async function toolVersion(file: string, args: string[]): Promise<{ available: b
   return { available: true, version: result.stdout.trim().split(/\r?\n/)[0] ?? null, error: null };
 }
 
-export async function chooseBackend(config: RunnerConfig, terminals: TerminalManager, logger: Logger): Promise<SessionBackend> {
+/**
+ * tmux socket: NUERA_TMUX_SOCKET when set, otherwise that of the server ({@link defaultTmuxSocket}),
+ * fixed once the server is known (no tmux command runs before: every session route waits for it).
+ */
+export function tmuxSocketResolver(
+  config: Pick<RunnerConfig, 'tmuxSocket'>,
+  environment: Pick<EnvironmentContext, 'current' | 'notServingError'>,
+): () => string {
+  let socket = config.tmuxSocket ?? null;
+  return () => {
+    if (socket) return socket;
+    const current = environment.current;
+    if (!current) throw environment.notServingError();
+    socket = defaultTmuxSocket(current);
+    return socket;
+  };
+}
+
+export async function chooseBackend(
+  config: RunnerConfig,
+  terminals: TerminalManager,
+  logger: Logger,
+  socket: string | (() => string),
+): Promise<SessionBackend> {
   if (config.sessionBackend === 'pty') return new PtyBackend(terminals);
   const tmux = await TmuxBackend.version();
   if (config.sessionBackend === 'tmux' && !tmux) {
@@ -67,19 +98,29 @@ export async function chooseBackend(config: RunnerConfig, terminals: TerminalMan
   }
   if (tmux) {
     logger.info({ tmux }, 'sessions Claude : backend tmux');
-    return new TmuxBackend(terminals, config.dataDir, config.tmuxSocket ?? 'nuera');
+    return new TmuxBackend(terminals, config.dataDir, socket);
   }
   logger.info('sessions Claude : backend PTY direct (tmux absent)');
   return new PtyBackend(terminals);
 }
 
+/** Versions reported by the heartbeat, refreshed at most every 30 min (each one spawns a process). */
+const TOOLS_TTL_MS = 30 * 60_000;
+
 export async function createServices(config: RunnerConfig, options: { logger: Logger; db?: Database }): Promise<RunnerServices> {
-  const logger = options.logger;
-  const db = options.db ?? createDb(config.databaseUrl, { max: 10, applicationName: 'nuera-runner' });
+  // Own child logger: the server's id is bound to it once known (several runners per process in tests).
+  const logger = options.logger.child({});
+  const db = options.db ?? createDb(config.databaseUrl, {
+      max: config.dbPoolMax,
+      // Named after the server when it is declared (NUERA_ENVIRONMENT_ID): the web matches the role of
+      // `nuera-runner:<id>` connections against the server's restricted role (admin/db-access.ts).
+      applicationName: config.environmentId ? `nuera-runner:${config.environmentId}` : 'nuera-runner',
+    });
+  const environment = new EnvironmentContext({ db, config, logger });
   const bus = new EventBus();
   const paths = new PathGuard(config.projectsRoot, config.dataDir);
   const gitCli = new Git(paths.dataDir, config.gitRemoteBase);
-  const ops = new OperationService(db, bus, logger);
+  const ops = new OperationService(db, bus, logger, environment);
   const web = new WebClient(config.webInternalUrl, config.token, logger);
   const hookPort = { value: config.hookPort };
 
@@ -87,6 +128,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
   let runsRef: RunManager | null = null;
   const git = new GitService({
     db,
+    environment,
     git: gitCli,
     paths,
     ops,
@@ -95,14 +137,22 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     liveRunsForWorktree: (id) => runsRef?.liveCountForWorktree(id) ?? 0,
     diskUsage: new DiskUsage(),
   });
-  const clone = new CloneService({ db, git: gitCli, paths, ops, logger });
+  const clone = new CloneService({ db, environment, git: gitCli, paths, ops, logger });
   const files = new FileService({ paths, git: gitCli, gitService: git });
-  const terminals = new TerminalManager({ dataDir: paths.dataDir, claudeBin: config.claudeBin, gitService: git, logger });
+  const terminals = new TerminalManager({
+    dataDir: paths.dataDir,
+    claudeBin: config.claudeBin,
+    claudeConfigDir: config.claudeConfigDir,
+    gitService: git,
+    environment,
+    logger,
+  });
   const store = new SessionEventStore(db, bus);
-  const claude = new ClaudeCli(config.claudeBin, paths.dataDir, logger);
-  const backend = await chooseBackend(config, terminals, logger);
+  const claude = new ClaudeCli(config.claudeBin, paths.dataDir, logger, config.claudeConfigDir);
+  const backend = await chooseBackend(config, terminals, logger, tmuxSocketResolver(config, environment));
   const sessions = new SessionManager({
     db,
+    environment,
     bus,
     store,
     git,
@@ -112,6 +162,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     logger,
     dataDir: paths.dataDir,
     claudeBin: config.claudeBin,
+    claudeConfigDir: config.claudeConfigDir,
     hookBaseUrl: () => `http://127.0.0.1:${hookPort.value}`,
     onAuthProblem: () => {
       claude.invalidate();
@@ -119,23 +170,42 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     },
   });
   sessionsRef = sessions;
-  const runs = new RunManager({ db, bus, git, terminals, logger });
+  const runs = new RunManager({ db, environment, bus, git, terminals, logger, claudeConfigDir: config.claudeConfigDir });
   runsRef = runs;
 
-  let maxSessions = 4;
-  const refreshMax = async () => {
-    maxSessions = (await readAppSettings(db))?.maxConcurrentSessions ?? 4;
-  };
-  void refreshMax().catch(() => undefined);
-  setInterval(() => void refreshMax().catch(() => undefined), 60_000).unref?.();
-
   const metrics = new MetricsCollector(paths.projectsRoot, () => ({
-    sessions: { live: sessions.liveCount, max: maxSessions },
+    sessions: { live: sessions.liveCount, max: environment.current?.maxConcurrentSessions ?? 4 },
     runs: runs.liveCount,
     terminals: terminals.liveCount,
   }));
-  const uptime = new UptimeTracker(db, logger);
-  const scheduler = new Scheduler({ db, git, web, uptime, logger });
+  const uptime = new UptimeTracker(db, logger, () => {
+    const current = environment.current;
+    if (!current) throw environment.notServingError();
+    return uptimeServiceKey({ id: current.id, isDefault: current.isDefault });
+  });
+
+  let tools: { at: number; value: { claudeVersion: string | null; gitVersion: string | null; tmuxVersion: string | null } } | null = null;
+  const toolVersions = async () => {
+    if (tools && Date.now() - tools.at < TOOLS_TTL_MS) return tools.value;
+    const [gitInfo, tmuxVersion, claudeVersion] = await Promise.all([
+      toolVersion('git', ['--version']),
+      backend.kind === 'tmux' ? TmuxBackend.version() : Promise.resolve(null),
+      claude.version().catch(() => null),
+    ]);
+    tools = { at: Date.now(), value: { claudeVersion, gitVersion: gitInfo.version, tmuxVersion } };
+    return tools.value;
+  };
+  const heartbeat = async () => {
+    try {
+      await environment.refresh();
+    } catch (error) {
+      if (error instanceof RunnerFatalError) throw error;
+      logger.warn({ err: error }, 'serveur : relecture impossible, battement écrit quand même');
+    }
+    await environment.heartbeat({ backend: backend.kind, tools: await toolVersions() });
+  };
+
+  const scheduler = new Scheduler({ db, environment, git, web, uptime, logger });
   const startedAt = new Date();
 
   // system.metrics every 5 s while someone listens to the global stream.
@@ -183,6 +253,9 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
       disk: disk ? { path: disk.path, freeBytes: disk.freeBytes, totalBytes: disk.totalBytes } : null,
       projectsRoot: paths.projectsRoot,
       dataDir: paths.dataDir,
+      environment: environment.ref(),
+      state: environment.state,
+      contractVersion: RUNNER_CONTRACT_VERSION,
     };
   };
 
@@ -191,6 +264,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     config,
     logger,
     db,
+    environment,
     bus,
     paths,
     gitCli,
@@ -211,5 +285,6 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     startedAt,
     hookPort,
     health,
+    heartbeat,
   };
 }

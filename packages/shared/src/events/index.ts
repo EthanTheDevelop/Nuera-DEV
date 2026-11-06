@@ -13,7 +13,8 @@ import { IsoDateSchema, SessionStatusSchema, UuidSchema } from '../runner/common
 export * from './format';
 
 /**
- * Server-Sent Events emitted by the runner and relayed by the web (`/api/stream/*`).
+ * Server-Sent Events emitted by the runner and relayed by the web (`/api/stream/*`), plus the
+ * events the web emits itself (`stream.error`, `stream.hello`: seq 0, never an `id:` line).
  *
  * Wire format: every event is a DEFAULT `message` event (no `event:` field) whose `data` is the
  * JSON envelope `{ seq, type, at, data }`; `id:` carries `seq` for `Last-Event-ID` replay.
@@ -56,8 +57,21 @@ export const NotificationCreatedSchema = z.object({
   href: z.string().nullable(),
   projectId: UuidSchema.nullable(),
   sessionId: UuidSchema.nullable(),
+  /** Server the notification comes from (null: not tied to a server). Absent from older runners and webs. */
+  environmentId: UuidSchema.nullable().optional(),
 });
 export type NotificationCreated = z.infer<typeof NotificationCreatedSchema>;
+
+/**
+ * First event of the global stream, emitted by the web (seq 0, no `id:`): the account the stream
+ * was opened for, and its server (null: none assigned). A tab whose page belongs to another account
+ * reloads (multi-tab identity guard). Never a proof of life of the runner.
+ */
+export const StreamHelloSchema = z.object({
+  userId: z.string().min(1),
+  environmentId: UuidSchema.nullable(),
+});
+export type StreamHello = z.infer<typeof StreamHelloSchema>;
 
 const envelope = <T extends string, S extends z.ZodType>(type: T, data: S) =>
   z.object({ seq: z.number(), type: z.literal(type), at: IsoDateSchema, data });
@@ -68,6 +82,8 @@ export const RunnerEventSchema = z.discriminatedUnion('type', [
   envelope('stream.reset', z.object({ reason: z.enum(['replay_unavailable', 'runner_restarted']) })),
   /** Emitted by the web relay when the runner cannot be reached (Figma T5). */
   envelope('stream.error', z.object({ code: z.string(), message: z.string() })),
+  /** Emitted by the web when the global stream opens (identity guard), see {@link StreamHelloSchema}. */
+  envelope('stream.hello', StreamHelloSchema),
 
   envelope('session.status', SessionStatusEventSchema),
   envelope('session.event', z.object({ sessionId: UuidSchema, item: SessionEventItemSchema })),
@@ -132,4 +148,9 @@ export function encodeSseEvent(event: RunnerEvent, options: { withId?: boolean }
 /** Heartbeat frame (`seq` 0, no `id:` line, so it never moves Last-Event-ID). */
 export function encodeHeartbeat(at = new Date()): string {
   return encodeSseEvent({ seq: 0, type: 'heartbeat', at: at.toISOString(), data: {} }, { withId: false });
+}
+
+/** `stream.hello` frame of the web (`seq` 0, no `id:` line). */
+export function encodeStreamHello(hello: StreamHello, at = new Date()): string {
+  return encodeSseEvent({ seq: 0, type: 'stream.hello', at: at.toISOString(), data: hello }, { withId: false });
 }

@@ -1,4 +1,7 @@
 import 'server-only';
+import { githubSources, projects } from '@nuera/db/schema';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import {
   applyHysteresis,
@@ -15,15 +18,30 @@ import {
 import { applyHealthTransition, healthOfIntegrationStatus } from '@/server/integrations/transitions';
 import { audit } from '@/server/security/audit';
 import { createOctokit, githubErrorHeaders, githubErrorMessage, githubErrorStatus, isTransientGithubError } from './client';
-import { GITHUB_REQUIRED_PERMISSIONS, fallbackToken } from './config';
+import { GITHUB_REQUIRED_PERMISSIONS, MAX_GITHUB_SOURCES_PER_SPACE, fallbackTokenFor } from './config';
 import { fetchInstallations, manageAccessUrl, partitionInstallations, toInstallationRecord } from './installations';
-import { deleteGithubApp, getStoredGithubApp, readGithubRow, readGithubSecrets, updateGithubApp } from './store';
+import {
+  GITHUB_SOURCE_NOT_FOUND,
+  getGithubSource,
+  getGithubSourceRow,
+  labelOf,
+  labelTaken,
+  listGithubSources,
+  parseGithubConfig,
+  readGithubSecrets,
+  updateGithubSource,
+  type GithubSourceRow,
+  type GithubSourceScope,
+  type StoredGithubSource,
+} from './store';
 import { clearGithubTokenCache, createAppJwt, mintInstallationToken, type AppCredentials } from './tokens';
 import type {
   GithubAccountStatus,
   GithubConfig,
   GithubInstallationRecord,
+  GithubOverview,
   GithubPermissionsSummary,
+  GithubSourceStatus,
   GithubStatus,
 } from './types';
 
@@ -31,8 +49,20 @@ type DbStatus = 'pending' | 'connected' | 'expiring' | 'expired' | 'error';
 
 /** Copy shown in T7 « après » for GitHub. */
 export const GITHUB_IMPACT = 'Synchronisation, push et pull requests suspendus. Le travail local continue.';
-const INSTALL_ROUTE = '/api/integrations/github/install';
+export const INSTALL_ROUTE = '/api/integrations/github/install';
 const CHECK_MIN_INTERVAL_MS = 10_000;
+/** Concurrent source checks of one space. */
+const CHECK_CONCURRENCY = 3;
+
+/** « Installer sur GitHub » / « Réautoriser sur GitHub » of one source. */
+export function installRouteOf(sourceId: string): string {
+  return `${INSTALL_ROUTE}?source=${encodeURIComponent(sourceId)}`;
+}
+
+/** Notification / check target of a source (`integration:github:<sourceId>:<état>`, MULTICOMPTE §14.1). */
+export function githubTarget(sourceId: string | 'fallback'): string {
+  return `github:${sourceId}`;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Permissions summary (D07 « DROITS »)
@@ -84,7 +114,7 @@ export function summarizePermissions(installations: Array<Pick<GithubInstallatio
 }
 
 // ---------------------------------------------------------------------------------------------
-// Status view (no network)
+// Status views (no network)
 // ---------------------------------------------------------------------------------------------
 
 interface FallbackState {
@@ -100,13 +130,24 @@ interface FallbackState {
   history: CheckHistoryEntry[];
 }
 
-const globalForFallback = globalThis as unknown as { __nueraGithubFallback?: FallbackState };
-const lastManualCheck = globalThis as unknown as { __nueraGithubLastManualCheck?: number };
+/** State of the GITHUB_FALLBACK_TOKEN checks, per space (in memory: the token lives in the environment). */
+const globalForFallback = globalThis as unknown as { __nueraGithubFallback?: Map<string, FallbackState> };
+const fallbackStates = (globalForFallback.__nueraGithubFallback ??= new Map());
+/** Last manual check per source id (or `space:<id>` for « every source »). */
+const globalForManual = globalThis as unknown as { __nueraGithubManualChecks?: Map<string, number> };
+const manualChecks = (globalForManual.__nueraGithubManualChecks ??= new Map());
 
-function accountsOf(config: GithubConfig): GithubAccountStatus[] {
+/** Forgets the manual-check throttles and the fallback states (tests). */
+export function resetGithubCheckState(): void {
+  manualChecks.clear();
+  fallbackStates.clear();
+}
+
+function accountsOf(sourceId: string, config: GithubConfig): GithubAccountStatus[] {
   return config.installations
     .filter((item) => config.allowedAccountIds.includes(item.accountId))
     .map((item) => ({
+      sourceId,
       login: item.accountLogin,
       type: item.accountType,
       installationId: item.id,
@@ -118,102 +159,149 @@ function accountsOf(config: GithubConfig): GithubAccountStatus[] {
     }));
 }
 
-const emptyPermissions: GithubPermissionsSummary = { granted: {}, missing: Object.keys(GITHUB_REQUIRED_PERMISSIONS), title: 'Aucun droit', detail: '' };
+const emptyPermissions = (): GithubPermissionsSummary => ({ granted: {}, missing: Object.keys(GITHUB_REQUIRED_PERMISSIONS), title: 'Aucun droit', detail: '' });
 
-export async function getGithubStatus(): Promise<GithubStatus> {
-  const stored = await getStoredGithubApp();
-  if (stored) {
-    const { row, config } = stored;
-    const usable = config.installations.filter((item) => config.allowedAccountIds.includes(item.accountId) && !item.suspendedAt);
-    const status = (['pending', 'connected', 'expiring', 'expired', 'error'] as const).includes(row.status as DbStatus)
-      ? (row.status as DbStatus)
-      : 'pending';
-    return {
-      mode: 'app',
-      status,
-      app: {
-        id: config.appId,
-        slug: config.slug,
-        name: config.name,
-        htmlUrl: config.htmlUrl,
-        public: config.public,
-        ownerLogin: config.owner?.login ?? null,
-        createdAt: config.createdAt,
-      },
-      accounts: accountsOf(config),
-      ignoredInstallations: config.ignoredInstallations,
-      repoCount: config.repoCount,
-      permissions: usable.length ? summarizePermissions(usable) : emptyPermissions,
-      manageAccessUrl: manageAccessUrl(config.slug),
-      installUrl: INSTALL_ROUTE,
-      lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
-      lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
-      failingSince: config.failingSince,
-      lastError: row.lastError,
-      reason: config.lastCheck?.result.reason ?? (status === 'pending' ? 'Application non installée' : null),
-      action: config.lastCheck?.result.action ?? (status === 'pending' ? { label: 'Installer sur GitHub', kind: 'external', url: INSTALL_ROUTE } : null),
-      expiresAt: null,
-      lastCheck: config.lastCheck,
-      history: config.history,
-    };
+const DB_STATUSES = ['pending', 'connected', 'expiring', 'expired', 'error'] as const;
+const dbStatusOf = (value: string): DbStatus => ((DB_STATUSES as readonly string[]).includes(value) ? (value as DbStatus) : 'pending');
+
+/** Action URLs of a source: the historical install route (persisted in old checks) gets `?source=`. */
+function withSourceAction(action: CheckAction | null | undefined, sourceId: string): CheckAction | null {
+  if (!action) return null;
+  return action.url === INSTALL_ROUTE ? { ...action, url: installRouteOf(sourceId) } : action;
+}
+
+function withSourceCheck(check: IntegrationCheck | null, sourceId: string): IntegrationCheck | null {
+  if (!check?.result.action) return check;
+  const action = withSourceAction(check.result.action, sourceId);
+  return { ...check, result: { ...check.result, ...(action ? { action } : {}) } };
+}
+
+type SourceProjects = Map<string, Array<{ id: string; name: string }>>;
+
+/** Non-archived projects of the space bound to each source. */
+async function projectsBySource(spaceId: string): Promise<SourceProjects> {
+  const rows = await db
+    .select({ id: projects.id, name: projects.name, sourceId: projects.githubSourceId })
+    .from(projects)
+    .where(and(eq(projects.spaceId, spaceId), isNull(projects.archivedAt), isNotNull(projects.githubSourceId)));
+  const map: SourceProjects = new Map();
+  for (const row of rows) {
+    if (!row.sourceId) continue;
+    map.set(row.sourceId, [...(map.get(row.sourceId) ?? []), { id: row.id, name: row.name }]);
   }
-  const unreadable = await readGithubRow();
-  if (unreadable) {
-    // A row exists but its configuration cannot be read (schema drift): say so, never pretend.
-    return {
-      mode: 'app',
-      status: 'error',
-      app: null,
-      accounts: [],
-      ignoredInstallations: 0,
-      repoCount: null,
-      permissions: emptyPermissions,
-      manageAccessUrl: null,
-      installUrl: null,
-      lastCheckedAt: unreadable.lastCheckedAt?.toISOString() ?? null,
-      lastSuccessAt: unreadable.lastSuccessAt?.toISOString() ?? null,
-      failingSince: null,
-      lastError: 'Enregistrement GitHub illisible.',
-      reason: 'Enregistrement GitHub illisible : déconnectez GitHub puis reconnectez-le.',
-      action: null,
-      expiresAt: null,
-      lastCheck: null,
-      history: [],
-    };
-  }
-  if (fallbackToken()) {
-    const state = globalForFallback.__nueraGithubFallback;
-    return {
-      mode: 'fallback_token',
-      status: state?.status ?? 'pending',
-      app: null,
-      accounts: state?.login
-        ? [{ login: state.login, type: 'User', installationId: 0, repositorySelection: 'selected', repoCount: null, suspended: false, suspendedBy: null, manageUrl: null }]
-        : [],
-      ignoredInstallations: 0,
-      repoCount: null,
-      permissions: { granted: {}, missing: [], title: 'Jeton de secours', detail: 'droits définis à la création du jeton' },
-      manageAccessUrl: null,
-      installUrl: null,
-      lastCheckedAt: state?.lastCheckedAt ?? null,
-      lastSuccessAt: state?.lastSuccessAt ?? null,
-      failingSince: state?.failingSince ?? null,
-      lastError: state?.reason ?? null,
-      reason: state?.reason ?? null,
-      action: null,
-      expiresAt: state?.expiresAt ?? null,
-      lastCheck: state?.lastCheck ?? null,
-      history: state?.history ?? [],
-    };
-  }
+  return map;
+}
+
+/** D07 tile of one source (no network). */
+export function getGithubSourceStatus(source: StoredGithubSource, bound: Array<{ id: string; name: string }> = []): GithubSourceStatus {
+  const { row, config, id } = source;
+  const usable = config.installations.filter((item) => config.allowedAccountIds.includes(item.accountId) && !item.suspendedAt);
+  const status = dbStatusOf(row.status);
+  const install = installRouteOf(id);
+  return {
+    id,
+    sourceId: id,
+    label: source.label,
+    createdAt: row.createdAt.toISOString(),
+    projects: bound,
+    mode: 'app',
+    status,
+    app: {
+      id: config.appId,
+      slug: config.slug,
+      name: config.name,
+      htmlUrl: config.htmlUrl,
+      public: config.public,
+      ownerLogin: config.owner?.login ?? null,
+      createdAt: config.createdAt,
+    },
+    accounts: accountsOf(id, config),
+    ignoredInstallations: config.ignoredInstallations,
+    repoCount: config.repoCount,
+    permissions: usable.length ? summarizePermissions(usable) : emptyPermissions(),
+    manageAccessUrl: manageAccessUrl(config.slug),
+    installUrl: install,
+    lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
+    lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
+    failingSince: config.failingSince,
+    lastError: row.lastError,
+    reason: config.lastCheck?.result.reason ?? (status === 'pending' ? 'Application non installée' : null),
+    action:
+      withSourceAction(config.lastCheck?.result.action, id) ??
+      (status === 'pending' ? { label: 'Installer sur GitHub', kind: 'external', url: install } : null),
+    expiresAt: null,
+    lastCheck: withSourceCheck(config.lastCheck, id),
+    history: config.history,
+  };
+}
+
+/** A row whose configuration cannot be read (schema drift): said so, never pretended. */
+function unreadableStatus(row: GithubSourceRow, bound: Array<{ id: string; name: string }>): GithubSourceStatus {
+  return {
+    id: row.id,
+    sourceId: row.id,
+    label: labelOf(row, null),
+    createdAt: row.createdAt.toISOString(),
+    projects: bound,
+    mode: 'app',
+    status: 'error',
+    app: null,
+    accounts: [],
+    ignoredInstallations: 0,
+    repoCount: null,
+    permissions: emptyPermissions(),
+    manageAccessUrl: null,
+    installUrl: null,
+    lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
+    lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
+    failingSince: null,
+    lastError: 'Enregistrement GitHub illisible.',
+    reason: 'Enregistrement GitHub illisible : déconnectez GitHub puis reconnectez-le.',
+    action: null,
+    expiresAt: null,
+    lastCheck: null,
+    history: [],
+  };
+}
+
+function fallbackStatus(state: FallbackState | undefined): GithubStatus {
+  return {
+    mode: 'fallback_token',
+    sourceId: null,
+    label: null,
+    status: state?.status ?? 'pending',
+    app: null,
+    accounts: state?.login
+      ? [{ sourceId: null, login: state.login, type: 'User', installationId: 0, repositorySelection: 'selected', repoCount: null, suspended: false, suspendedBy: null, manageUrl: null }]
+      : [],
+    ignoredInstallations: 0,
+    repoCount: null,
+    permissions: { granted: {}, missing: [], title: 'Jeton de secours', detail: 'droits définis à la création du jeton' },
+    manageAccessUrl: null,
+    installUrl: null,
+    lastCheckedAt: state?.lastCheckedAt ?? null,
+    lastSuccessAt: state?.lastSuccessAt ?? null,
+    failingSince: state?.failingSince ?? null,
+    lastError: state?.reason ?? null,
+    reason: state?.reason ?? null,
+    action: null,
+    expiresAt: state?.expiresAt ?? null,
+    lastCheck: state?.lastCheck ?? null,
+    history: state?.history ?? [],
+  };
+}
+
+function notConfiguredStatus(): GithubStatus {
   return {
     mode: 'none',
+    sourceId: null,
+    label: null,
     status: 'not_configured',
     app: null,
     accounts: [],
     ignoredInstallations: 0,
     repoCount: null,
-    permissions: emptyPermissions,
+    permissions: emptyPermissions(),
     manageAccessUrl: null,
     installUrl: null,
     lastCheckedAt: null,
@@ -226,6 +314,104 @@ export async function getGithubStatus(): Promise<GithubStatus> {
     lastCheck: null,
     history: [],
   };
+}
+
+/** error > expired > expiring > pending > connected. */
+const SEVERITY: Record<GithubStatus['status'], number> = { error: 5, expired: 4, expiring: 3, pending: 2, connected: 1, not_configured: 0 };
+const FAILING = new Set<GithubStatus['status']>(['error', 'expired', 'pending']);
+
+const AGGREGATE_REASON: Partial<Record<GithubStatus['status'], [string, string]>> = {
+  error: ['en erreur', 'en erreur'],
+  expired: ['à réautoriser', 'à réautoriser'],
+  pending: ['à installer', 'à installer'],
+  expiring: ['bientôt expirée', 'bientôt expirées'],
+};
+
+/** « 1 source sur 3 à réautoriser » */
+export function aggregateReason(worst: GithubStatus['status'], count: number, total: number): string | null {
+  const words = AGGREGATE_REASON[worst];
+  if (!words || count === 0) return null;
+  return `${count} ${count > 1 ? 'sources' : 'source'} sur ${total} ${count > 1 ? words[1] : words[0]}`;
+}
+
+function latest(values: Array<string | null>): string | null {
+  const times = values.filter((value): value is string => Boolean(value)).sort();
+  return times.at(-1) ?? null;
+}
+
+function earliest(values: Array<string | null>): string | null {
+  return values.filter((value): value is string => Boolean(value)).sort()[0] ?? null;
+}
+
+function aggregate(sources: GithubSourceStatus[], usable: GithubInstallationRecord[]): GithubStatus {
+  if (sources.length === 1) {
+    const { id: _id, createdAt: _createdAt, projects: _projects, ...single } = sources[0]!;
+    return single;
+  }
+  const worst = sources.reduce<GithubStatus['status']>((current, item) => (SEVERITY[item.status] > SEVERITY[current] ? item.status : current), 'connected');
+  const worstCount = sources.filter((item) => item.status === worst).length;
+  const counts = sources.map((item) => item.repoCount).filter((value): value is number => typeof value === 'number');
+  const reason = worst === 'connected' ? null : aggregateReason(worst, worstCount, sources.length);
+  return {
+    mode: 'app',
+    sourceId: null,
+    label: null,
+    status: worst,
+    app: null,
+    accounts: sources.flatMap((item) => item.accounts),
+    ignoredInstallations: sources.reduce((sum, item) => sum + item.ignoredInstallations, 0),
+    repoCount: counts.length ? counts.reduce((sum, value) => sum + value, 0) : null,
+    permissions: usable.length ? summarizePermissions(usable) : emptyPermissions(),
+    manageAccessUrl: null,
+    installUrl: null,
+    lastCheckedAt: latest(sources.map((item) => item.lastCheckedAt)),
+    lastSuccessAt: latest(sources.map((item) => item.lastSuccessAt)),
+    failingSince: earliest(sources.filter((item) => FAILING.has(item.status)).map((item) => item.failingSince)),
+    lastError: reason,
+    reason,
+    action: null,
+    expiresAt: null,
+    lastCheck: null,
+    history: [],
+  };
+}
+
+/**
+ * GitHub of a space (D07): aggregate + every source. Without source: GITHUB_FALLBACK_TOKEN for the
+ * space of the default server, otherwise « non connecté ».
+ */
+export async function getGithubOverview(spaceId: string): Promise<GithubOverview> {
+  const [{ sources, unreadable }, bound] = await Promise.all([listGithubSources(spaceId), projectsBySource(spaceId)]);
+  const views: GithubSourceStatus[] = [
+    ...sources.map((source) => getGithubSourceStatus(source, bound.get(source.id) ?? [])),
+    ...unreadable.map((row) => unreadableStatus(row, bound.get(row.id) ?? [])),
+  ].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const extra = {
+    sources: views,
+    sourceCount: views.length,
+    failingSourceCount: views.filter((item) => FAILING.has(item.status)).length,
+    maxSources: MAX_GITHUB_SOURCES_PER_SPACE,
+    canAddSource: views.length < MAX_GITHUB_SOURCES_PER_SPACE,
+  };
+  if (views.length > 0) {
+    const usable = sources.flatMap((source) =>
+      source.config.installations.filter((item) => source.config.allowedAccountIds.includes(item.accountId) && !item.suspendedAt),
+    );
+    return { ...aggregate(views, usable), ...extra };
+  }
+  if (await fallbackTokenFor(spaceId)) return { ...fallbackStatus(fallbackStates.get(spaceId)), ...extra };
+  return { ...notConfiguredStatus(), ...extra };
+}
+
+/** @deprecated use {@link getGithubOverview} (same shape, plus the sources). */
+export const getGithubStatus = getGithubOverview;
+
+/** One source of the space (NOT_FOUND « Source GitHub introuvable. » for another space's id). */
+export async function getGithubSourceView(scope: GithubSourceScope): Promise<GithubSourceStatus> {
+  const row = await getGithubSourceRow(scope);
+  const bound = (await projectsBySource(scope.spaceId)).get(row.id) ?? [];
+  const config = parseGithubConfig(row);
+  return config ? getGithubSourceStatus({ id: row.id, spaceId: row.spaceId, label: labelOf(row, config), row, config }, bound) : unreadableStatus(row, bound);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -253,28 +439,43 @@ function stepFromError(name: string, ms: number, error: unknown): CheckStep {
   };
 }
 
+/** Label and destination of the notifications of a source: « GitHub » alone, « GitHub · <libellé> » among several. */
+async function transitionTarget(spaceId: string, source: { id: string; label: string }): Promise<{ label: string; href: string }> {
+  const { sources, unreadable } = await listGithubSources(spaceId);
+  const several = sources.length + unreadable.length > 1;
+  return several ? { label: `GitHub · ${source.label}`, href: `/integrations?source=${source.id}` } : { label: 'GitHub', href: '/integrations' };
+}
+
+export interface CheckGithubOptions {
+  trigger?: CheckTrigger;
+  actorUserId?: string | null;
+  /** Scheduled run: skip what was checked less than this long ago. */
+  skipCheckedWithinMs?: number;
+}
+
 /**
- * Full diagnostic of the GitHub App (research §2.13): app JWT, installations, one token per
- * installation, permissions, repository counts, rate limit. Stores the result and notifies on
- * transitions (T7). Manual checks are limited to one every 10 s (the last result is returned).
+ * Full diagnostic of one source (research §2.13): app JWT, installations, one token per
+ * installation, permissions, repository counts, rate limit. Stores the result and notifies the
+ * members of the space on transitions (T7). Manual checks of a source are limited to one every 10 s
+ * (the last result is returned).
  */
-export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId?: string | null } = {}): Promise<GithubStatus> {
-  const trigger = options.trigger ?? 'manual';
+export async function checkGithubSource(input: GithubSourceScope & CheckGithubOptions): Promise<GithubSourceStatus> {
+  const trigger = input.trigger ?? 'manual';
+  const stored = await getGithubSource(input);
   if (trigger === 'manual') {
-    const last = lastManualCheck.__nueraGithubLastManualCheck ?? 0;
-    if (Date.now() - last < CHECK_MIN_INTERVAL_MS) return getGithubStatus();
-    lastManualCheck.__nueraGithubLastManualCheck = Date.now();
+    if (Date.now() - (manualChecks.get(stored.id) ?? 0) < CHECK_MIN_INTERVAL_MS) return getGithubSourceView(input);
+    manualChecks.set(stored.id, Date.now());
   }
-  const stored = await getStoredGithubApp();
-  if (!stored) {
-    if (fallbackToken()) return checkFallbackToken(trigger);
-    return getGithubStatus();
+  if (input.skipCheckedWithinMs && stored.row.lastCheckedAt && Date.now() - stored.row.lastCheckedAt.getTime() < input.skipCheckedWithinMs) {
+    return getGithubSourceView(input);
   }
+  const scope = { spaceId: stored.spaceId, sourceId: stored.id };
+  const install = installRouteOf(stored.id);
 
   const startedAt = new Date();
   const total = startTimer();
   const steps: CheckStep[] = [];
-  const previous = stored.row.status as DbStatus;
+  const previous = dbStatusOf(stored.row.status);
   let outcome: StepOutcome = { status: 'connected', transient: false };
   let installations = stored.config.installations;
   let ignored = stored.config.ignoredInstallations;
@@ -282,7 +483,7 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
 
   let credentials: AppCredentials | null = null;
   try {
-    credentials = { appId: stored.config.appId, privateKey: readGithubSecrets(stored.row).privateKeyPem };
+    credentials = { sourceId: stored.id, appId: stored.config.appId, privateKey: readGithubSecrets(stored.row).privateKeyPem };
   } catch (error) {
     steps.push({ name: 'Déchiffrement de la clé privée', ok: false, ms: 0, providerMessage: error instanceof Error ? error.message : 'illisible' });
     outcome = { status: 'error', transient: false, reason: "Identifiants de l'application illisibles : vérifiez APP_ENCRYPTION_KEY." };
@@ -326,12 +527,12 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
       if (kept.length === 0) {
         outcome =
           previous === 'pending' || stored.config.installations.length === 0
-            ? { status: 'pending', transient: false, reason: 'Application non installée', action: { label: 'Installer sur GitHub', kind: 'external', url: INSTALL_ROUTE } }
+            ? { status: 'pending', transient: false, reason: 'Application non installée', action: { label: 'Installer sur GitHub', kind: 'external', url: install } }
             : {
                 status: 'expired',
                 transient: false,
                 reason: "L'application GitHub a été désinstallée.",
-                action: { label: 'Réautoriser sur GitHub', kind: 'external', url: INSTALL_ROUTE },
+                action: { label: 'Réautoriser sur GitHub', kind: 'external', url: install },
               };
       }
     } catch (error) {
@@ -389,7 +590,7 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
         const status = error instanceof AppError ? (error.code === 'FORBIDDEN' ? 403 : null) : githubErrorStatus(error);
         if (status === 403 || status === 404 || status === 401) {
           problems.push(`Accès retiré pour ${installation.accountLogin}`);
-          action ??= { label: 'Réautoriser sur GitHub', kind: 'external', url: INSTALL_ROUTE };
+          action ??= { label: 'Réautoriser sur GitHub', kind: 'external', url: install };
         } else {
           outcome = { status: 'error', transient: true, reason: 'GitHub ne répond pas.' };
         }
@@ -407,7 +608,7 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
   const failingSince = failed ? (stored.config.failingSince ?? startedAt.toISOString()) : null;
   const check: IntegrationCheck = {
     id: newCheckId(),
-    target: 'github',
+    target: githubTarget(stored.id),
     trigger,
     startedAt: startedAt.toISOString(),
     durationMs: total(),
@@ -419,7 +620,8 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
     },
   };
 
-  await updateGithubApp(
+  await updateGithubSource(
+    scope,
     (config) => ({
       ...config,
       installations,
@@ -437,26 +639,100 @@ export async function checkGithub(options: { trigger?: CheckTrigger; actorUserId
       lastError: failed ? (outcome.reason ?? null) : null,
     },
   );
+  const target = await transitionTarget(stored.spaceId, stored);
   await applyHealthTransition({
-    target: 'github',
-    label: 'GitHub',
+    spaceId: stored.spaceId,
+    target: githubTarget(stored.id),
+    label: target.label,
     previous: healthOfIntegrationStatus(previous),
     next: healthOfIntegrationStatus(status),
     failingSince: failingSince ? new Date(failingSince) : null,
     impact: GITHUB_IMPACT,
     reason: outcome.reason ?? null,
-    href: '/integrations',
+    href: target.href,
   });
-  if (trigger === 'manual' && options.actorUserId) {
+  if (trigger === 'manual' && input.actorUserId) {
     await audit({
       action: 'integration.github.checked',
-      summary: `connexion GitHub vérifiée : ${status}`,
+      summary: `connexion GitHub vérifiée (${stored.label}) : ${status}`,
       targetType: 'integration',
-      targetId: 'github',
-      actorUserId: options.actorUserId,
+      targetId: stored.id,
+      actorUserId: input.actorUserId,
+      spaceId: stored.spaceId,
     });
   }
-  return getGithubStatus();
+  return getGithubSourceView(scope);
+}
+
+async function inBatches<T, R>(items: T[], size: number, task: (item: T) => Promise<R>): Promise<Array<PromiseSettledResult<R>>> {
+  const results: Array<PromiseSettledResult<R>> = [];
+  for (let index = 0; index < items.length; index += size) {
+    results.push(...(await Promise.allSettled(items.slice(index, index + size).map(task))));
+  }
+  return results;
+}
+
+export interface GithubChecksResult {
+  overview: GithubOverview;
+  /** One entry per source checked (scheduler summary). */
+  sources: Array<{ sourceId: string; status: string } | { sourceId: string; error: string }>;
+}
+
+/** Every source of the space (scheduler / « Vérifier la connexion » of the aggregate). */
+export async function checkGithubSources(input: { spaceId: string } & CheckGithubOptions): Promise<GithubChecksResult> {
+  const trigger = input.trigger ?? 'manual';
+  const { sources } = await listGithubSources(input.spaceId);
+  if (sources.length === 0) {
+    if (await fallbackTokenFor(input.spaceId)) {
+      const state = fallbackStates.get(input.spaceId);
+      const recent = input.skipCheckedWithinMs && state?.lastCheckedAt && Date.now() - Date.parse(state.lastCheckedAt) < input.skipCheckedWithinMs;
+      if (!recent) await checkFallbackToken(input.spaceId, trigger);
+    }
+    return { overview: await getGithubOverview(input.spaceId), sources: [] };
+  }
+  const results = await inBatches(sources, CHECK_CONCURRENCY, (source) =>
+    checkGithubSource({
+      spaceId: input.spaceId,
+      sourceId: source.id,
+      // The space-wide throttle of a manual run is applied by the caller.
+      trigger: trigger === 'manual' ? 'setup' : trigger,
+      actorUserId: null,
+      ...(input.skipCheckedWithinMs ? { skipCheckedWithinMs: input.skipCheckedWithinMs } : {}),
+    }),
+  );
+  return {
+    overview: await getGithubOverview(input.spaceId),
+    sources: results.map((result, index) =>
+      result.status === 'fulfilled'
+        ? { sourceId: sources[index]!.id, status: result.value.status }
+        : { sourceId: sources[index]!.id, error: result.reason instanceof Error ? result.reason.message : 'erreur' },
+    ),
+  };
+}
+
+/**
+ * « Vérifier la connexion » of every source of the space (or of GITHUB_FALLBACK_TOKEN for the space
+ * of the default server without source). Manual: once every 10 s per space.
+ */
+export async function checkGithub(input: { spaceId: string } & CheckGithubOptions): Promise<GithubOverview> {
+  const trigger = input.trigger ?? 'manual';
+  if (trigger === 'manual') {
+    const key = `space:${input.spaceId}`;
+    if (Date.now() - (manualChecks.get(key) ?? 0) < CHECK_MIN_INTERVAL_MS) return getGithubOverview(input.spaceId);
+    manualChecks.set(key, Date.now());
+  }
+  const { overview } = await checkGithubSources(input);
+  if (trigger === 'manual' && input.actorUserId) {
+    await audit({
+      action: 'integration.github.checked',
+      summary: `connexion GitHub vérifiée : ${overview.status}`,
+      targetType: 'integration',
+      targetId: 'github',
+      actorUserId: input.actorUserId,
+      spaceId: input.spaceId,
+    });
+  }
+  return overview;
 }
 
 /** Parses `GitHub-Authentication-Token-Expiration` (« 2026-11-12 19:07:53 UTC »). */
@@ -472,9 +748,10 @@ export function parseTokenExpiration(value: string | undefined | null): Date | n
   return Number.isFinite(parsed) ? new Date(parsed) : null;
 }
 
-async function checkFallbackToken(trigger: CheckTrigger): Promise<GithubStatus> {
-  const token = fallbackToken()!;
-  const previousState = globalForFallback.__nueraGithubFallback;
+async function checkFallbackToken(spaceId: string, trigger: CheckTrigger): Promise<void> {
+  const token = await fallbackTokenFor(spaceId);
+  if (!token) return;
+  const previousState = fallbackStates.get(spaceId);
   const previous: DbStatus = previousState?.status ?? 'pending';
   const startedAt = new Date();
   const timer = startTimer();
@@ -505,14 +782,14 @@ async function checkFallbackToken(trigger: CheckTrigger): Promise<GithubStatus> 
   const failingSince = ok ? null : (previousState?.failingSince ?? startedAt.toISOString());
   const check: IntegrationCheck = {
     id: newCheckId(),
-    target: 'github',
+    target: githubTarget('fallback'),
     trigger,
     startedAt: startedAt.toISOString(),
     durationMs: timer(),
     steps,
     result: { status: outcome.status, ...(outcome.reason ? { reason: outcome.reason } : {}) },
   };
-  globalForFallback.__nueraGithubFallback = {
+  fallbackStates.set(spaceId, {
     status,
     login,
     expiresAt: expiresAt?.toISOString() ?? null,
@@ -523,9 +800,10 @@ async function checkFallbackToken(trigger: CheckTrigger): Promise<GithubStatus> 
     reason: outcome.reason ?? null,
     lastCheck: check,
     history: pushHistory(previousState?.history, check),
-  };
+  });
   await applyHealthTransition({
-    target: 'github',
+    spaceId,
+    target: githubTarget('fallback'),
     label: 'GitHub',
     previous: healthOfIntegrationStatus(previous),
     next: healthOfIntegrationStatus(status),
@@ -535,33 +813,119 @@ async function checkFallbackToken(trigger: CheckTrigger): Promise<GithubStatus> 
     reason: outcome.reason ?? null,
     href: '/integrations',
   });
-  return getGithubStatus();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Label, disconnection
+// ---------------------------------------------------------------------------------------------
+
+/** Renames a source (« nuera-studio » → « Studio »), audited. */
+export async function renameGithubSource(input: GithubSourceScope & { label: string; actorUserId: string | null }): Promise<GithubSourceStatus> {
+  const label = input.label.trim();
+  if (!label || label.length > 40) throw new AppError('VALIDATION', 'Nom de la source : 1 à 40 caractères.');
+  const before = await getGithubSource(input);
+  const { sources, unreadable } = await listGithubSources(input.spaceId);
+  const others = [
+    ...sources.filter((item) => item.id !== before.id).map((item) => item.label),
+    ...unreadable.filter((row) => row.id !== before.id).map((row) => labelOf(row, null)),
+  ];
+  if (labelTaken(label, others)) {
+    throw new AppError('CONFLICT', 'Une autre source GitHub de votre espace porte déjà ce nom.', {
+      untouched: "La source GitHub n'a pas été renommée.",
+    });
+  }
+  await updateGithubSource(input, (config) => config, { label });
+  await audit({
+    action: 'integration.github.source_updated',
+    summary: `source GitHub « ${before.label} » renommée « ${label} »`,
+    targetType: 'integration',
+    targetId: before.id,
+    actorUserId: input.actorUserId,
+    spaceId: input.spaceId,
+  });
+  return getGithubSourceView(input);
+}
+
+/** « 2 projets actifs : Nuera OS et Roux Conseil » */
+function projectList(names: string[]): string {
+  const list = names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} et ${names.at(-1)}`;
+  return `${names.length} ${names.length > 1 ? 'projets actifs' : 'projet actif'} : ${list}`;
 }
 
 /**
- * « Déconnecter » : deletes the stored registration and its encrypted credentials. The app itself
- * stays on GitHub (deleting it is done there, by the owner).
+ * « Déconnecter » a source: deletes its registration and encrypted credentials (the app itself
+ * stays on GitHub: the owner deletes it there). Refused while a non-archived project of the space
+ * uses the source; archived projects lose their binding. Only that app's cached tokens are dropped.
  */
-export async function disconnectGithub(options: { actorUserId?: string | null } = {}): Promise<{ deleted: boolean; appHtmlUrl: string | null }> {
-  const stored = await getStoredGithubApp();
-  const deleted = await deleteGithubApp();
-  clearGithubTokenCache();
-  if (deleted) {
-    await audit({
-      action: 'integration.github.disconnected',
-      summary: `GitHub déconnecté : identifiants de l'application${stored ? ` « ${stored.config.name} »` : ''} supprimés de Nuera Dev`,
-      targetType: 'integration',
-      targetId: 'github',
-      actorUserId: options.actorUserId ?? null,
-    });
-    await applyHealthTransition({
-      target: 'github',
-      label: 'GitHub',
-      previous: 'error',
-      next: 'inactive',
-      impact: GITHUB_IMPACT,
-      href: '/integrations',
-    });
+export async function disconnectGithubSource(input: GithubSourceScope & { actorUserId: string | null }): Promise<{ deleted: boolean; appHtmlUrl: string | null }> {
+  const row = await getGithubSourceRow(input);
+  const config = parseGithubConfig(row);
+  const label = labelOf(row, config);
+  const deleted = await db.transaction(async (tx) => {
+    // The source row is locked first: a project binding it at the same time (creation, lazy
+    // binding) waits on its foreign key, so the check below cannot miss it.
+    const [locked] = await tx
+      .select({ id: githubSources.id })
+      .from(githubSources)
+      .where(and(eq(githubSources.id, row.id), eq(githubSources.spaceId, input.spaceId)))
+      .for('update')
+      .limit(1);
+    if (!locked) return false;
+    const active = await tx
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(and(eq(projects.spaceId, input.spaceId), eq(projects.githubSourceId, row.id), isNull(projects.archivedAt)));
+    if (active.length > 0) {
+      throw new AppError('CONFLICT', `Cette source GitHub est utilisée par ${projectList(active.map((item) => item.name))}.`, {
+        detail: 'Archivez ces projets avant de déconnecter la source.',
+        untouched: "La source GitHub n'a pas été modifiée.",
+        data: { projects: active },
+      });
+    }
+    await tx
+      .update(projects)
+      .set({ githubSourceId: null, githubInstallationId: null })
+      .where(and(eq(projects.spaceId, input.spaceId), eq(projects.githubSourceId, row.id)));
+    const rows = await tx
+      .delete(githubSources)
+      .where(and(eq(githubSources.id, row.id), eq(githubSources.spaceId, input.spaceId)))
+      .returning({ id: githubSources.id });
+    return rows.length > 0;
+  });
+  if (!deleted) throw new AppError('NOT_FOUND', GITHUB_SOURCE_NOT_FOUND);
+  if (row.appId !== null) clearGithubTokenCache({ appId: row.appId });
+  manualChecks.delete(row.id);
+  await audit({
+    action: 'integration.github.disconnected',
+    summary: `GitHub déconnecté : identifiants de l'application « ${config?.name ?? label} » supprimés de Nuera Dev`,
+    targetType: 'integration',
+    targetId: row.id,
+    actorUserId: input.actorUserId,
+    spaceId: input.spaceId,
+    metadata: { appId: row.appId, label },
+  });
+  await applyHealthTransition({
+    spaceId: input.spaceId,
+    target: githubTarget(row.id),
+    label: 'GitHub',
+    previous: 'error',
+    next: 'inactive',
+    impact: GITHUB_IMPACT,
+    href: '/integrations',
+  });
+  return { deleted: true, appHtmlUrl: config?.htmlUrl ?? null };
+}
+
+/**
+ * Historical DELETE /api/integrations/github: the space's only source. Several sources → CONFLICT
+ * (the per-source route says which one); none → `{ deleted: false }`.
+ */
+export async function disconnectGithub(input: { spaceId: string; actorUserId: string | null }): Promise<{ deleted: boolean; appHtmlUrl: string | null }> {
+  const { sources, unreadable } = await listGithubSources(input.spaceId);
+  const ids = [...sources.map((item) => item.id), ...unreadable.map((item) => item.id)];
+  if (ids.length === 0) return { deleted: false, appHtmlUrl: null };
+  if (ids.length > 1) {
+    throw new AppError('CONFLICT', 'Plusieurs sources GitHub sont connectées : précisez celle à déconnecter.');
   }
-  return { deleted, appHtmlUrl: stored?.config.htmlUrl ?? null };
+  return disconnectGithubSource({ spaceId: input.spaceId, sourceId: ids[0]!, actorUserId: input.actorUserId });
 }

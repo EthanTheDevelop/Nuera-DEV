@@ -5,9 +5,12 @@
  * Do not rename properties: the Drizzle adapter addresses tables by their export name
  * (`user`, `session`, `account`, `verification`, `twoFactor`, `passkey`) and columns by their
  * property name, and Better Auth validates this shape at startup (`database.validateSchema`).
+ * Columns Better Auth does not write must be nullable or have a default (otherwise every auth call
+ * fails with SchemaMismatchError); `role` and `disabledAt` are declared in `user.additionalFields`.
  */
 import { sql } from 'drizzle-orm';
 import { boolean, index, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import type { InstanceRole } from './types';
 
 export const user = pgTable(
   'user',
@@ -23,10 +26,15 @@ export const user = pgTable(
       .$onUpdate(() => new Date())
       .notNull(),
     twoFactorEnabled: boolean('two_factor_enabled').default(false),
+    /** « Propriétaire » · « Administrateur » · « Membre » (docs/MULTICOMPTE.md §2). */
+    role: text('role').$type<InstanceRole>().notNull().default('member'),
+    /** Disabled by an administrator: no sign-in, server suspended. */
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    /** Anonymised account (only a disabled account can be deleted). */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
-  // « Un seul propriétaire, aucun autre compte » : a unique index on a constant allows one row only,
-  // whatever path tries to insert a second user (sign-up stays closed in Better Auth as well).
-  () => [uniqueIndex('user_single_owner_idx').on(sql`(true)`)],
+  // Exactly one owner, whatever path writes the role (the first account, created by /configuration).
+  (t) => [uniqueIndex('user_owner_idx').on(sql`(true)`).where(sql`${t.role} = 'owner'`)],
 );
 
 export const session = pgTable(

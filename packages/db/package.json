@@ -6,11 +6,15 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
-    "./migrate": "./src/migrate.ts"
+    "./migrate": "./src/migrate.ts",
+    "./recovery": "./src/recovery.ts",
+    "./test": "./src/test/index.ts"
   },
   "scripts": {
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/cli/migrate.ts",
+    "cli": "tsx src/cli/index.ts",
+    "recovery-link": "tsx src/cli/recovery-link.ts",
     "studio": "drizzle-kit studio",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests"

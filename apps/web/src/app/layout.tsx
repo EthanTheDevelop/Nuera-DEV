@@ -20,7 +20,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: { default: 'Nuera Dev', template: '%s · Nuera Dev' },
-  description: "Retrouver, depuis n'importe quel appareil, les projets du VPS-3 et les sessions Claude Code qui y travaillent.",
+  description: "Retrouver, depuis n'importe quel appareil, les projets de votre serveur et les sessions Claude Code qui y travaillent.",
   applicationName: 'Nuera Dev',
   robots: { index: false, follow: false },
   appleWebApp: { capable: true, title: 'Nuera Dev', statusBarStyle: 'default' },
@@ -39,7 +39,7 @@ export async function generateViewport(): Promise<Viewport> {
     // S1: the composer stays pinned right above the phone keyboard.
     interactiveWidget: 'resizes-content',
     // Status bar colours follow the page background (Dev · Barre d'état « Ses couleurs suivent le rôle text »),
-    // in the theme chosen in Paramètres (no white bar over a dark page).
+    // in the theme the signed-in account chose in Paramètres (no white bar over a dark page).
     themeColor:
       theme === 'system'
         ? [

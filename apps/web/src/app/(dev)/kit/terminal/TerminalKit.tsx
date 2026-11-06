@@ -28,8 +28,17 @@ const STATE_LABELS: Record<TerminalViewState, string> = {
 };
 
 /** /kit/terminal (development only): real runner terminals, no sample data. */
-export function TerminalKit({ worktrees, worktreesError }: { worktrees: ShellWorktree[]; worktreesError: string | null }) {
-  const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+export function TerminalKit({
+  worktrees,
+  worktreesError,
+  serverName: serverNameProp,
+}: {
+  worktrees: ShellWorktree[];
+  worktreesError: string | null;
+  /** Name of the account's server (from its row); null without a server. */
+  serverName: string | null;
+}) {
+  const serverName = useOptionalShellData()?.server.name ?? serverNameProp ?? 'le serveur';
   const launcher = useTerminalLauncher();
   const [inline, setInline] = useState<{ id: string } | null>(null);
   const [inlineState, setInlineState] = useState<TerminalViewState | null>(null);
@@ -128,6 +137,7 @@ export function TerminalKit({ worktrees, worktreesError }: { worktrees: ShellWor
               terminalId={inline.id}
               label="Terminal Claude Code"
               className="flex-1"
+              serverName={serverName}
               onStateChange={setInlineState}
             />
           ) : (

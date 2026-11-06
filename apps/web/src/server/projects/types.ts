@@ -83,18 +83,27 @@ export interface DiskUsage {
   freeBytes: number;
 }
 
+/** Server (runner instance) of the space, as the pages name it (« VPS-3 » for the default one). */
+export interface ProjectServerRef {
+  id: string;
+  name: string;
+}
+
 export interface ProjectListResult {
   items: ProjectListItem[];
+  /** Chip counters of the space (never another space's projects). */
   counts: { all: number; favorites: number; archived: number };
   /** File system of the projects root (runner), null when the runner does not answer. */
   disk: DiskUsage | null;
   runnerAvailable: boolean;
+  /** Server of the space (where new projects are cloned); null while none is assigned. */
+  environment: ProjectServerRef | null;
 }
 
 /** One independently loaded part of the detail page: a failure never breaks the others. */
 export type Part<T> =
   | { ok: true; data: T }
-  | { ok: false; message: string; /** The runner (VPS-3) does not answer. */ unavailable: boolean };
+  | { ok: false; message: string; /** The runner of the project's server does not answer. */ unavailable: boolean };
 
 export interface BranchView {
   name: string;
@@ -206,6 +215,8 @@ export interface ProjectDetail {
     isPrivate: boolean;
     primaryLanguage: string | null;
   };
+  /** Server holding the project (immutable): its name is the one of the page's copy. */
+  environment: ProjectServerRef;
   runnerAvailable: boolean;
   branches: Part<BranchesView>;
   worktrees: Part<WorktreeView[]>;
@@ -233,17 +244,47 @@ export interface AddRepoItem {
   pushedAt: string | null;
   defaultBranch: string;
   archived: boolean;
-  /** Project already tracking this repository (« Déjà cloné »). */
+  /** Project of THIS space already tracking this repository (« Déjà cloné »). */
   clonedProject: { id: string; name: string } | null;
+  /** GitHub source listing it first (the one used when the owner does not choose); null = fallback token. */
+  sourceId: string | null;
+  /**
+   * Every GitHub source of the space that reaches this repository (same repository id), first
+   * one first. More than one = the « Source GitHub » selector of D03.
+   */
+  sources: AddRepoSource[];
+}
+
+export interface AddRepoSource {
+  id: string;
+  /** Label of the source (« nuera-studio », « Application de Camille »…). */
+  label: string;
+}
+
+/** A1 account chip: one GitHub account (installation) reached through one source. */
+export interface AddRepoAccount {
+  /** `<sourceId>:<login>` (chip value). */
+  key: string;
+  login: string;
+  count: number;
+  manageUrl: string | null;
+  /** Empty for the repositories of the fallback token (no source). */
+  sourceId: string;
+  sourceLabel: string;
 }
 
 export type AddReposResult =
   | {
       connected: true;
       total: number;
-      accounts: Array<{ login: string; count: number; manageUrl: string | null }>;
+      /** GitHub sources of the space that listed repositories. */
+      sources: AddRepoSource[];
+      accounts: AddRepoAccount[];
       repos: AddRepoItem[];
+      /** « gérer l'accès sur GitHub »: only when the space has a single source. */
       manageAccessUrl: string | null;
+      /** Sources that could not be listed (their repositories are missing from `repos`). */
+      failures: Array<{ label: string; message: string }>;
     }
   | {
       connected: false;
@@ -254,6 +295,8 @@ export type AddReposResult =
 
 export interface RepoPreview {
   fullName: string;
+  /** GitHub source the preview was read with (the one bound to the project at creation). */
+  sourceId: string | null;
   private: boolean;
   language: string | null;
   pushedAt: string | null;

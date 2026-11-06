@@ -1,15 +1,15 @@
 import 'server-only';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '@/server/errors';
 import { audit } from '@/server/security/audit';
-import { decryptJson, encryptJson } from '@/server/security/crypto';
+import { decryptJson, encryptJson, SecretScopes } from '@/server/security/crypto';
 import { createOctokit, githubErrorStatus, toGithubAppError } from './client';
-import { GITHUB_REQUIRED_PERMISSIONS, appUrl, githubWebUrl } from './config';
-import { fetchInstallation, installUrl, toInstallationRecord } from './installations';
-import { getStoredGithubApp, insertGithubApp, updateGithubApp } from './store';
-import { clearGithubTokenCache } from './tokens';
-import { manifestConversionSchema, type GithubConfig } from './types';
+import { GITHUB_REQUIRED_PERMISSIONS, MAX_GITHUB_SOURCES_PER_SPACE, appUrl, githubWebUrl } from './config';
+import { fetchInstallation, findSourceForInstallation, installUrl, toInstallationRecord } from './installations';
+import { countGithubSources, findGithubSource, GITHUB_APP_ALREADY_REGISTERED, insertGithubSource, updateGithubSource, type StoredGithubSource } from './store';
+import { getAppCredentials } from './tokens';
+import { manifestConversionSchema, type GithubConfig, type InstallationApi } from './types';
 
 /**
  * GitHub App registration through the App Manifest flow (research §2.3):
@@ -18,12 +18,23 @@ import { manifestConversionSchema, type GithubConfig } from './types';
  *      credentials stored ENCRYPTED → redirect to the installation page
  *   3. GitHub → GET /api/integrations/github/setup?installation_id&setup_action[&state] → installation recorded
  * All three steps must happen within one hour ("You must complete all three steps … within one hour").
+ *
+ * A space has up to MAX_GITHUB_SOURCES_PER_SPACE sources (one GitHub App each, MULTICOMPTE §7): the
+ * signed state (v2) carries the account, its space and the source id allocated at step 1; each app
+ * gets a unique name (GitHub App names are global) and is private unless « Application publique » is
+ * switched on. Every app shares the same setup URL: the source is read from the state, or found by
+ * asking GitHub with the JWT of each source of the space.
  */
 
 export const MANIFEST_STATE_TTL_MS = 60 * 60_000;
-/** Cookie that binds a state to the browser that started the flow (double submit). */
+/** Cookie that binds a state to the browser that started the flow (double submit), one per account. */
 export const GITHUB_STATE_COOKIE = 'nuera_github_state';
 export const GITHUB_STATE_COOKIE_PATH = '/api/integrations/github';
+
+/** `nuera_github_state_<8 hex>`: the cookie of this account (two accounts never share a nonce). */
+export function stateCookieName(userId: string): string {
+  return `${GITHUB_STATE_COOKIE}_${createHash('sha256').update(userId).digest('hex').slice(0, 8)}`;
+}
 
 const APP_NAME_MAX = 34;
 
@@ -42,24 +53,33 @@ export interface GithubAppManifest {
   default_events: string[];
 }
 
-/** « Nuera Dev · dev.nuera.studio » — at most 34 characters (GitHub rule). */
-export function appNameForHost(host: string): string {
-  const name = `Nuera Dev · ${host}`;
+/** 4 random hex characters: GitHub App names are unique across GitHub. */
+export function appNameSuffix(): string {
+  return randomBytes(2).toString('hex');
+}
+
+/**
+ * « Nuera Dev 7f3a · dev.nuera.studio » — unique thanks to the suffix, at most 34 characters (GitHub
+ * rule: a long host is cut, never the suffix). Without suffix: « Nuera Dev · dev.nuera.studio ».
+ */
+export function appNameForHost(host: string, suffix?: string): string {
+  const name = suffix ? `Nuera Dev ${suffix} · ${host}` : `Nuera Dev · ${host}`;
   return name.length <= APP_NAME_MAX ? name : name.slice(0, APP_NAME_MAX).trimEnd();
 }
 
-export function buildAppManifest(options: { appUrl?: string; public?: boolean } = {}): GithubAppManifest {
+export function buildAppManifest(options: { appUrl?: string; public?: boolean; suffix?: string } = {}): GithubAppManifest {
   const base = (options.appUrl ?? appUrl()).replace(/\/+$/, '');
   const host = new URL(base).host;
   const callback = `${base}/api/integrations/github/callback`;
   return {
-    name: appNameForHost(host),
+    name: appNameForHost(host, options.suffix),
     url: base,
     description: `Nuera Dev (${host}) : clonage, branches, push et pull requests des dépôts autorisés.`,
-    // Public: required to install the same app on an organisation AND a personal account (research §0.1).
-    // A stranger installing it would only give Nuera Dev access to THEIR repositories, never the reverse,
-    // and Nuera Dev ignores installations of accounts it did not install itself.
-    public: options.public ?? true,
+    // Private by default (MULTICOMPTE §7). Public is required to install the same app on an
+    // organisation AND a personal account (research §0.1): a stranger installing it would only give
+    // Nuera Dev access to THEIR repositories, never the reverse, and Nuera Dev ignores installations
+    // of accounts it did not install itself.
+    public: options.public ?? false,
     redirect_url: callback,
     callback_urls: [callback],
     setup_url: `${base}/api/integrations/github/setup`,
@@ -76,20 +96,49 @@ export function buildAppManifest(options: { appUrl?: string; public?: boolean } 
 // Signed state (AES-256-GCM via encryptJson: authenticated + opaque), bound to user and browser.
 // ---------------------------------------------------------------------------------------------
 
-const statePayloadSchema = z.object({
+const statePurpose = z.enum(['manifest', 'install']);
+
+/** v1 (before several sources): no space, no source. Still read during the hour after an update. */
+const statePayloadV1Schema = z.object({
   v: z.literal(1),
-  purpose: z.enum(['manifest', 'install']),
+  purpose: statePurpose,
   nonce: z.string().min(16),
   userId: z.string().min(1),
+  issuedAt: z.number().int(),
+  public: z.boolean().optional(),
+});
+
+const statePayloadV2Schema = z.object({
+  v: z.literal(2),
+  purpose: statePurpose,
+  nonce: z.string().min(16),
+  userId: z.string().min(1),
+  /** Space the source belongs to (the account's space when the flow started). */
+  spaceId: z.uuid(),
+  /** Source allocated at step 1 (manifest) or being installed (install). */
+  sourceId: z.uuid().nullable(),
   issuedAt: z.number().int(),
   /** Visibility requested in the manifest (carried to the callback). */
   public: z.boolean().optional(),
 });
-export type GithubStatePayload = z.infer<typeof statePayloadSchema>;
+
+export interface GithubStatePayload {
+  v: 1 | 2;
+  purpose: 'manifest' | 'install';
+  nonce: string;
+  userId: string;
+  /** null for a v1 state (the caller uses its own space). */
+  spaceId: string | null;
+  sourceId: string | null;
+  issuedAt: number;
+  public?: boolean;
+}
 
 export function createGithubState(input: {
   purpose: GithubStatePayload['purpose'];
   userId: string;
+  spaceId: string;
+  sourceId?: string | null;
   public?: boolean;
   now?: number;
 }): {
@@ -97,15 +146,18 @@ export function createGithubState(input: {
   nonce: string;
 } {
   const nonce = randomBytes(24).toString('base64url');
-  const payload: GithubStatePayload = {
-    v: 1,
+  const payload: z.infer<typeof statePayloadV2Schema> = {
+    v: 2,
     purpose: input.purpose,
     nonce,
     userId: input.userId,
+    spaceId: input.spaceId,
+    sourceId: input.sourceId ?? null,
     issuedAt: input.now ?? Date.now(),
     ...(input.public === undefined ? {} : { public: input.public }),
   };
-  return { state: Buffer.from(encryptJson(payload), 'utf8').toString('base64url'), nonce };
+  // Bound to the account: the state of another account never decrypts.
+  return { state: Buffer.from(encryptJson(payload, SecretScopes.githubManifestState(input.userId)), 'utf8').toString('base64url'), nonce };
 }
 
 export function verifyGithubState(input: {
@@ -122,7 +174,9 @@ export function verifyGithubState(input: {
   if (!input.state || input.state.length > 2048) throw invalid();
   let payload: GithubStatePayload;
   try {
-    payload = statePayloadSchema.parse(decryptJson<unknown>(Buffer.from(input.state, 'base64url').toString('utf8')));
+    const raw = decryptJson<unknown>(Buffer.from(input.state, 'base64url').toString('utf8'), SecretScopes.githubManifestState(input.userId));
+    const v2 = statePayloadV2Schema.safeParse(raw);
+    payload = v2.success ? { ...v2.data } : { ...statePayloadV1Schema.parse(raw), spaceId: null, sourceId: null };
   } catch {
     throw invalid();
   }
@@ -140,11 +194,14 @@ export function verifyGithubState(input: {
   return payload;
 }
 
-/** `Set-Cookie` value for the state nonce (HttpOnly, SameSite=Lax so it survives the GitHub redirect). */
-export function stateCookie(nonce: string | null): string {
+/**
+ * `Set-Cookie` value for the state nonce of an account (HttpOnly, SameSite=Lax so it survives the
+ * GitHub redirect). `userId` null: the historical shared cookie (only ever cleared).
+ */
+export function stateCookie(nonce: string | null, userId: string | null = null): string {
   const secure = process.env.NODE_ENV === 'production' || (process.env.APP_URL ?? '').startsWith('https:');
   const parts = [
-    `${GITHUB_STATE_COOKIE}=${nonce ?? ''}`,
+    `${userId ? stateCookieName(userId) : GITHUB_STATE_COOKIE}=${nonce ?? ''}`,
     `Path=${GITHUB_STATE_COOKIE_PATH}`,
     'HttpOnly',
     'SameSite=Lax',
@@ -152,6 +209,11 @@ export function stateCookie(nonce: string | null): string {
   ];
   if (secure) parts.push('Secure');
   return parts.join('; ');
+}
+
+/** Nonce cookie of this account (the historical shared name is still read). */
+export function readStateCookie(header: string | null, userId: string): string | null {
+  return readCookie(header, stateCookieName(userId)) ?? readCookie(header, GITHUB_STATE_COOKIE);
 }
 
 export function readCookie(header: string | null, name: string): string | null {
@@ -178,11 +240,14 @@ export const startManifestInputSchema = z.object({
     .refine((value) => value === '' || orgPattern.test(value), "nom d'organisation GitHub invalide")
     .optional()
     .transform((value) => (value ? value : undefined)),
-  /** Public app (default): installable on the organisation AND on the personal account. */
+  /**
+   * Public app: installable on the organisation AND on the personal account. Private by default
+   * (MULTICOMPTE §7): only on the account that owns it.
+   */
   public: z
     .union([z.boolean(), z.enum(['true', 'false', 'on', 'off'])])
     .optional()
-    .transform((value) => (value === undefined ? true : value === true || value === 'true' || value === 'on')),
+    .transform((value) => value === true || value === 'true' || value === 'on'),
 });
 export type StartManifestInput = z.input<typeof startManifestInputSchema>;
 
@@ -191,23 +256,27 @@ export interface ManifestFormData {
   manifest: GithubAppManifest;
   state: string;
   nonce: string;
+  /** Source id allocated for the app being created. */
+  sourceId: string;
 }
 
-export async function startManifestFlow(input: { userId: string; organization?: string; public?: boolean }): Promise<ManifestFormData> {
-  if (await getStoredGithubApp()) {
-    throw new AppError('CONFLICT', 'Une application GitHub est déjà enregistrée.', {
-      detail: "Déconnectez-la d'abord pour en créer une nouvelle.",
-    });
+export const SOURCE_LIMIT_MESSAGE = `Votre espace a déjà ${MAX_GITHUB_SOURCES_PER_SPACE} sources GitHub : déconnectez-en une d'abord.`;
+
+/** Step 1 for a space: allocates the source id, signs the state, builds the manifest (unique name). */
+export async function startManifestFlow(input: { userId: string; spaceId: string; organization?: string; public?: boolean }): Promise<ManifestFormData> {
+  if ((await countGithubSources(input.spaceId)) >= MAX_GITHUB_SOURCES_PER_SPACE) {
+    throw new AppError('CONFLICT', SOURCE_LIMIT_MESSAGE, { reason: 'SOURCE_LIMIT' });
   }
-  const manifest = buildAppManifest({ public: input.public ?? true });
-  const { state, nonce } = createGithubState({ purpose: 'manifest', userId: input.userId, public: manifest.public });
+  const sourceId = randomUUID();
+  const manifest = buildAppManifest({ public: input.public ?? false, suffix: appNameSuffix() });
+  const { state, nonce } = createGithubState({ purpose: 'manifest', userId: input.userId, spaceId: input.spaceId, sourceId, public: manifest.public });
   const base = githubWebUrl();
   const path = input.organization
     ? `/organizations/${encodeURIComponent(input.organization)}/settings/apps/new`
     : '/settings/apps/new';
   const action = new URL(`${base}${path}`);
   action.searchParams.set('state', state);
-  return { action: action.toString(), manifest, state, nonce };
+  return { action: action.toString(), manifest, state, nonce, sourceId };
 }
 
 const escapeHtml = (value: string) =>
@@ -246,7 +315,8 @@ export function renderManifestFormPage(form: ManifestFormData): string {
 // Step 2: code conversion.
 // ---------------------------------------------------------------------------------------------
 
-export async function completeManifestConversion(input: { code: string; userId: string; public?: boolean }): Promise<{
+export async function completeManifestConversion(input: { code: string; userId: string; spaceId: string; sourceId?: string | null; public?: boolean }): Promise<{
+  sourceId: string;
   slug: string;
   installUrl: string;
   installNonce: string;
@@ -254,8 +324,13 @@ export async function completeManifestConversion(input: { code: string; userId: 
   if (!/^[A-Za-z0-9_-]{1,200}$/.test(input.code)) {
     throw new AppError('VALIDATION', 'Code de retour GitHub invalide.');
   }
-  if (await getStoredGithubApp()) {
-    throw new AppError('CONFLICT', 'Une application GitHub est déjà enregistrée.');
+  const sourceId = input.sourceId ?? randomUUID();
+  // A replayed callback (same state): the source already exists.
+  if (input.sourceId && (await findGithubSource({ spaceId: input.spaceId, sourceId: input.sourceId }))) {
+    throw new AppError('CONFLICT', GITHUB_APP_ALREADY_REGISTERED);
+  }
+  if ((await countGithubSources(input.spaceId)) >= MAX_GITHUB_SOURCES_PER_SPACE) {
+    throw new AppError('CONFLICT', SOURCE_LIMIT_MESSAGE, { reason: 'SOURCE_LIMIT' });
   }
   // Documented call: no Authorization header (research §2.3 step 4).
   const octokit = createOctokit();
@@ -287,7 +362,7 @@ export async function completeManifestConversion(input: { code: string; userId: 
     name: conversion.name,
     htmlUrl: conversion.html_url,
     owner,
-    public: input.public ?? true,
+    public: input.public ?? false,
     permissionsRequested: conversion.permissions ?? { ...GITHUB_REQUIRED_PERMISSIONS },
     createdAt: new Date().toISOString(),
     // The owner of the app is trusted from the start; other accounts join through the setup step.
@@ -300,22 +375,29 @@ export async function completeManifestConversion(input: { code: string; userId: 
     lastCheck: null,
     history: [],
   };
-  await insertGithubApp(config, {
-    privateKeyPem: conversion.pem,
-    clientSecret: conversion.client_secret,
-    webhookSecret: conversion.webhook_secret ?? null,
+  await insertGithubSource({
+    id: sourceId,
+    spaceId: input.spaceId,
+    createdByUserId: input.userId,
+    label: owner?.login ?? null,
+    config,
+    secrets: {
+      privateKeyPem: conversion.pem,
+      clientSecret: conversion.client_secret,
+      webhookSecret: conversion.webhook_secret ?? null,
+    },
   });
-  clearGithubTokenCache();
   await audit({
     action: 'integration.github.app_created',
     summary: `application GitHub « ${conversion.name} » créée${owner ? ` pour ${owner.login}` : ''}`,
     targetType: 'integration',
-    targetId: 'github',
+    targetId: sourceId,
     actorUserId: input.userId,
-    metadata: { appId: conversion.id, slug: conversion.slug, owner: owner?.login ?? null },
+    spaceId: input.spaceId,
+    metadata: { appId: conversion.id, slug: conversion.slug, owner: owner?.login ?? null, public: config.public },
   });
-  const { state, nonce } = createGithubState({ purpose: 'install', userId: input.userId });
-  return { slug: conversion.slug, installUrl: installUrl(conversion.slug, state), installNonce: nonce };
+  const { state, nonce } = createGithubState({ purpose: 'install', userId: input.userId, spaceId: input.spaceId, sourceId });
+  return { sourceId, slug: conversion.slug, installUrl: installUrl(conversion.slug, state), installNonce: nonce };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -325,63 +407,79 @@ export async function completeManifestConversion(input: { code: string; userId: 
 export type SetupOutcome = 'installed' | 'updated' | 'requested' | 'unknown_installation';
 
 /**
- * Records an installation reported by the setup URL. The `installation_id` is verified with the app
- * JWT (« Bad actors can hit this URL with a spoofed installation_id »). A NEW account is only
- * allow-listed when the redirect carries a valid state minted by Nuera Dev for this user and browser.
+ * Records an installation reported by the setup URL (shared by every app). The source comes from the
+ * state (`sourceId`, a source of the space), otherwise it is found by asking GitHub with the JWT of
+ * each source of the space (« Bad actors can hit this URL with a spoofed installation_id »: an id
+ * no source of the space knows is unknown). A NEW account is only allow-listed when the redirect
+ * carries a valid state minted by Nuera Dev for this account and browser (and for this source).
  */
 export async function handleInstallationSetup(input: {
   installationId: number | null;
   setupAction: string | null;
   userId: string;
+  spaceId: string;
+  /** Source named by a valid state, or null. */
+  sourceId: string | null;
   stateValid: boolean;
-}): Promise<{ outcome: SetupOutcome; account: string | null }> {
-  if (input.setupAction === 'request') return { outcome: 'requested', account: null };
+}): Promise<{ outcome: SetupOutcome; account: string | null; sourceId: string | null }> {
+  if (input.setupAction === 'request') return { outcome: 'requested', account: null, sourceId: input.sourceId };
   if (!input.installationId) throw new AppError('VALIDATION', 'Installation GitHub manquante dans le retour de GitHub.');
-  const stored = await getStoredGithubApp();
-  if (!stored) throw new AppError('CONFLICT', "Aucune application GitHub n'est enregistrée.");
+  if ((await countGithubSources(input.spaceId)) === 0) throw new AppError('CONFLICT', "Aucune application GitHub n'est enregistrée.");
 
-  const installation = await fetchInstallation(input.installationId);
-  if (!installation || !installation.account) {
-    return { outcome: 'unknown_installation', account: null };
+  let source: StoredGithubSource | null = null;
+  let installation: InstallationApi | null = null;
+  if (input.sourceId) {
+    source = await findGithubSource({ spaceId: input.spaceId, sourceId: input.sourceId });
+    if (source) installation = await fetchInstallation(input.installationId, getAppCredentials(source));
   }
-  const accountId = installation.account.id;
-  const alreadyAllowed = stored.config.allowedAccountIds.includes(accountId);
-  const alreadyRecorded = stored.config.installations.some((item) => item.id === installation.id);
-  if (!alreadyAllowed && !input.stateValid) {
+  if (!installation) {
+    const found = await findSourceForInstallation({ spaceId: input.spaceId, installationId: input.installationId });
+    source = found?.source ?? null;
+    installation = found?.installation ?? null;
+  }
+  if (!source || !installation || !installation.account) {
+    return { outcome: 'unknown_installation', account: null, sourceId: null };
+  }
+  const account = installation.account;
+  const alreadyAllowed = source.config.allowedAccountIds.includes(account.id);
+  const alreadyRecorded = source.config.installations.some((item) => item.id === installation.id);
+  // A valid state for ANOTHER source of the space does not allow-list an account in this one.
+  const stateForThisSource = input.stateValid && (input.sourceId === null || input.sourceId === source.id);
+  if (!alreadyAllowed && !stateForThisSource) {
     await audit({
       action: 'integration.github.installation_ignored',
-      summary: `installation GitHub non reconnue ignorée (${installation.account.login})`,
+      summary: `installation GitHub non reconnue ignorée (${account.login})`,
       targetType: 'integration',
-      targetId: 'github',
+      targetId: source.id,
       actorUserId: input.userId,
-      metadata: { installationId: installation.id, account: installation.account.login },
+      spaceId: input.spaceId,
+      metadata: { installationId: installation.id, account: account.login },
     });
-    return { outcome: 'unknown_installation', account: installation.account.login };
+    return { outcome: 'unknown_installation', account: account.login, sourceId: source.id };
   }
 
+  const record = installation;
   // The status itself is computed by the check that the setup route runs right after.
-  await updateGithubApp((config) => {
-    const previous = config.installations.find((item) => item.id === installation.id);
-    const record = toInstallationRecord(installation, previous);
+  await updateGithubSource({ spaceId: input.spaceId, sourceId: source.id }, (config) => {
+    const previous = config.installations.find((item) => item.id === record.id);
     return {
       ...config,
-      allowedAccountIds: [...new Set([...config.allowedAccountIds, accountId])],
-      installations: [...config.installations.filter((item) => item.id !== installation.id), record],
+      allowedAccountIds: [...new Set([...config.allowedAccountIds, account.id])],
+      installations: [...config.installations.filter((item) => item.id !== record.id), toInstallationRecord(record, previous)],
     };
   });
   await audit({
     action: alreadyRecorded ? 'integration.github.installation_updated' : 'integration.github.installed',
-    summary: alreadyRecorded
-      ? `installation GitHub mise à jour (${installation.account.login})`
-      : `application GitHub installée sur ${installation.account.login}`,
+    summary: alreadyRecorded ? `installation GitHub mise à jour (${account.login})` : `application GitHub installée sur ${account.login}`,
     targetType: 'integration',
-    targetId: 'github',
+    targetId: source.id,
     actorUserId: input.userId,
+    spaceId: input.spaceId,
     metadata: {
       installationId: installation.id,
-      account: installation.account.login,
+      account: account.login,
       repositorySelection: installation.repository_selection ?? null,
     },
   });
-  return { outcome: alreadyRecorded ? 'updated' : 'installed', account: installation.account.login };
+  return { outcome: alreadyRecorded ? 'updated' : 'installed', account: account.login, sourceId: source.id };
 }

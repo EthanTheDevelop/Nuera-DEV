@@ -1,6 +1,27 @@
 import { formatPercent, formatRelative, formatUsage } from '@nuera/shared/format';
 import type { StatusTone } from '@/components/ui/StatusDot';
-import type { ClaudeState, ServerAvailability, ShellMetrics } from './types';
+import type { ClaudeState, ServerAvailability, ShellMetrics, ShellRole } from './types';
+
+/** « Propriétaire » · « Administrateur » · « Membre » (docs/MULTICOMPTE.md §2). */
+export const ROLE_LABELS: Record<ShellRole, string> = {
+  owner: 'Propriétaire',
+  admin: 'Administrateur',
+  member: 'Membre',
+};
+
+/**
+ * Role line of the user card: « Propriétaire · double facteur actif » (Figma, unchanged for the
+ * owner), « Administrateur · double facteur actif », « Membre · double facteur actif ».
+ */
+export function roleLine(role: ShellRole, twoFactorEnabled: boolean): string {
+  return `${ROLE_LABELS[role] ?? ROLE_LABELS.member} · double facteur ${twoFactorEnabled ? 'actif' : 'inactif'}`;
+}
+
+/** Server card without a server: what the account sees until an administrator assigns one. */
+export const NO_SERVER_LABEL = 'Aucun serveur attribué';
+export const NO_SERVER_DETAIL = "en attente d'un administrateur";
+/** « Aucun serveur ne vous est encore attribué. Un administrateur doit vous en attribuer un. » */
+export const NO_SERVER_MESSAGE = 'Aucun serveur ne vous est encore attribué. Un administrateur doit vous en attribuer un.';
 
 /** « CPU 23 %  ·  RAM 5,1 / 16 Go » — two spaces around the middle dot, as in Figma (white-space: pre). */
 export function formatServerMetrics(metrics: ShellMetrics): string {

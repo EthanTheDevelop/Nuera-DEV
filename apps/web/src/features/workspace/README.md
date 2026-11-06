@@ -5,8 +5,8 @@ Lot WORKSPACE : `/workspace/[sessionId]` — D05 (bureau), M05 (téléphone), é
 
 ## Page
 
-- `app/(workspace)/workspace/[sessionId]/page.tsx` : `requireUser()` + `getWorkspaceData(id, user)` (404 pour une
-  session inconnue, archivée ou d'un projet archivé) ; `loading.tsx` (T1), `error.tsx` (T4), `not-found.tsx` (T2).
+- `app/(workspace)/workspace/[sessionId]/page.tsx` : `requireContext()` + `getWorkspaceData(ctx, id)` (le même 404 pour
+  une session inconnue, archivée, d'un projet archivé ou d'un autre espace) ; `loading.tsx` (T1), `error.tsx` (T4), `not-found.tsx` (T2).
 - `WorkspaceView` choisit la composition (≥ 900 px : `DesktopWorkspace`, sinon `PhoneWorkspace` ; premier rendu
   deviné par l'agent utilisateur). Un seul état vivant (`WorkspaceProvider`) nourrit les deux.
 - État d'URL : `?vue=terminal` (Terminal brut), `?panneau=fichiers|modifications|tests|terminal|projet|ferme`,

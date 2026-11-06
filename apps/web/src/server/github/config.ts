@@ -1,4 +1,6 @@
 import 'server-only';
+import { environments } from '@nuera/db/schema';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { AppError } from '@/server/errors';
 
 /**
@@ -6,8 +8,12 @@ import { AppError } from '@/server/errors';
  *   APP_URL          public URL of Nuera Dev (manifest URLs, redirects)
  *   GITHUB_API_URL   REST base (default https://api.github.com) — overridden by tests / e2e
  *   GITHUB_WEB_URL   github.com base for browser redirects (default https://github.com) — e2e only
- *   GITHUB_FALLBACK_TOKEN  documented fallback (fine-grained PAT), never offered in the UI
+ *   GITHUB_FALLBACK_TOKEN  documented fallback (fine-grained PAT), never offered in the UI, reserved to
+ *                    the space of the default server and never served to an MCP server (MULTICOMPTE §7)
  */
+
+/** GitHub sources of a space (MULTICOMPTE §7). */
+export const MAX_GITHUB_SOURCES_PER_SPACE = 10;
 
 /** REST API version sent on every call (research §2.4: `merge_commit_sha` is gone in this version). */
 export const GITHUB_API_VERSION = '2026-03-10';
@@ -49,9 +55,31 @@ export function appUrl(): string {
   }
 }
 
-export function fallbackToken(): string | null {
+/** Raw GITHUB_FALLBACK_TOKEN: only {@link fallbackTokenFor} hands it out (bound to one space). */
+function rawFallbackToken(): string | null {
   const value = process.env.GITHUB_FALLBACK_TOKEN?.trim();
   return value ? value : null;
+}
+
+/** Space of the default server (the one GITHUB_FALLBACK_TOKEN belongs to), or null. */
+export async function defaultServerSpaceId(): Promise<string | null> {
+  const { db } = await import('@/server/db');
+  const [row] = await db
+    .select({ spaceId: environments.spaceId })
+    .from(environments)
+    .where(and(eq(environments.isDefault, true), isNotNull(environments.spaceId)))
+    .limit(1);
+  return row?.spaceId ?? null;
+}
+
+/**
+ * GITHUB_FALLBACK_TOKEN for `spaceId`: only the space of the default server gets it (the token is
+ * the instance owner's, it can neither be limited to one repository nor made read-only).
+ */
+export async function fallbackTokenFor(spaceId: string): Promise<string | null> {
+  const token = rawFallbackToken();
+  if (!token) return null;
+  return (await defaultServerSpaceId()) === spaceId ? token : null;
 }
 
 /** `owner/repo` → parts, validated (GitHub logins and repository names). */

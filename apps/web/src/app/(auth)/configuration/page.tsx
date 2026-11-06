@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: 'Configuration initiale' };
 
 /**
  * /configuration — exists only while Nuera Dev has no owner with an active 2FA:
- *  - no owner: create the single owner account (SETUP_TOKEN required);
+ *  - no owner: create the owner account, the first one (SETUP_TOKEN required);
  *  - owner without 2FA (interrupted setup): resume with the token + credentials;
  *  - otherwise: 404.
  */
@@ -34,7 +34,7 @@ export default async function ConfigurationPage() {
       <AuthCard
         header={<SetupProgress current={1} />}
         title="Reprendre la configuration"
-        description="Le compte propriétaire existe, mais sa double authentification n'est pas encore activée. Saisissez le jeton de configuration et vos identifiants pour la terminer."
+        description="Le compte propriétaire existe, mais sa double authentification n'est pas encore activée. Saisissez le jeton de configuration et ses identifiants pour la terminer."
       >
         {tokenAlert}
         <ResumeForm disabled={!tokenConfigured} />
@@ -46,7 +46,7 @@ export default async function ConfigurationPage() {
     <AuthCard
       header={<SetupProgress current={1} />}
       title="Créer le compte propriétaire"
-      description="Nuera Dev n'a pas encore de propriétaire. Un seul compte, le vôtre : la double authentification sera activée à l'étape suivante."
+      description="Nuera Dev n'a encore aucun compte. Ce premier compte en sera le propriétaire : il invitera les autres. La double authentification sera activée à l'étape suivante."
     >
       {tokenAlert}
       <OwnerForm disabled={!tokenConfigured} />

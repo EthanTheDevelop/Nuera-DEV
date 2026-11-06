@@ -15,5 +15,5 @@ export const POST = apiRoute({
   body: pushInputSchema,
   maxBodyBytes: 4 * 1024,
   rateLimit: { limit: 30, windowMs: 10 * 60_000 },
-  handler: ({ params, body, user }) => withWorkspaceErrors(() => pushBranch(params.worktreeId, body, user)),
+  handler: ({ params, body, ctx }) => withWorkspaceErrors(() => pushBranch(ctx, params.worktreeId, body)),
 });

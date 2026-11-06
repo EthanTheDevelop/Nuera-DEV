@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CommandKindSchema, CommandRunStatusSchema, IsoDateSchema, UuidSchema } from './common';
+import { CommandKindSchema, CommandRunStatusSchema, GitIdentitySchema, IsoDateSchema, UuidSchema } from './common';
 import { TestCountsSchema } from './sessions';
 
 export const TestCaseSchema = z.object({
@@ -39,7 +39,10 @@ export const CreateRunRequestSchema = z.object({
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/), z.string().max(32_768)).default({}),
   cols: z.number().int().min(20).max(500).default(120),
   rows: z.number().int().min(5).max(300).default(30),
+  /** Account starting the command (`command_runs.actor_user_id`). */
   actorUserId: z.string().nullish(),
+  /** Author and committer of commits made by the command (GIT_AUTHOR_* / GIT_COMMITTER_*, injected by the runner). */
+  gitIdentity: GitIdentitySchema.nullish(),
 });
 export type CreateRunRequest = z.input<typeof CreateRunRequestSchema>;
 

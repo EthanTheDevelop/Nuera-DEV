@@ -48,7 +48,12 @@ export function writeSearchParams(update: Record<string, string | null | undefin
   else window.history.replaceState(null, '', next);
 }
 
-/** Name of the server shown in the copy (« VPS-3 » in Figma = `app_settings.serverName`). */
-export function useServerName(): string {
-  return useOptionalShellData()?.server.name ?? 'VPS-3';
+/**
+ * Name of the server shown in the copy (« VPS-3 » in Figma = the default server). `known` is the
+ * server the page's data names (the project's own server, the space's server of a list); the
+ * shell's server of the space otherwise.
+ */
+export function useServerName(known?: string | null): string {
+  const shell = useOptionalShellData();
+  return known || shell?.environment?.name || shell?.server.name || 'le serveur';
 }

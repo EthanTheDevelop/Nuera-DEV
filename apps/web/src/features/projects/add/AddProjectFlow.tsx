@@ -12,7 +12,7 @@ import type { AddRepoItem, DestinationView } from '@/server/projects/types';
 import { ProjectApiError, failureOf, projectsApi } from '../api';
 import type { Failure } from '../FailureBanner';
 import { humanizeRepoName } from '../format';
-import { useServerName, writeSearchParams } from '../hooks';
+import { writeSearchParams } from '../hooks';
 import { CloneStep, cloneFooterNote, cloneOutcome } from './CloneStep';
 import { COMMAND_FIELDS, ConfigStep, type CommandKey, type ConfigForm, type DestinationConflict, type DestinationState, type PreviewState } from './ConfigStep';
 import { RepoStep, type ReposState } from './RepoStep';
@@ -24,9 +24,14 @@ const STEP_INDEX: Record<Step, number> = { depot: 0, configuration: 1, clonage: 
 
 const emptyCommands = (): Record<CommandKey, string> => ({ install: '', dev: '', build: '', test: '', lint: '' });
 
+/** Key of a preview: the repository and the GitHub source it is read with. */
+const previewKey = (fullName: string, sourceId: string | null) => `${sourceId ?? ''}|${fullName}`;
+
 export interface AddProjectFlowProps {
   /** `modal` = intercepted over /projets (close = back), `page` = hard load of /projets/nouveau. */
   mode: 'modal' | 'page';
+  /** Server of the account's space, where the repository is cloned (« VPS-3 » for the default one). */
+  serverName: string;
 }
 
 type ConfigFailure = Failure & { projectHref?: string };
@@ -35,20 +40,20 @@ type ConfigFailure = Failure & { projectHref?: string };
  * Parcours A « Ajouter un projet »: A1 Dépôt → D03 Configuration (A4 on a refused destination) →
  * A2 Clonage → A3 Réussi. Desktop: the 640 modal over Projets (or the same card on a hard load);
  * phone: the full-screen M03 flow (top bar, 3-segment progress, sticky action bar).
- * URL: ?etape=depot|configuration|clonage, ?depot=owner/repo, ?projet=<id>, ?operation=<id> — a
- * closed modal can be reopened on a running clone, which keeps going on the server.
+ * URL: ?etape=depot|configuration|clonage, ?depot=owner/repo, ?source=<GitHub source>, ?projet=<id>,
+ * ?operation=<id> — a closed modal can be reopened on a running clone, which keeps going on the server.
  */
-export function AddProjectFlow({ mode }: AddProjectFlowProps) {
+export function AddProjectFlow({ mode, serverName }: AddProjectFlowProps) {
   const router = useRouter();
   const params = useSearchParams();
   const desktop = useIsDesktopNav();
-  const serverName = useServerName();
   const now = useNow(60_000);
 
   // URL at mount (later changes come from this component itself).
   const [initial] = useState(() => ({
     etape: params.get('etape'),
     depot: params.get('depot'),
+    source: params.get('source'),
     projet: params.get('projet'),
     operation: params.get('operation'),
   }));
@@ -57,6 +62,8 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
     initial.operation ? 'clonage' : initial.etape === 'configuration' && initial.depot ? 'configuration' : 'depot',
   );
   const [selected, setSelected] = useState<string | null>(initial.depot);
+  // GitHub source of the selected repository (the D03 selector changes it when several reach it).
+  const [source, setSource] = useState<string | null>(initial.source);
   const [repos, setRepos] = useState<ReposState>({ status: 'loading' });
   const [search, setSearch] = useState('');
   const [account, setAccount] = useState('tous');
@@ -83,10 +90,11 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
     writeSearchParams({
       etape: step === 'depot' ? null : step,
       depot: step === 'depot' ? (selected ?? null) : step === 'configuration' ? selected : null,
+      source: step === 'clonage' ? null : source,
       projet: step === 'clonage' ? (created?.projectId ?? initial.projet) : null,
       operation: step === 'clonage' ? (created?.operationId ?? initial.operation) : null,
     });
-  }, [step, selected, created, initial.projet, initial.operation]);
+  }, [step, selected, source, created, initial.projet, initial.operation]);
 
   // --- Data --------------------------------------------------------------------------------------
   const loadRepos = useCallback(() => {
@@ -104,24 +112,30 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
     loadRepos();
   }, [step, loadRepos]);
 
-  const loadPreview = useCallback((fullName: string) => {
+  const loadPreview = useCallback((fullName: string, sourceId: string | null, keepForm = false) => {
     setPreview({ status: 'loading' });
-    setPreviewFor(fullName);
+    setPreviewFor(previewKey(fullName, sourceId));
     projectsApi
-      .preview(fullName)
+      .preview(fullName, sourceId)
       .then((data) => {
         setPreview({ status: 'ready', data });
+        if (!sourceId && data.sourceId) setSource(data.sourceId);
         const repoName = fullName.split('/')[1] ?? fullName;
         const commands = emptyCommands();
         for (const field of COMMAND_FIELDS) commands[field.key] = data.inspection?.commands[field.key] ?? '';
-        setForm({
-          branch: data.defaultBranch,
-          name: humanizeRepoName(repoName),
-          destination: data.destination?.path ?? repoName,
-          installDeps: true,
-          worktreePerSession: true,
-          commands,
-        });
+        setForm((current) =>
+          // Another GitHub source for the same repository: what the owner typed is kept.
+          keepForm && current
+            ? { ...current, branch: data.branches.includes(current.branch) ? current.branch : data.defaultBranch }
+            : {
+                branch: data.defaultBranch,
+                name: humanizeRepoName(repoName),
+                destination: data.destination?.path ?? repoName,
+                installDeps: true,
+                worktreePerSession: true,
+                commands,
+              },
+        );
         setDestination(data.destination ? { status: 'ready', check: data.destination } : { status: 'idle' });
       })
       .catch((error: unknown) => {
@@ -131,14 +145,17 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
       });
   }, []);
   useEffect(() => {
-    if (step === 'configuration' && selected && previewFor !== selected) {
-      // eslint-disable-next-line react/set-state-in-effect -- reset before loading the preview of the newly selected repository
-      setForm(null);
-      setConflict(null);
-      setFailure(null);
-      loadPreview(selected);
-    }
-  }, [step, selected, previewFor, loadPreview]);
+    if (step !== 'configuration' || !selected) return;
+    if (previewFor === previewKey(selected, source)) return;
+    // The source the preview resolved by itself (no choice made): nothing to reload.
+    if (source && previewFor === previewKey(selected, null) && preview.status === 'ready' && preview.data.sourceId === source) return;
+    const sameRepository = previewFor !== null && previewFor.endsWith(`|${selected}`);
+    // eslint-disable-next-line react/set-state-in-effect -- reset before loading the preview of the newly selected repository
+    if (!sameRepository) setForm(null);
+    setConflict(null);
+    setFailure(null);
+    loadPreview(selected, source, sameRepository);
+  }, [step, selected, source, previewFor, preview, loadPreview]);
 
   // Live destination check (debounced), skipped when it is the value the preview already checked.
   const lastChecked = useRef<string | null>(null);
@@ -191,6 +208,11 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
     [repos, selected],
   );
 
+  const selectRepo = (repo: AddRepoItem) => {
+    setSelected(repo.fullName);
+    setSource(repo.sourceId);
+  };
+
   const goConfiguration = () => {
     if (!selected) return;
     setStep('configuration');
@@ -210,6 +232,7 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
       for (const field of COMMAND_FIELDS) commands[field.key] = form.commands[field.key].trim() || null;
       const result = await projectsApi.create({
         fullName: selected,
+        ...(source ? { sourceId: source } : {}),
         ...(form.branch ? { branch: form.branch } : {}),
         name: form.name.trim(),
         destination: form.destination.trim(),
@@ -287,6 +310,7 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
   const installFailed = (stream.operation?.error?.data as { stage?: string } | undefined)?.stage === 'install';
   const canSubmit = Boolean(form && form.name.trim() && form.destination.trim()) && !submitting;
   const reposData = repos.status === 'ready' && repos.data.connected ? repos.data : null;
+  const manageLink = reposData && reposData.sources.length <= 1;
   const phone = !desktop;
   const variant = phone ? 'phone' : 'desktop';
 
@@ -296,7 +320,7 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
       <RepoStep
         repos={repos}
         selected={selected}
-        onSelect={(repo) => setSelected(repo.fullName)}
+        onSelect={selectRepo}
         onConfirm={goConfiguration}
         search={search}
         onSearch={setSearch}
@@ -320,13 +344,16 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
         conflict={conflict}
         failure={failure}
         onChangeRepo={() => setStep('depot')}
-        onRetryPreview={() => loadPreview(selected)}
+        onRetryPreview={() => loadPreview(selected, source)}
         onUseSuggested={useSuggested}
         onOpenExisting={(project) => void openExisting(project)}
         openingExisting={openingExisting}
         variant={variant}
         now={now}
         serverName={serverName}
+        sources={selectedRepo?.sources ?? []}
+        sourceId={source}
+        onSource={setSource}
       />
     ) : (
       <div className="flex flex-col gap-4" aria-busy="true" role="status" aria-label="Lecture du dépôt sur GitHub">
@@ -356,8 +383,8 @@ export function AddProjectFlow({ mode }: AddProjectFlowProps) {
   if (step === 'depot') {
     note = reposData ? (
       <>
-        {`${reposData.total} ${reposData.total >= 2 ? 'dépôts accessibles' : 'dépôt accessible'} · `}
-        {reposData.manageAccessUrl ? (
+        {`${reposData.total} ${reposData.total >= 2 ? 'dépôts accessibles' : 'dépôt accessible'}${manageLink ? ' · ' : ''}`}
+        {!manageLink ? null : reposData.manageAccessUrl ? (
           <a href={reposData.manageAccessUrl} target="_blank" rel="noopener noreferrer" className="text-muted underline-offset-2 hover:underline">
             gérer l'accès sur GitHub
           </a>

@@ -109,6 +109,13 @@ async function interactive() {
   mkdirSync(projectDir, { recursive: true });
   const transcript = path.join(projectDir, `${sessionId}.jsonl`);
   if (!existsSync(transcript)) writeFileSync(transcript, '');
+  // Runner tests: the trusted variables this CLI received (Claude config dir, Git identity).
+  if (harnessDir) {
+    const envDir = path.join(harnessDir, 'nuera-fake-env');
+    mkdirSync(envDir, { recursive: true });
+    const keys = ['CLAUDE_CONFIG_DIR', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'];
+    writeFileSync(path.join(envDir, `${sessionId}.json`), JSON.stringify(Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]))));
+  }
   const base = { session_id: sessionId, transcript_path: transcript, cwd, permission_mode: flag('--permission-mode') ?? 'default' };
 
   const writeTranscript = (entry) => appendFileSync(transcript, `${JSON.stringify({ sessionId, timestamp: new Date().toISOString(), uuid: randomUUID(), ...entry })}\n`);

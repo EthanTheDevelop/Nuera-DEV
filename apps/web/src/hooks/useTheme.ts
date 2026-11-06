@@ -15,7 +15,8 @@ const read = () => parseThemePreference(document.documentElement.dataset.theme);
 /**
  * Theme preference (Clair / Sombre / Système). `setTheme` applies it immediately on <html data-theme>
  * (CSS resolves `system` with prefers-color-scheme), then persists it through a server action
- * (app_settings.theme + cookie mirror for SSR). On failure the previous value is restored.
+ * (the account's `user_preferences.theme`, plus a cookie mirror read only while signed out —
+ * server/shell/theme.ts). On failure the previous value is restored.
  */
 export function useTheme() {
   const theme = useSyncExternalStore(subscribe, read, () => DEFAULT_THEME);

@@ -15,6 +15,11 @@ export interface FakeMcpOptions {
   /** Tools per tools/list page. */
   pageSize?: number;
   serverName?: string;
+  /**
+   * Per-request authorisation (keyed by bearer): the tools this `Authorization` may list, or null
+   * (401). Replaces `expectedAuthorization` / `tools` when set (fake Coolify: one token per space).
+   */
+  authorize?: ((authorization: string | undefined) => string[] | null) | undefined;
 }
 
 export interface FakeMcpState extends FakeMcpOptions {
@@ -37,7 +42,8 @@ export function createMcpHandler(state: FakeMcpState) {
       res.end('<html>error</html>');
       return;
     }
-    if (state.expectedAuthorization && req.headers.authorization !== state.expectedAuthorization) {
+    const allowedTools = state.authorize ? state.authorize(req.headers.authorization) : state.tools;
+    if (allowedTools === null || (!state.authorize && state.expectedAuthorization && req.headers.authorization !== state.expectedAuthorization)) {
       res.writeHead(401, {
         'content-type': 'application/json',
         'www-authenticate': 'Bearer resource_metadata="https://fake.test/.well-known/oauth-protected-resource", scope="read"',
@@ -81,10 +87,10 @@ export function createMcpHandler(state: FakeMcpState) {
       }
       const size = state.pageSize ?? 50;
       const start = message.params?.cursor ? Number(message.params.cursor) : 0;
-      const page = state.tools.slice(start, start + size);
+      const page = allowedTools.slice(start, start + size);
       result = {
         tools: page.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })),
-        ...(start + size < state.tools.length ? { nextCursor: String(start + size) } : {}),
+        ...(start + size < allowedTools.length ? { nextCursor: String(start + size) } : {}),
       };
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });

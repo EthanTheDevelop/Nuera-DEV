@@ -1,10 +1,10 @@
 import { runMigrations } from '@nuera/db/migrate';
-import { auditLog, session, twoFactor, user } from '@nuera/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { auditLog, environments, pushSubscriptions, session, spaceMembers, spaceSettings, spaces, twoFactor, user, userPreferences } from '@nuera/db/schema';
+import { desc, eq, isNull } from 'drizzle-orm';
 import { generate } from 'otplib';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { listWebSessions, revokeOtherSessions, revokeWebSession } from '@/server/auth/account';
+import { changePassword, listWebSessions, revokeOtherSessions, revokeWebSession } from '@/server/auth/account';
 import { auth } from '@/server/auth/auth';
 import { authErrorCode } from '@/server/auth/messages';
 import { getCurrentUser, requireUserForApi } from '@/server/auth/session';
@@ -20,7 +20,7 @@ import {
   isSetupCompleted,
   resumeSetup,
 } from '@/server/auth/setup';
-import { issueSetupNonce, SETUP_NONCE_HEADER } from '@/server/auth/setup-nonce';
+import { ENROLMENT_GRANT_HEADER, issueEnrolmentGrant } from '@/server/auth/enrolment-grant';
 import { db } from '@/server/db';
 
 /**
@@ -29,7 +29,7 @@ import { db } from '@/server/db';
  * enrolment (2FA reset + resumed setup, docs/SECURITY.md §8), idle and absolute expiry enforced on
  * every session read, 2FA removal refused, open accesses, sign-out.
  *
- * Database `nuera_auth_unit` on the local cluster (`pnpm db:local`), re-created for each run and
+ * Database `nuera_x3_auth` on the local cluster (`pnpm db:local`), re-created for each run and
  * dropped afterwards; the suite is skipped with a warning when PostgreSQL does not answer.
  * `next/headers` is replaced by a per-step request (cookies written by Better Auth are read from
  * the returned `Set-Cookie` headers).
@@ -38,7 +38,7 @@ import { db } from '@/server/db';
 const env = vi.hoisted(() => {
   const admin = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
   const database = new URL(admin);
-  database.pathname = '/nuera_auth_unit';
+  database.pathname = '/nuera_x3_auth';
   const values = {
     ADMIN_URL: admin,
     DATABASE_URL: database.toString(),
@@ -103,8 +103,8 @@ const available = await serverAvailable();
 async function recreateDatabase(drop = false): Promise<void> {
   const admin = postgres(env.ADMIN_URL, { max: 1, onnotice: () => {} });
   try {
-    await admin.unsafe('drop database if exists "nuera_auth_unit" with (force)');
-    if (!drop) await admin.unsafe('create database "nuera_auth_unit"');
+    await admin.unsafe('drop database if exists "nuera_x3_auth" with (force)');
+    if (!drop) await admin.unsafe('create database "nuera_x3_auth"');
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -143,11 +143,11 @@ async function wrongTotp(manualKey: string): Promise<string> {
   return String((Number(await totp(manualKey)) + 500_000) % 1_000_000).padStart(6, '0');
 }
 
-/** Password sign-in allowed before 2FA (setup nonce, as the token-gated setup does). */
+/** Password sign-in allowed before 2FA (enrolment grant bound to the e-mail, as the token-gated setup does). */
 async function setupSignIn(): Promise<string> {
   const result = await auth.api.signInEmail({
     body: { email: OWNER.email, password: OWNER.password, rememberMe: true },
-    headers: requestWith(undefined, { [SETUP_NONCE_HEADER]: issueSetupNonce() }),
+    headers: requestWith(undefined, { [ENROLMENT_GRANT_HEADER]: issueEnrolmentGrant({ email: OWNER.email, purpose: 'setup' }) }),
     returnHeaders: true,
   });
   return mergeCookies(result.headers.getSetCookie());
@@ -196,15 +196,42 @@ describe.skipIf(!available)('authentification (Better Auth + PostgreSQL)', { tim
       createOwner({ token: 'mauvais-jeton-de-configuration', ...OWNER, passwordConfirmation: OWNER.password }, request.headers),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'Jeton de configuration incorrect.' });
     expect(await getSetupState()).toEqual({ kind: 'no_owner' });
+    expect(await db.select().from(user)).toHaveLength(0);
     expect(await lastAudit('auth.setup_token_rejected')).not.toBeNull();
   });
 
-  it('crée le propriétaire unique et refuse la connexion par mot de passe tant que la 2FA est inactive', async () => {
+  it('crée le propriétaire (espace, réglages, serveur par défaut) et refuse la connexion par mot de passe tant que la 2FA est inactive', async () => {
+    // A database that had data but no account keeps an ownerless « Espace initial » (MULTICOMPTE §14
+    // F1-4): the owner adopts it in the creation transaction, never a second space.
+    const [initial] = await db.insert(spaces).values({ name: 'Espace initial', kind: 'personal', ownerUserId: null }).returning({ id: spaces.id });
     await createOwner({ token: env.SETUP_TOKEN, ...OWNER, passwordConfirmation: OWNER.password }, request.headers);
     const state = await getSetupState();
     expect(state.kind).toBe('owner_without_2fa');
     ownerId = state.kind === 'owner_without_2fa' ? state.ownerId : '';
-    expect(await lastAudit('auth.owner_created')).toMatchObject({ actorUserId: ownerId });
+    expect(await lastAudit('auth.owner_created')).toMatchObject({ actorUserId: ownerId, subjectUserId: ownerId });
+    const [owner] = await db.select({ role: user.role }).from(user).where(eq(user.id, ownerId));
+    expect(owner?.role).toBe('owner');
+    const [space] = await db.select().from(spaces).where(eq(spaces.ownerUserId, ownerId));
+    expect(space).toMatchObject({ id: initial!.id, kind: 'personal', name: 'Espace de Propriétaire' });
+    expect(await db.select().from(spaces)).toHaveLength(1);
+    expect(await db.select().from(spaces).where(isNull(spaces.ownerUserId))).toHaveLength(0);
+    expect(await db.select().from(spaceMembers).where(eq(spaceMembers.userId, ownerId))).toEqual([
+      expect.objectContaining({ spaceId: space!.id, role: 'owner' }),
+    ]);
+    expect(await db.select().from(spaceSettings).where(eq(spaceSettings.spaceId, space!.id))).toHaveLength(1);
+    expect(await db.select().from(userPreferences).where(eq(userPreferences.userId, ownerId))).toHaveLength(1);
+    // The existing runner becomes the server of the owner's space, active.
+    const [server] = await db.select().from(environments).where(eq(environments.isDefault, true));
+    expect(server).toMatchObject({ spaceId: space!.id, status: 'active' });
+
+    // A grant bound to another e-mail never opens a session for this account.
+    const foreignGrant = await auth.api
+      .signInEmail({
+        body: { email: OWNER.email, password: OWNER.password },
+        headers: requestWith(undefined, { [ENROLMENT_GRANT_HEADER]: issueEnrolmentGrant({ email: 'autre@test.nuera.local', purpose: 'invitation' }) }),
+      })
+      .catch((error: unknown) => error);
+    expect(authErrorCode(foreignGrant)).toBe('SETUP_INCOMPLETE');
 
     await expect(
       createOwner({ token: env.SETUP_TOKEN, ...OWNER, passwordConfirmation: OWNER.password }, request.headers),
@@ -339,8 +366,19 @@ describe.skipIf(!available)('authentification (Better Auth + PostgreSQL)', { tim
     expect(sessions.filter((item) => item.current)).toHaveLength(1);
     await expect(revokeWebSession(sessions[0]!.id)).rejects.toMatchObject({ code: 'CONFLICT' });
 
+    // Devices registered through each access (push subscriptions): only the closed accesses' go.
+    const subscribe = async (authSessionId: string, endpoint: string) =>
+      db.insert(pushSubscriptions).values({ userId: ownerId, endpoint, p256dh: 'p256dh', auth: 'auth', authSessionId });
+    const openAccesses = await db.select({ id: session.id }).from(session).where(eq(session.userId, ownerId));
+    const currentId = sessions[0]!.id;
+    for (const [index, access] of openAccesses.entries()) await subscribe(access.id, `https://push.example.test/${index}`);
+    const [revokedOne] = sessions.filter((item) => !item.current);
+    await revokeWebSession(revokedOne!.id);
+    expect(await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.authSessionId, revokedOne!.id))).toHaveLength(0);
+
     const { revoked } = await revokeOtherSessions();
     expect(revoked).toBeGreaterThanOrEqual(1);
+    expect((await db.select({ authSessionId: pushSubscriptions.authSessionId }).from(pushSubscriptions)).map((row) => row.authSessionId)).toEqual([currentId]);
     request.headers = requestWith(other);
     expect(await getCurrentUser()).toBeNull();
 
@@ -349,5 +387,27 @@ describe.skipIf(!available)('authentification (Better Auth + PostgreSQL)', { tim
     expect(await getCurrentUser()).toBeNull();
     expect(await lastAudit('auth.other_sessions_revoked')).toMatchObject({ actorUserId: ownerId });
     expect(await lastAudit('auth.sign_out')).toMatchObject({ actorUserId: ownerId, summary: 'déconnexion (Mac · Safari)' });
+  });
+
+  it("changer le mot de passe ferme les autres accès et leurs notifications ; celles de cet appareil suivent le nouvel accès", async () => {
+    const current = await signInWithTotp(manualKey);
+    await signInWithTotp(manualKey);
+    request.headers = requestWith(current);
+    const me = await requireUserForApi();
+    await db.delete(pushSubscriptions);
+    const others = await db.select({ id: session.id }).from(session).where(eq(session.userId, ownerId));
+    for (const [index, access] of others.entries()) {
+      await db.insert(pushSubscriptions).values({ userId: ownerId, endpoint: `https://push.example.test/mdp/${index}`, p256dh: 'p256dh', auth: 'auth', authSessionId: access.id });
+    }
+    const mine = (await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.authSessionId, me.authSessionId))).map((row) => row.endpoint);
+    expect(mine).toHaveLength(1);
+
+    await changePassword({ currentPassword: OWNER.password, newPassword: 'Montagne-Verte-2027!', revokeOtherSessions: true });
+    const [replacement, ...rest] = await db.select({ id: session.id }).from(session).where(eq(session.userId, ownerId));
+    expect(rest).toHaveLength(0);
+    expect(replacement!.id).not.toBe(me.authSessionId);
+    const remaining = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, ownerId));
+    expect(remaining.map((row) => [row.endpoint, row.authSessionId])).toEqual([[mine[0], replacement!.id]]);
+    expect(await lastAudit('auth.password_changed')).toMatchObject({ actorUserId: ownerId, summary: 'mot de passe modifié · autres accès fermés' });
   });
 });

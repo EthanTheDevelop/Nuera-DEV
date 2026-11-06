@@ -16,5 +16,5 @@ export const POST = apiRoute({
   body: instructionInputSchema,
   maxBodyBytes: 512 * 1024,
   rateLimit: { limit: 120, windowMs: 10 * 60_000 },
-  handler: ({ params, body, user }) => withWorkspaceErrors(() => sendInstruction(params.sessionId, body.text, user)),
+  handler: ({ params, body, ctx }) => withWorkspaceErrors(() => sendInstruction(ctx, params.sessionId, body.text)),
 });

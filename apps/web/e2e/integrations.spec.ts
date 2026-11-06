@@ -3,10 +3,11 @@ import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
 import { mcpServers, projectMcpServers } from '@nuera/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { startFakeCoolify, type FakeCoolify } from '../src/server/coolify/test/fake-coolify';
 import { startFakeMcp } from '../src/server/mcp/test/fake-mcp';
-import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STACK_DIR, expect, hideNextDevIndicator, test } from './fixtures';
+import { readState } from './harness/state';
+import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STACK_DIR, E2E_STATE_FILE, expect, hideNextDevIndicator, test } from './fixtures';
 
 /**
  * Lot INTEGRATIONS-UI — Intégrations (D07 / M07) and the MCP drawers (D1 connected / D2 to
@@ -49,11 +50,21 @@ async function openServer(page: Page, label: string) {
 
 const db = createDb(E2E_DATABASE_URL);
 
-/** Built-in servers back to « enabled in no project », status unknown (each test starts clean). */
+/** Space of the signed-in owner (account A): the MCP registry is per space. */
+function ownerSpace(): string {
+  const spaceId = readState(E2E_STATE_FILE)?.accounts.find((account) => account.key === 'a')?.spaceId;
+  if (!spaceId) throw new Error('Espace du propriétaire inconnu (state.json) : relancez la pile.');
+  return spaceId;
+}
+
+const PRESETS = ['figma', 'github', 'coolify', 'playwright'];
+
+/** Built-in servers of the owner's space back to « enabled in no project », status unknown (each test starts clean). */
 async function resetPresets() {
-  const rows = await db.select({ id: mcpServers.id }).from(mcpServers).where(inArray(mcpServers.name, ['figma', 'github', 'coolify', 'playwright']));
+  const inSpace = and(eq(mcpServers.spaceId, ownerSpace()), inArray(mcpServers.name, PRESETS));
+  const rows = await db.select({ id: mcpServers.id }).from(mcpServers).where(inSpace);
   if (rows.length) await db.delete(projectMcpServers).where(inArray(projectMcpServers.mcpServerId, rows.map((row) => row.id)));
-  await db.update(mcpServers).set({ status: 'unknown' }).where(inArray(mcpServers.name, ['figma', 'github', 'coolify', 'playwright']));
+  await db.update(mcpServers).set({ status: 'unknown' }).where(inSpace);
 }
 
 const mutate = (page: Page, method: 'DELETE' | 'PUT' | 'POST', url: string, data?: unknown) =>
@@ -65,7 +76,7 @@ test.beforeEach(async () => {
 
 test.afterAll(async () => {
   await resetPresets();
-  await db.delete(mcpServers).where(eq(mcpServers.name, 'essai-e2e'));
+  await db.delete(mcpServers).where(and(eq(mcpServers.spaceId, ownerSpace()), eq(mcpServers.name, 'essai-e2e')));
   await db.$client.end({ timeout: 5 });
 });
 
@@ -145,13 +156,13 @@ test('Page pleine · chargement direct de /integrations/mcp/figma', async ({ pag
   await expect(page.getByRole('heading', { name: 'Journal' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Intégrations' }).first()).toBeVisible();
   await page.goto('/integrations/mcp/inconnu');
-  await expect(page.getByText('Serveur MCP introuvable')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText('Serveur MCP introuvable').filter({ visible: true }).first()).toBeVisible({ timeout: 60_000 });
 });
 
 test("Ajouter un serveur MCP personnalisé, l'activer et tester la connexion", async ({ page, stack }) => {
   const fake = await startFakeMcp({ expectedAuthorization: 'Bearer jeton-e2e-0123456789', tools: ['search_docs', 'read_doc'], serverName: 'Docs' });
   try {
-    await db.delete(mcpServers).where(eq(mcpServers.name, 'essai-e2e'));
+    await db.delete(mcpServers).where(and(eq(mcpServers.spaceId, ownerSpace()), eq(mcpServers.name, 'essai-e2e')));
     await openPage(page);
     await page.getByRole('button', { name: 'Ajouter un serveur MCP' }).last().click();
     const dialog = page.getByRole('dialog', { name: 'Ajouter un serveur MCP' });
@@ -264,7 +275,7 @@ test.describe('Coolify · D2 « Reconnecter »', () => {
 test('Figma à reconnecter · terminal claude mcp login (faux CLI)', async ({ page, stack }) => {
   const enabled = await mutate(page, 'PUT', `/api/integrations/mcp/figma/projects/${stack.seeded.projects!.catalogue!.id}`, { enabled: true });
   expect(enabled.status()).toBe(200);
-  await db.update(mcpServers).set({ status: 'expired' }).where(eq(mcpServers.name, 'figma'));
+  await db.update(mcpServers).set({ status: 'expired' }).where(and(eq(mcpServers.spaceId, ownerSpace()), eq(mcpServers.name, 'figma')));
   await openPage(page);
   if (!isMobile()) await expect(page.getByRole('article', { name: 'Figma' }).getByText('Autorisation expirée')).toBeVisible();
   const drawer = await openServer(page, 'Figma');

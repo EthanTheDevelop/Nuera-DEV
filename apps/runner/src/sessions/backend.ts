@@ -70,24 +70,49 @@ export class PtyBackend implements SessionBackend {
 }
 
 /**
- * tmux on a dedicated socket (`tmux -L nuera`, own config): sessions survive runner restarts and
- * web redeploys. The runner keeps one `tmux attach` PTY client per session. The owner can also
- * attach over SSH: `tmux -L nuera attach -t <name>`.
+ * tmux socket of a server when NUERA_TMUX_SOCKET is not set: `nuera` for the default server (the
+ * sessions it started before keep running across a redeploy), `nuera-<first 8 hex of its id>` for
+ * any other server, so that two runners on one host never share a tmux server.
+ */
+export function defaultTmuxSocket(environment: { id: string; isDefault: boolean }): string {
+  if (environment.isDefault) return 'nuera';
+  return `nuera-${environment.id.replace(/-/g, '').slice(0, 8).toLowerCase()}`;
+}
+
+/**
+ * Value of `key` in the output of `tmux show-environment -t <session> <key>` (`KEY=value`, or
+ * `-KEY` when the variable was removed); null when absent.
+ */
+export function parseTmuxEnvironmentValue(output: string, key: string): string | null {
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith(`${key}=`)) return line.slice(key.length + 1);
+  }
+  return null;
+}
+
+/**
+ * tmux on a dedicated socket (`tmux -L <socket>`, own config; see {@link defaultTmuxSocket}):
+ * sessions survive runner restarts and web redeploys. The runner keeps one `tmux attach` PTY client
+ * per session. The owner can also attach over SSH: `tmux -L <socket> attach -t <name>`.
  */
 export class TmuxBackend implements SessionBackend {
   readonly kind = 'tmux' as const;
   private readonly confFile: string;
 
+  /**
+   * `socketOf`: a name, or a function read on every tmux command (the server of the runner is only
+   * known after start-up; the function throws until then).
+   */
   constructor(
     private readonly terminals: TerminalManager,
     dataDir: string,
-    readonly socket = 'nuera',
+    private readonly socketOf: string | (() => string) = 'nuera',
   ) {
     this.confFile = path.join(dataDir, 'tmux.conf');
     writeFileSync(
       this.confFile,
       [
-        '# Nuera Dev — tmux server dedicated to Claude Code sessions (socket "nuera").',
+        '# Nuera Dev — tmux server dedicated to Claude Code sessions.',
         'set -s escape-time 0',
         'set -g status off',
         'set -g history-limit 20000',
@@ -101,6 +126,10 @@ export class TmuxBackend implements SessionBackend {
       ].join('\n'),
       'utf8',
     );
+  }
+
+  get socket(): string {
+    return typeof this.socketOf === 'function' ? this.socketOf() : this.socketOf;
   }
 
   private base(): string[] {
@@ -125,6 +154,16 @@ export class TmuxBackend implements SessionBackend {
 
   async hasSession(name: string): Promise<boolean> {
     return succeeded(await this.run(['has-session', '-t', `=${name}`]));
+  }
+
+  /**
+   * `NUERA_SESSION_ID` of a tmux session (set by {@link start} through `new-session -e`): the row
+   * it was started for. null when the session or the variable is missing.
+   */
+  async sessionOwner(name: string): Promise<string | null> {
+    const result = await this.run(['show-environment', '-t', `=${name}`, 'NUERA_SESSION_ID']);
+    if (!succeeded(result)) return null;
+    return parseTmuxEnvironmentValue(result.stdout, 'NUERA_SESSION_ID');
   }
 
   async start(spec: SessionSpawnSpec): Promise<Terminal> {

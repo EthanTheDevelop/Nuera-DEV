@@ -1,9 +1,11 @@
 import 'server-only';
 import { projects } from '@nuera/db/schema';
-import { and, asc, eq, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { asc, eq, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
-import { runner } from '@/server/runner/client';
+import type { RequestContext } from '@/server/tenancy/context';
+import { getRunnerForEnvironment } from '@/server/runner/client';
+import { ofSpace } from '@/server/tenancy/scope';
 import { operationStateByProject, sessionCountsByProject, toListItem } from './queries';
 import { PROJECT_FILTERS, PROJECT_SORTS, type DiskUsage, type ProjectListItem, type ProjectListResult } from './types';
 
@@ -27,10 +29,14 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** Disk of the projects root, from the runner (short timeout: the list never waits for VPS-3). */
-export async function getProjectsDisk(): Promise<{ disk: DiskUsage | null; available: boolean }> {
+/**
+ * Disk of the projects root of the space's server (short timeout: the list never waits for the
+ * runner). No server assigned: no disk, nothing asked.
+ */
+export async function getProjectsDisk(ctx: Pick<RequestContext, 'environment'>): Promise<{ disk: DiskUsage | null; available: boolean }> {
+  if (!ctx.environment) return { disk: null, available: false };
   try {
-    const metrics = await runner.systemMetrics(undefined, { timeoutMs: 4_000 });
+    const metrics = await getRunnerForEnvironment(ctx.environment.id).systemMetrics(undefined, { timeoutMs: 4_000 });
     return { disk: metrics.disk ? { usedBytes: metrics.disk.usedBytes, totalBytes: metrics.disk.totalBytes, freeBytes: metrics.disk.freeBytes } : null, available: true };
   } catch {
     return { disk: null, available: false };
@@ -51,11 +57,12 @@ const sortItems = (items: ProjectListItem[], sort: ListProjectsOptions['sort']) 
 };
 
 /**
- * D02 / M02: projects with their sync badge, sessions summary, last activity and running operation,
- * the chip counters and the disk of the projects root. DB only, plus one bounded runner call for
- * the disk (null when VPS-3 does not answer: the list still renders).
+ * D02 / M02: projects OF THE SPACE with their sync badge, sessions summary, last activity and
+ * running operation, the chip counters (of the space too) and the disk of the projects root. DB
+ * only, plus one bounded call to the space's runner for the disk (null when it does not answer:
+ * the list still renders).
  */
-export async function listProjects(options: ListProjectsOptions = {}): Promise<ProjectListResult> {
+export async function listProjects(ctx: Pick<RequestContext, 'space' | 'environment'>, options: ListProjectsOptions = {}): Promise<ProjectListResult> {
   const filter = options.filter ?? 'tous';
   const where: SQL[] = [];
   if (filter === 'archives') where.push(isNotNull(projects.archivedAt));
@@ -68,15 +75,16 @@ export async function listProjects(options: ListProjectsOptions = {}): Promise<P
   }
 
   const [rows, countRows, disk] = await Promise.all([
-    db.select().from(projects).where(and(...where)).orderBy(asc(projects.createdAt)).limit(500),
+    db.select().from(projects).where(ofSpace(ctx, ...where)).orderBy(asc(projects.createdAt)).limit(500),
     db
       .select({
         all: sql<number>`count(*) filter (where ${projects.archivedAt} is null)::int`,
         favorites: sql<number>`count(*) filter (where ${projects.archivedAt} is null and ${projects.isFavorite})::int`,
         archived: sql<number>`count(*) filter (where ${projects.archivedAt} is not null)::int`,
       })
-      .from(projects),
-    getProjectsDisk(),
+      .from(projects)
+      .where(ofSpace(ctx)),
+    getProjectsDisk(ctx),
   ]);
   const ids = rows.map((row) => row.id);
   const [counts, ops] = await Promise.all([sessionCountsByProject(ids), operationStateByProject(ids)]);
@@ -90,5 +98,6 @@ export async function listProjects(options: ListProjectsOptions = {}): Promise<P
     counts: { all: Number(c?.all ?? 0), favorites: Number(c?.favorites ?? 0), archived: Number(c?.archived ?? 0) },
     disk: disk.disk,
     runnerAvailable: disk.available,
+    environment: ctx.environment ? { id: ctx.environment.id, name: ctx.environment.name } : null,
   };
 }

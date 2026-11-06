@@ -25,7 +25,7 @@ import {
   type PermissionRequestStatus,
 } from '../lib/permission';
 import { GallerySection, Grid, PhoneFrame, Specimen } from './GalleryLayout';
-import { CLAUDE_MARKDOWN, FAILED_OUTPUT, MIN, TEST_OUTPUT } from './samples';
+import { CLAUDE_MARKDOWN, FAILED_OUTPUT, MIN, SAMPLE_SERVER_NAME, TEST_OUTPUT } from './samples';
 
 const MODE = permissionModeLabel('manual');
 const OPTIONS = defaultPermissionOptions('npm run test');
@@ -104,7 +104,7 @@ function DemoComposer() {
         state="ready"
         modeLabel={MODE}
         onSubmit={submit}
-        persistence={persistenceText({ kind: 'live', host: 'VPS-3' })}
+        persistence={persistenceText({ kind: 'live', host: SAMPLE_SERVER_NAME })}
       />
       {sent.length > 0 ? (
         <p className="m-0 font-mono text-app-11 text-muted">{`Envoyé (galerie) : ${sent.at(-1)}`}</p>
@@ -123,7 +123,7 @@ function DemoRunningComposer() {
         modeLabel={MODE}
         onSubmit={(text) => demo(`Mettre en file : ${text}`)()}
         onInterrupt={() => setInterrupts((n) => n + 1)}
-        persistence={persistenceText({ kind: 'live', host: 'VPS-3' })}
+        persistence={persistenceText({ kind: 'live', host: SAMPLE_SERVER_NAME })}
       />
       {interrupts > 0 ? (
         <p className="m-0 font-mono text-app-11 text-muted">{`Échap transmis (galerie) × ${interrupts}`}</p>
@@ -337,7 +337,7 @@ export function ConversationSection({ now }: { now: number }) {
               state="waiting_permission"
               modeLabel={MODE}
               onSubmit={(text) => demo(`Envoyer : ${text}`)()}
-              persistence={persistenceText({ kind: 'live', host: 'VPS-3' })}
+              persistence={persistenceText({ kind: 'live', host: SAMPLE_SERVER_NAME })}
             />
           </Specimen>
           <Specimen label="Composer · Reconnexion (W7)" figma="231:4206">

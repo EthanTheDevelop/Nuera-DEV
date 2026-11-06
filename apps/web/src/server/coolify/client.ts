@@ -1,10 +1,12 @@
 import 'server-only';
 import { z } from 'zod';
 import { providerMessageOf } from '@/server/integrations/redact';
+import { guardedFetch, SsrfRefusedError } from '@/server/security/ssrf';
 
 /**
  * GET-only Coolify v4 API client (research §3). There is deliberately no method that can deploy,
- * restart, write or delete: Nuera Dev only reads Coolify (« Production hors de portée »).
+ * restart, write or delete: Nuera Dev only reads Coolify (« Production hors de portée »). The
+ * address is typed by a user: requests go through the SSRF guard (server/security/ssrf.ts).
  */
 
 export type CoolifyErrorKind =
@@ -21,7 +23,8 @@ export type CoolifyErrorKind =
   | 'server_error'
   | 'timeout'
   | 'network'
-  | 'invalid_response';
+  | 'invalid_response'
+  | 'address_refused'; // SSRF guard: internal address (loopback, link-local, a server, the database)
 
 export class CoolifyError extends Error {
   readonly kind: CoolifyErrorKind;
@@ -54,6 +57,7 @@ export interface CoolifyClientOptions {
   baseUrl: string;
   token?: string | null;
   timeoutMs?: number;
+  /** Default: the SSRF-guarded fetch (tests pass a guarded fetch over their own transport). */
   fetchImpl?: typeof fetch;
 }
 
@@ -149,7 +153,7 @@ const KIND_MESSAGES: Record<CoolifyErrorKind, string> = {
   missing_ability: "Le jeton Coolify n'a pas les droits nécessaires.",
   scoped_route: 'Ce jeton est limité à des environnements choisis.',
   api_disabled: "L'API est désactivée dans Coolify.",
-  ip_not_allowed: "L'adresse de VPS-3 n'est pas autorisée par Coolify.",
+  ip_not_allowed: "L'adresse du serveur de Nuera Dev n'est pas autorisée par Coolify.",
   forbidden: "Coolify refuse l'accès.",
   not_found: 'Adresse introuvable sur Coolify.',
   method_changed: 'Requête refusée par Coolify (méthode).',
@@ -158,6 +162,7 @@ const KIND_MESSAGES: Record<CoolifyErrorKind, string> = {
   timeout: 'Coolify ne répond pas (délai dépassé).',
   network: 'Coolify est injoignable.',
   invalid_response: 'Réponse inattendue de Coolify.',
+  address_refused: "L'adresse de Coolify désigne une machine interne : elle est refusée.",
 };
 
 export function normalizeCoolifyBaseUrl(value: string): string {
@@ -169,7 +174,7 @@ export function normalizeCoolifyBaseUrl(value: string): string {
 
 export function createCoolifyClient(options: CoolifyClientOptions) {
   const base = normalizeCoolifyBaseUrl(options.baseUrl);
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? guardedFetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
 
   async function get(path: string, init: { auth?: boolean; text?: boolean } = {}): Promise<CoolifyCall<unknown>> {
@@ -181,6 +186,9 @@ export function createCoolifyClient(options: CoolifyClientOptions) {
     try {
       response = await fetchImpl(`${base}${path}`, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' });
     } catch (error) {
+      if (error instanceof SsrfRefusedError) {
+        throw new CoolifyError('address_refused', KIND_MESSAGES.address_refused, { providerMessage: error.message, ms: ms() });
+      }
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
       throw new CoolifyError(timedOut ? 'timeout' : 'network', KIND_MESSAGES[timedOut ? 'timeout' : 'network'], { ms: ms() });
     }

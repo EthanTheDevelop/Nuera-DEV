@@ -30,7 +30,11 @@ export const githubInstallationRecordSchema = z.object({
 });
 export type GithubInstallationRecord = z.infer<typeof githubInstallationRecordSchema>;
 
-/** Non-secret part of the GitHub integration row (`integrations.config`, kind = github). */
+/**
+ * Non-secret part of a GitHub source (`github_sources.config`). `public` keeps its historical default
+ * (true) so that the migrated rows parse unchanged; new sources store an explicit value (private by
+ * default, MULTICOMPTE §7).
+ */
 export const githubConfigSchema = z.object({
   mode: z.literal('app'),
   appId: z.number().int(),
@@ -55,7 +59,7 @@ export const githubConfigSchema = z.object({
 });
 export type GithubConfig = z.infer<typeof githubConfigSchema>;
 
-/** Secret part, AES-256-GCM encrypted in `integrations.secrets_encrypted`. */
+/** Secret part, AES-256-GCM encrypted in `github_sources.secrets_encrypted` (bound to the source id). */
 export const githubSecretsSchema = z.object({
   privateKeyPem: z.string().min(1),
   clientSecret: z.string().min(1),
@@ -130,6 +134,11 @@ export interface AccessibleRepo {
   htmlUrl: string;
   archived: boolean;
   installationId: number | null;
+  /** Source that lists this repository first (oldest source first); null for GITHUB_FALLBACK_TOKEN. */
+  sourceId: string | null;
+  sourceLabel: string | null;
+  /** Every source of the space that reaches this repository (more than one: the user picks one). */
+  sources: Array<{ sourceId: string; sourceLabel: string; installationId: number }>;
   /** Project of Nuera Dev already tracking this repository (« Déjà cloné »), if any. */
   clonedProject: { id: string; name: string; slug: string } | null;
 }
@@ -138,19 +147,50 @@ export interface AccessibleReposAccount {
   login: string;
   type: string;
   installationId: number | null;
+  /** Source of this installation (null for GITHUB_FALLBACK_TOKEN). */
+  sourceId: string | null;
+  sourceLabel: string | null;
   /** Installation settings on github.com (« gérer l'accès sur GitHub »). */
   manageUrl: string | null;
   count: number;
   repos: AccessibleRepo[];
 }
 
+export interface AccessibleReposSource {
+  id: string;
+  label: string;
+  appSlug: string;
+  manageAccessUrl: string;
+}
+
 export interface AccessibleReposResult {
   total: number;
   accounts: AccessibleReposAccount[];
-  /** All repositories, most recently pushed first. */
+  /** All repositories, most recently pushed first (one entry per repository id). */
   repos: AccessibleRepo[];
+  /** « Gérer l'accès » of the single source (null with several sources: see `sources`). */
   manageAccessUrl: string | null;
+  /** Sources that were listed. */
+  sources: AccessibleReposSource[];
+  /** Sources that could not be listed (the others are still returned). */
+  failures: Array<{ sourceId: string; label: string; message: string }>;
   fetchedAt: string;
+}
+
+/** A repository of a space, before a project exists (`sourceId`: a source of that space, optional). */
+export interface GithubRepoRef {
+  spaceId: string;
+  sourceId?: string | null;
+  fullName: string;
+}
+
+/** The fields of a project row the GitHub helpers need. */
+export interface GithubProjectRef {
+  id: string;
+  spaceId: string;
+  environmentId?: string;
+  githubSourceId: string | null;
+  githubFullName: string;
 }
 
 export interface GithubRepoInfo {
@@ -175,7 +215,8 @@ export interface GithubBranch {
 }
 
 export interface CreatePullRequestInput {
-  fullName: string;
+  /** Optional and ignored by `createPullRequest(project, input)`: the repository is the project's. */
+  fullName?: string;
   title: string;
   head: string;
   base: string;
@@ -232,6 +273,8 @@ export interface GithubPermissionsSummary {
 }
 
 export interface GithubAccountStatus {
+  /** Source of the installation (null for GITHUB_FALLBACK_TOKEN). */
+  sourceId: string | null;
   login: string;
   type: string;
   installationId: number;
@@ -244,6 +287,10 @@ export interface GithubAccountStatus {
 
 export interface GithubStatus {
   mode: GithubMode;
+  /** The source this status describes (the single source of the space for the aggregate), or null. */
+  sourceId: string | null;
+  /** Label of that source (« nuera-studio »), or null. */
+  label: string | null;
   /** DB status of the integration row (`pending` = app registered, not installed yet). */
   status: 'not_configured' | 'pending' | 'connected' | 'expiring' | 'expired' | 'error';
   app: {
@@ -273,4 +320,28 @@ export interface GithubStatus {
   expiresAt: string | null;
   lastCheck: IntegrationCheck | null;
   history: CheckHistoryEntry[];
+}
+
+/** Status of one GitHub source of a space (D07 tile of that source). */
+export interface GithubSourceStatus extends GithubStatus {
+  id: string;
+  sourceId: string;
+  label: string;
+  createdAt: string;
+  /** Non-archived projects bound to this source (a source in use cannot be disconnected). */
+  projects: Array<{ id: string; name: string }>;
+}
+
+/**
+ * GitHub of a space: the aggregate (worst status, union of the accounts, sum of the repositories)
+ * with the same fields as a single source — identical to that source when the space has only one —
+ * plus every source.
+ */
+export interface GithubOverview extends GithubStatus {
+  sources: GithubSourceStatus[];
+  sourceCount: number;
+  /** Sources whose status is expired, error or pending. */
+  failingSourceCount: number;
+  maxSources: number;
+  canAddSource: boolean;
 }

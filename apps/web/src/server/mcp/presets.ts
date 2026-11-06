@@ -175,14 +175,14 @@ export const MCP_PRESETS: Record<McpPresetId, McpPreset> = {
     configurationLines: [
       'configuration générée par Nuera Dev pour chaque session',
       'transport : HTTP distant',
-      'authentification : jeton Coolify chiffré sur VPS-3',
+      'authentification : jeton Coolify chiffré sur {serveur}',
     ],
   },
   playwright: {
     id: 'playwright',
     label: 'Playwright',
     description: 'Tests de bout en bout pilotés par Claude.',
-    subtitle: 'Serveur MCP · navigateur de test sur VPS-3',
+    subtitle: 'Serveur MCP · navigateur de test sur {serveur}',
     projectLine: 'navigateur de test',
     icon: 'globe2',
     transport: 'stdio',
@@ -191,7 +191,7 @@ export const MCP_PRESETS: Record<McpPresetId, McpPreset> = {
     command: 'npx',
     args: ['-y', `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`, '--headless', '--isolated'],
     denyRules: [],
-    scopeNote: 'Navigateur sans interface lancé sur VPS-3, profil effacé à chaque session.',
+    scopeNote: 'Navigateur sans interface lancé sur {serveur}, profil effacé à chaque session.',
     permissionsNote: 'Aucun accès à un compte externe.',
     permissions: [{ label: 'Piloter un navigateur de test', granted: true }],
     configurationLines: [
@@ -210,4 +210,35 @@ export function isPresetName(name: string): name is McpPresetId {
 
 export function presetOf(name: string): McpPreset | null {
   return isPresetName(name) ? MCP_PRESETS[name] : null;
+}
+
+/** Server (runner) of the space a view is built for: its name, and whether it is the default one. */
+export interface PresetServerContext {
+  name: string;
+  isDefault: boolean;
+}
+
+/** Name used when the space has no server yet. */
+export const NO_SERVER_NAME = 'votre serveur';
+
+/**
+ * Where secrets are said to be encrypted: « chiffré sur VPS-3 » for the default server (Figma copy),
+ * « chiffré par Nuera Dev » elsewhere — the secrets live in the central database, not on that server.
+ */
+export function encryptedWhere(server: PresetServerContext | null, plural = false): string {
+  const word = plural ? 'chiffrés' : 'chiffré';
+  return server?.isDefault ? `${word} sur ${server.name}` : `${word} par Nuera Dev`;
+}
+
+/** Copy of a preset with `{serveur}` replaced by the server of the space (see {@link encryptedWhere}). */
+export function presetText(text: string, server: PresetServerContext | null): string {
+  return text
+    .replace(/chiffrés sur \{serveur\}/g, encryptedWhere(server, true))
+    .replace(/chiffré sur \{serveur\}/g, encryptedWhere(server))
+    .replace(/\{serveur\}/g, server?.name ?? NO_SERVER_NAME);
+}
+
+/** The copy written in `mcp_servers.scope_note` before servers had names (« … sur VPS-3 … »). */
+export function legacyPresetText(text: string): string {
+  return text.replace(/\{serveur\}/g, 'VPS-3');
 }

@@ -14,24 +14,30 @@ import {
 import { db } from '@/server/db';
 import { AppError, formatZodIssues } from '@/server/errors';
 import { buildSessionMcpConfig } from '@/server/mcp';
-import { RunnerError, isRunnerUnavailable, runner } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
-import { getAppSettings } from '@/server/settings';
+import { RunnerError, isRunnerUnavailable } from '@/server/runner/client';
+import { getEffectiveSessionPolicy } from '@/server/settings';
+import type { RequestContext } from '@/server/tenancy/context';
+import { auditIn, NOT_FOUND_MESSAGES, scopeOfSession, type ProjectScope, type SessionScope } from '@/server/tenancy/scope';
+import { assertCanDriveSession, readScopedProject, type ProjectRow } from './access';
 import { buildSessionEnv, readProjectEnv } from './env';
-import { capacityMessage, getSessionItem } from './queries';
+import { getGitIdentity } from './git-identity';
+import { capacityMessage, environmentMaxSessions, readSessionItem } from './queries';
 
 /**
- * Write side of the sessions lot. Every disk / git / process effect goes through the runner; the
- * web writes only what the architecture gives it (title, archiving) and audits each action.
+ * Write side of the sessions lot. Every disk / git / process effect goes through the runner of
+ * the server HOLDING the project (`projects.environment_id`); the web writes only what the
+ * architecture gives it (title, archiving) and audits each action in the space.
  *
- *   const { sessionId, workspaceUrl } = await createSession(input, user);
- *   await resumeSession(id, user);  await stopSession(id, user);
- *   await archiveSession(id, user); await renameSession(id, 'Export CSV', user);
+ *   const { sessionId, workspaceUrl } = await createSession(ctx, input);
+ *   await resumeSession(ctx, id);  await stopSession(ctx, id);
+ *   await archiveSession(ctx, id); await renameSession(ctx, id, 'Export CSV');
+ *
+ * An id of another space answers exactly like an unknown id (`scopeOf*()`): same NOT_FOUND, no
+ * runner call, nothing written, nothing journaled.
  */
 
-export interface SessionActor {
-  id: string;
-}
+/** Who acts and where: the request context (account, its space, its server). */
+export type SessionActorContext = Pick<RequestContext, 'user' | 'space' | 'environment'>;
 
 export const SESSION_AUDIT_ACTIONS = {
   create: 'session.create',
@@ -50,59 +56,67 @@ const PERMISSION_LABELS: Record<string, string> = {
   bypassPermissions: 'sans autorisation',
 };
 
-interface ProjectRow {
-  id: string;
-  name: string;
-  status: string;
-  archivedAt: Date | null;
-  defaultBranch: string;
-}
+const SESSION_NOT_FOUND = NOT_FOUND_MESSAGES.session;
 
-async function readProject(projectId: string): Promise<ProjectRow> {
-  const [project] = await db
-    .select({ id: projects.id, name: projects.name, status: projects.status, archivedAt: projects.archivedAt, defaultBranch: projects.defaultBranch })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .limit(1);
-  if (!project || project.archivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
-  return project;
-}
-
-async function readSessionRow(sessionId: string) {
+/** Session of the space (scope + the columns the actions need). */
+async function readScopedSession(ctx: SessionActorContext, sessionId: string) {
+  const scope = await scopeOfSession(ctx, sessionId);
+  assertCanDriveSession(ctx, scope);
   const [row] = await db
-    .select({ id: sessions.id, title: sessions.title, status: sessions.status, projectId: sessions.projectId, archivedAt: sessions.archivedAt })
+    .select({
+      id: sessions.id,
+      title: sessions.title,
+      status: sessions.status,
+      projectId: sessions.projectId,
+      archivedAt: sessions.archivedAt,
+      projectName: projects.name,
+    })
     .from(sessions)
-    .where(eq(sessions.id, sessionId))
+    .innerJoin(projects, and(eq(projects.id, sessions.projectId), eq(projects.spaceId, scope.spaceId)))
+    .where(and(eq(sessions.id, scope.sessionId), eq(sessions.environmentId, scope.environmentId)))
     .limit(1);
-  if (!row) throw new AppError('NOT_FOUND', 'Session introuvable.');
-  return row;
+  if (!row) throw new AppError('NOT_FOUND', SESSION_NOT_FOUND);
+  return { scope, row };
 }
 
 /**
- * Launch options rebuilt at every start / resume: MCP servers of the project (with their deny
- * rules), the project's variables (decrypted, protected names left out) and the Paramètres limits.
+ * Launch options rebuilt at every start / resume, for the account that starts or resumes: MCP
+ * servers of the project (with their deny rules), the project's variables (decrypted, protected
+ * names left out), the effective policy of the space (permission wait, bypass block = instance OR
+ * space) and the Git identity of the account.
+ *
+ * No capacity or memory limit is sent: the runner reads them from its own server row
+ * (`environments`). A launch value would only be kept in `launch.json` as a stricter cap that a
+ * later raise of the server's limits could not lift.
  */
-export async function buildLaunchOptions(projectId: string): Promise<SessionLaunchOptions> {
-  const settings = await getAppSettings();
-  const mcp = await buildSessionMcpConfig(projectId);
-  const projectEnv = await readProjectEnv(projectId);
+export async function buildLaunchOptions(ctx: Pick<RequestContext, 'user'>, scope: Pick<ProjectScope, 'projectId' | 'spaceId'>): Promise<SessionLaunchOptions> {
+  const [policy, mcp, projectEnv, gitIdentity] = await Promise.all([
+    getEffectiveSessionPolicy(scope.spaceId),
+    buildSessionMcpConfig(scope.projectId),
+    readProjectEnv(scope),
+    getGitIdentity(ctx.user),
+  ]);
   const { env } = buildSessionEnv(projectEnv.env, mcp.env);
   return {
     mcpConfig: Object.keys(mcp.mcpConfig.mcpServers).length > 0 ? mcp.mcpConfig : null,
     denyRules: mcp.denyRules,
     env,
-    permissionWaitSeconds: settings.permissionWaitSeconds,
-    maxConcurrentSessions: settings.maxConcurrentSessions,
-    memoryLimitMb: settings.sessionMemoryLimitMb,
+    permissionWaitSeconds: policy.permissionWaitSeconds,
+    blockBypassPermissions: policy.blockBypassPermissions,
+    gitIdentity,
   };
 }
 
 type RunnerWorktreeSpec = { mode: 'new'; branch: string; base?: string } | { mode: 'existing'; worktreeId: string } | { mode: 'primary' };
 
 /** Turns the dialog's branch choice into the runner's worktree spec, checking it against git. */
-async function resolveWorktree(project: ProjectRow, branch: ReturnType<typeof createSessionInputSchema.parse>['branch']): Promise<RunnerWorktreeSpec> {
+async function resolveWorktree(
+  scope: ProjectScope,
+  project: ProjectRow,
+  branch: ReturnType<typeof createSessionInputSchema.parse>['branch'],
+): Promise<RunnerWorktreeSpec> {
   if (branch.mode === 'primary') return { mode: 'primary' };
-  const { branches } = await runner.listBranches({ params: { projectId: project.id }, query: {} }, { timeoutMs: 20_000 });
+  const { branches } = await scope.runner.listBranches({ params: { projectId: project.id }, query: {} }, { timeoutMs: 20_000 });
   const matches = branches.filter((b) => b.name === branch.branch);
   if (branch.mode === 'new') {
     if (matches.length > 0) {
@@ -131,61 +145,63 @@ async function resolveWorktree(project: ProjectRow, branch: ReturnType<typeof cr
 }
 
 /**
- * « Nouvelle session »: checks capacity and the permission mode, creates the worktree and the
- * session through the runner (the CLI starts at the first instruction, Figma W1), then types the
- * optional first instruction. Audited `session.create`.
+ * « Nouvelle session »: on the server of the project, checks capacity and the permission mode,
+ * creates the worktree and the session through its runner (the CLI starts at the first
+ * instruction, Figma W1), then types the optional first instruction. Audited `session.create`.
  */
-export async function createSession(input: CreateSessionInput, actor: SessionActor): Promise<CreateSessionResult> {
+export async function createSession(ctx: SessionActorContext, input: CreateSessionInput): Promise<CreateSessionResult> {
   const parsed = createSessionInputSchema.safeParse(input);
   if (!parsed.success) throw new AppError('VALIDATION', 'Session invalide.', { detail: formatZodIssues(parsed.error) });
   const data = parsed.data;
-  const settings = await getAppSettings();
-  const project = await readProject(data.projectId);
+  const { scope, project } = await readScopedProject(ctx, data.projectId);
+  assertCanDriveSession(ctx, scope);
   if (project.status !== 'ready') {
     throw new AppError('CONFLICT', project.status === 'cloning' ? 'Le projet est encore en cours de clonage.' : "Le projet n'est pas prêt.", {
       untouched: 'Aucun worktree créé, aucune session démarrée.',
     });
   }
-  const permissionMode = data.permissionMode ?? settings.defaultPermissionMode;
-  if (permissionMode === 'bypassPermissions' && settings.blockBypassPermissions) {
+  const policy = await getEffectiveSessionPolicy(scope.spaceId);
+  const permissionMode = data.permissionMode ?? policy.defaultPermissionMode;
+  if (permissionMode === 'bypassPermissions' && policy.blockBypassPermissions) {
     throw new AppError('FORBIDDEN', 'Le mode sans autorisation est bloqué dans les paramètres.', {
       untouched: 'Aucun worktree créé, aucune session démarrée.',
     });
   }
 
-  const live = await runner.listSessions(undefined, { timeoutMs: 8_000 });
-  const capacity = { active: live.capacity.live, max: settings.maxConcurrentSessions };
+  const live = await scope.runner.listSessions(undefined, { timeoutMs: 8_000 });
+  const capacity = { active: live.capacity.live, max: await environmentMaxSessions(scope.environmentId, live.capacity.max) };
   if (capacity.active >= capacity.max) {
     throw new RunnerError('CONFLICT', capacityMessage(capacity), {
       reason: 'CAPACITY_REACHED',
       data: capacity,
       untouched: 'Aucun worktree créé, aucune session démarrée.',
+      environmentId: scope.environmentId,
     });
   }
 
-  const worktree = await resolveWorktree(project, data.branch);
-  const launch = await buildLaunchOptions(project.id);
-  const dto = await runner.createSession({
+  const worktree = await resolveWorktree(scope, project, data.branch);
+  const launch = await buildLaunchOptions(ctx, scope);
+  const dto = await scope.runner.createSession({
     body: {
       projectId: project.id,
       title: data.title,
       worktree,
       permissionMode,
-      model: data.model === undefined ? settings.defaultModel : data.model,
-      effort: data.effort === undefined ? settings.defaultEffort : data.effort,
-      remoteControl: data.remoteControl ?? settings.remoteControlByDefault,
+      model: data.model === undefined ? policy.defaultModel : data.model,
+      effort: data.effort === undefined ? policy.defaultEffort : data.effort,
+      remoteControl: data.remoteControl ?? policy.remoteControlByDefault,
       launch,
       start: false,
-      createdByUserId: actor.id,
+      createdByUserId: ctx.user.id,
     },
   });
 
-  await audit({
+  await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.create,
     summary: `session créée : « ${dto.title} » · ${project.name} · ${dto.worktree?.branch ?? 'branche inconnue'}`,
     targetType: 'session',
     targetId: dto.id,
-    actorUserId: actor.id,
+    environmentId: scope.environmentId,
     metadata: {
       projectId: project.id,
       worktree: dto.worktree ? { name: dto.worktree.name, branch: dto.worktree.branch, primary: dto.worktree.isPrimary } : null,
@@ -202,7 +218,7 @@ export async function createSession(input: CreateSessionInput, actor: SessionAct
   const result: CreateSessionResult = { sessionId: dto.id, workspaceUrl: workspaceUrl(dto.id), instruction: 'none', instructionError: null };
   if (data.instruction) {
     try {
-      const sent = await runner.sendInstruction({ params: { sessionId: dto.id }, body: { text: data.instruction } });
+      const sent = await scope.runner.sendInstruction({ params: { sessionId: dto.id }, body: { text: data.instruction } });
       result.instruction = sent.delivered ? 'delivered' : 'queued';
     } catch (error) {
       const appError = error instanceof AppError ? error : null;
@@ -216,11 +232,29 @@ export async function createSession(input: CreateSessionInput, actor: SessionAct
   return result;
 }
 
-/** Sends (again) the first instruction of a session just created, when it failed. */
-export async function sendFirstInstruction(sessionId: string, text: string): Promise<'delivered' | 'queued'> {
-  await readSessionRow(sessionId);
-  const sent = await runner.sendInstruction({ params: { sessionId }, body: { text } });
+/** Sends (again) the first instruction of a session of the space just created, when it failed. */
+export async function sendFirstInstruction(ctx: SessionActorContext, sessionId: string, text: string): Promise<'delivered' | 'queued'> {
+  const { scope } = await readScopedSession(ctx, sessionId);
+  const sent = await scope.runner.sendInstruction({ params: { sessionId: scope.sessionId }, body: { text } });
   return sent.delivered ? 'delivered' : 'queued';
+}
+
+/**
+ * First start of a session of the space that has not run yet (status `new`, e.g. the composer's
+ * first instruction): the runner starts its CLI with launch options rebuilt for the account that
+ * starts it, the effective policy of the space included. A session created before the launch
+ * options carried the bypass block has a `launch.json` without it, and the runner, which then
+ * fails closed, would refuse a « sans autorisation » session that the space allows
+ * (BYPASS_BLOCKED). Starting a session that is already starting joins that run (runner).
+ */
+export async function startNewSession(ctx: SessionActorContext, sessionId: string): Promise<SessionDto> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  if (row.status === 'archived' || row.archivedAt) {
+    throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus démarrer.', { untouched: "L'historique reste lisible." });
+  }
+  if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
+  const launch = await buildLaunchOptions(ctx, scope);
+  return scope.runner.startSession({ params: { sessionId: scope.sessionId }, body: { launch } });
 }
 
 export interface SessionActionResult {
@@ -228,64 +262,69 @@ export interface SessionActionResult {
   workspaceUrl: string;
 }
 
-/**
- * « Reprendre »: `claude --resume <id>` in the session's worktree with launch options rebuilt
- * (MCP, variables, limits as they are now). Capacity and resumability are checked by the runner
- * (CAPACITY_REACHED, SESSION_NOT_RESUMABLE). Audited `session.resume`.
- */
-export async function resumeSession(sessionId: string, actor: SessionActor): Promise<SessionActionResult> {
-  const row = await readSessionRow(sessionId);
-  if (row.status === 'archived') {
-    throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus être reprise.', { untouched: "L'historique reste lisible." });
-  }
-  const project = await readProject(row.projectId);
-  const current = await runner.getSession({ params: { sessionId } });
-  if (current.live) return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
-  const launch = await buildLaunchOptions(project.id);
-  const dto: SessionDto = await runner.resumeSession({ params: { sessionId }, body: { launch } });
-  await audit({
-    action: SESSION_AUDIT_ACTIONS.resume,
-    summary: `session reprise : « ${dto.title} » · ${project.name}`,
-    targetType: 'session',
-    targetId: sessionId,
-    actorUserId: actor.id,
-    metadata: { projectId: project.id, previousStatus: row.status, resumeCount: dto.resumeCount },
-  });
-  return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+function actionResult(ctx: SessionActorContext, scope: SessionScope): Promise<SessionActionResult> {
+  return readSessionItem(ctx, scope.sessionId, scope.runner).then((session) => ({ session, workspaceUrl: workspaceUrl(scope.sessionId) }));
 }
 
 /**
- * « Arrêter la session » (T8): Échap, `/exit`, then the process is stopped by the runner. 409
- * when nothing runs. The worktree and the conversation are kept. Audited `session.stop`.
+ * « Reprendre »: `claude --resume <id>` in the session's worktree, on its server, with launch
+ * options rebuilt for the account that resumes (MCP, variables, policy, limits, Git identity as
+ * they are now). Capacity and resumability are checked by the runner (CAPACITY_REACHED,
+ * SESSION_NOT_RESUMABLE). Audited `session.resume`.
  */
-export async function stopSession(sessionId: string, actor: SessionActor, options: { force?: boolean } = {}): Promise<SessionActionResult> {
-  const row = await readSessionRow(sessionId);
-  const current = await runner.getSession({ params: { sessionId } });
+export async function resumeSession(ctx: SessionActorContext, sessionId: string): Promise<SessionActionResult> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  if (row.status === 'archived') {
+    throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus être reprise.', { untouched: "L'historique reste lisible." });
+  }
+  if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
+  const current = await scope.runner.getSession({ params: { sessionId: scope.sessionId } });
+  if (current.live) return actionResult(ctx, scope);
+  const launch = await buildLaunchOptions(ctx, scope);
+  const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch } });
+  await auditIn(ctx, {
+    action: SESSION_AUDIT_ACTIONS.resume,
+    summary: `session reprise : « ${dto.title} » · ${row.projectName}`,
+    targetType: 'session',
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
+    metadata: { projectId: scope.projectId, previousStatus: row.status, resumeCount: dto.resumeCount },
+  });
+  return actionResult(ctx, scope);
+}
+
+/**
+ * « Arrêter la session » (T8): Échap, `/exit`, then the process is stopped by the runner of its
+ * server. 409 when nothing runs. The worktree and the conversation are kept. Audited `session.stop`.
+ */
+export async function stopSession(ctx: SessionActorContext, sessionId: string, options: { force?: boolean } = {}): Promise<SessionActionResult> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  const current = await scope.runner.getSession({ params: { sessionId: scope.sessionId } });
   if (!current.live && !(LIVE_STATUSES as readonly string[]).includes(current.status)) {
     throw new AppError('CONFLICT', 'Aucun processus Claude Code ne tourne pour cette session.', { untouched: "Rien n'a été arrêté." });
   }
-  const dto = await runner.stopSession({ params: { sessionId }, body: { force: options.force ?? false } });
-  await audit({
+  const dto = await scope.runner.stopSession({ params: { sessionId: scope.sessionId }, body: { force: options.force ?? false } });
+  await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.stop,
     summary: `session arrêtée : « ${dto.title} »`,
     targetType: 'session',
-    targetId: sessionId,
-    actorUserId: actor.id,
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
     metadata: { projectId: row.projectId, previousStatus: current.status, force: options.force ?? false },
   });
-  return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+  return actionResult(ctx, scope);
 }
 
 /**
  * « Archiver »: the session leaves « EN COURS » and the default history views; its worktree and
  * its conversation are not touched. Refused while a CLI runs (stop it first). Audited.
  */
-export async function archiveSession(sessionId: string, actor: SessionActor): Promise<SessionActionResult> {
-  const row = await readSessionRow(sessionId);
-  if (row.status === 'archived') return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+export async function archiveSession(ctx: SessionActorContext, sessionId: string): Promise<SessionActionResult> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  if (row.status === 'archived') return actionResult(ctx, scope);
   let live = (LIVE_STATUSES as readonly string[]).includes(row.status);
   try {
-    const dto = await runner.getSession({ params: { sessionId } }, { timeoutMs: 5_000 });
+    const dto = await scope.runner.getSession({ params: { sessionId: scope.sessionId } }, { timeoutMs: 5_000 });
     live = dto.live || (LIVE_STATUSES as readonly string[]).includes(dto.status);
   } catch (error) {
     // Runner unreachable: the database status decides (a live status is refused, it cannot be verified).
@@ -297,21 +336,27 @@ export async function archiveSession(sessionId: string, actor: SessionActor): Pr
   const [updated] = await db
     .update(sessions)
     .set({ status: 'archived', archivedAt: new Date() })
-    .where(and(eq(sessions.id, sessionId), notInArray(sessions.status, [...LIVE_STATUSES, 'archived'])))
+    .where(
+      and(
+        eq(sessions.id, scope.sessionId),
+        eq(sessions.environmentId, scope.environmentId),
+        notInArray(sessions.status, [...LIVE_STATUSES, 'archived']),
+      ),
+    )
     .returning({ id: sessions.id });
   if (!updated) {
     throw new AppError('CONFLICT', "La session a changé d'état entre-temps : rechargez la page.", { untouched: 'Session non archivée.' });
   }
-  await audit({
+  await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.archive,
     summary: `session archivée : « ${row.title} »`,
     targetType: 'session',
-    targetId: sessionId,
-    actorUserId: actor.id,
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
     metadata: { projectId: row.projectId, previousStatus: row.status },
   });
-  await announceStatus(sessionId);
-  return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+  await announceStatus(scope);
+  return actionResult(ctx, scope);
 }
 
 /**
@@ -319,9 +364,9 @@ export async function archiveSession(sessionId: string, actor: SessionActor): Pr
  * Best effort: the change is already written and audited; an unreachable runner only delays them
  * until their next refresh.
  */
-async function announceStatus(sessionId: string): Promise<void> {
+async function announceStatus(scope: SessionScope): Promise<void> {
   try {
-    await runner.announceSession({ params: { sessionId } }, { timeoutMs: 5_000 });
+    await scope.runner.announceSession({ params: { sessionId: scope.sessionId } }, { timeoutMs: 5_000 });
   } catch (error) {
     if (!isRunnerUnavailable(error) && !(error instanceof AppError && error.code === 'NOT_FOUND')) {
       console.error('[sessions] publication du statut impossible', error instanceof Error ? error.message : error);
@@ -330,22 +375,25 @@ async function announceStatus(sessionId: string): Promise<void> {
 }
 
 /** « Renommer »: Nuera's title of the session (the CLI keeps its `--name` until the next launch). */
-export async function renameSession(sessionId: string, title: string, actor: SessionActor): Promise<SessionActionResult> {
+export async function renameSession(ctx: SessionActorContext, sessionId: string, title: string): Promise<SessionActionResult> {
   const parsed = renameSessionInputSchema.safeParse({ title });
   if (!parsed.success) throw new AppError('VALIDATION', 'Titre invalide.', { detail: formatZodIssues(parsed.error) });
-  const row = await readSessionRow(sessionId);
+  const { scope, row } = await readScopedSession(ctx, sessionId);
   const next = parsed.data.title;
   if (next !== row.title) {
-    await db.update(sessions).set({ title: next }).where(eq(sessions.id, sessionId));
-    await audit({
+    await db
+      .update(sessions)
+      .set({ title: next })
+      .where(and(eq(sessions.id, scope.sessionId), eq(sessions.environmentId, scope.environmentId)));
+    await auditIn(ctx, {
       action: SESSION_AUDIT_ACTIONS.rename,
       summary: `session renommée : « ${row.title} » → « ${next} »`,
       targetType: 'session',
-      targetId: sessionId,
-      actorUserId: actor.id,
+      targetId: scope.sessionId,
+      environmentId: scope.environmentId,
       metadata: { projectId: row.projectId, from: row.title, to: next },
     });
-    await announceStatus(sessionId);
+    await announceStatus(scope);
   }
-  return { session: await getSessionItem(sessionId), workspaceUrl: workspaceUrl(sessionId) };
+  return actionResult(ctx, scope);
 }

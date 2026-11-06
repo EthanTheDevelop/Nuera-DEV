@@ -4,10 +4,17 @@ import { useCallback, useEffect, useState } from 'react';
 import type { PushDeviceView } from '../lib/types';
 
 /**
- * Web Push of THIS device (M08 « Notifications »): registers /sw.js, subscribes with the VAPID key of
- * /api/push/config, saves / deletes the subscription through /api/push/subscription. Never pretends:
- * every unavailable case carries its French reason.
+ * Web Push of THIS device for the signed-in account (M08 « Notifications »): registers /sw.js,
+ * subscribes with the VAPID key of /api/push/config, saves / deletes the account's subscription
+ * through /api/push/subscription. Several accounts may use one browser: each has its own row for the
+ * same endpoint, `sharedWithOtherAccount` says so (« Ce navigateur reçoit aussi les notifications d'un
+ * autre compte Nuera Dev. »), and turning notifications off for one account never unsubscribes the
+ * browser while another account still uses it. Never pretends: every unavailable case carries its
+ * French reason.
  */
+
+/** Notice under the switch when this browser also notifies another account (never says which). */
+export const SHARED_BROWSER_NOTICE = "Ce navigateur reçoit aussi les notifications d'un autre compte Nuera Dev.";
 
 export type PushSupport =
   | { kind: 'checking' }
@@ -17,8 +24,10 @@ export type PushSupport =
 
 export interface PushState {
   support: PushSupport;
-  /** This browser has a subscription registered on the server. */
+  /** This browser has a subscription registered on the server for this account. */
   subscribed: boolean;
+  /** The same browser subscription is also registered for another Nuera Dev account. */
+  sharedWithOtherAccount: boolean;
   busy: boolean;
   error: string | null;
   devices: PushDeviceView[];
@@ -69,6 +78,7 @@ function detectSupport(): PushSupport {
 export function usePushSubscription({ enabled, publicKey, initialDevices }: { enabled: boolean; publicKey: string | null; initialDevices: PushDeviceView[] }): PushState {
   const [support, setSupport] = useState<PushSupport>({ kind: 'checking' });
   const [subscribed, setSubscribed] = useState(false);
+  const [shared, setShared] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [devices, setDevices] = useState(initialDevices);
@@ -82,8 +92,9 @@ export function usePushSubscription({ enabled, publicKey, initialDevices }: { en
     const query = endpoint ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
     const response = await fetch(`/api/push/subscription${query}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(await readError(response));
-    const body = (await response.json()) as { subscribed: boolean | null; devices: PushDeviceView[] };
+    const body = (await response.json()) as { subscribed: boolean | null; sharedWithOtherAccount?: boolean | null; devices: PushDeviceView[] };
     setDevices(body.devices);
+    if (endpoint) setShared(body.sharedWithOtherAccount === true);
     return body;
   }, []);
 
@@ -134,6 +145,8 @@ export function usePushSubscription({ enabled, publicKey, initialDevices }: { en
         if (!existing) await subscription.unsubscribe().catch(() => undefined);
         throw new Error(await readError(response));
       }
+      const saved = (await response.json().catch(() => ({}))) as { sharedWithOtherAccount?: boolean };
+      setShared(saved.sharedWithOtherAccount === true);
       setSubscribed(true);
       await reload(subscription.endpoint).catch(() => undefined);
       return true;
@@ -158,7 +171,9 @@ export function usePushSubscription({ enabled, publicKey, initialDevices }: { en
           body: JSON.stringify({ endpoint: subscription.endpoint }),
         });
         if (!response.ok) throw new Error(await readError(response));
-        await subscription.unsubscribe().catch(() => undefined);
+        const body = (await response.json().catch(() => ({}))) as { sharedWithOtherAccount?: boolean };
+        // Another account of this browser still receives its notifications through this subscription.
+        if (body.sharedWithOtherAccount !== true) await subscription.unsubscribe().catch(() => undefined);
       }
       setSubscribed(false);
       await reload().catch(() => undefined);
@@ -227,5 +242,5 @@ export function usePushSubscription({ enabled, publicKey, initialDevices }: { en
     return { sent };
   }, [reload]);
 
-  return { support, subscribed, busy, error, devices, enable, disable, removeDevice, sendTest };
+  return { support, subscribed, sharedWithOtherAccount: shared, busy, error, devices, enable, disable, removeDevice, sendTest };
 }

@@ -51,9 +51,9 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
 
   // --- Worktrees ------------------------------------------------------------------------------
   defineRoute(app, 'listWorktrees', async ({ params, query }) => s.git.listWorktrees(params.projectId, { sizes: query.sizes ?? false }));
-  defineRoute(app, 'removeClone', async ({ params }) => s.git.removeClone(params.projectId));
+  defineRoute(app, 'removeClone', async ({ params, query }) => s.git.removeClone(params.projectId, { actorUserId: query.actorUserId ?? null }));
   defineRoute(app, 'createWorktree', async ({ params, body }) => s.git.worktreeDto(await s.git.createWorktree(params.projectId, body)));
-  defineRoute(app, 'removeWorktree', async ({ params, query }) => s.git.removeWorktree(params.worktreeId, { force: query.force, deleteBranch: query.deleteBranch }));
+  defineRoute(app, 'removeWorktree', async ({ params, query }) => s.git.removeWorktree(params.worktreeId, { force: query.force, deleteBranch: query.deleteBranch, actorUserId: query.actorUserId ?? null }));
   defineRoute(app, 'worktreeStatus', async ({ params }) => s.git.worktreeStatus(params.worktreeId));
 
   // --- Changes --------------------------------------------------------------------------------

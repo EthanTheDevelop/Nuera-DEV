@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
-import { appSettings } from '@nuera/db/schema';
+import { environments } from '@nuera/db/schema';
 import { eq } from 'drizzle-orm';
 import { E2E_BASE_URL, E2E_DATABASE_URL, expect, test, type StackFixtures } from './fixtures';
 
@@ -292,14 +292,16 @@ test('API : validation, Origin et capacité', async ({ page, stack }) => {
 });
 
 test('Capacité atteinte : boutons désactivés avec leur raison, création refusée par l\'API', async ({ page, stack, runnerApi }) => {
-  const [settings] = await database.select({ max: appSettings.maxConcurrentSessions }).from(appSettings).where(eq(appSettings.id, 1));
+  // « Sessions parallèles » belongs to the server of the owner's space (environments.max_concurrent_sessions).
+  const serverId = stack.runners.find((runner) => runner.key === 'a')!.environmentId!;
+  const [settings] = await database.select({ max: environments.maxConcurrentSessions }).from(environments).where(eq(environments.id, serverId));
   const before = settings!.max;
   const { capacity } = await runnerApi('listSessions', undefined);
   test.skip(capacity.live < 1, 'aucune session vivante sur la pile');
-  await database.update(appSettings).set({ maxConcurrentSessions: capacity.live }).where(eq(appSettings.id, 1));
+  await database.update(environments).set({ maxConcurrentSessions: capacity.live }).where(eq(environments.id, serverId));
   try {
     const reason = `Capacité atteinte : ${capacity.live} sur ${capacity.live}. Arrêtez une session avant d'en démarrer une autre.`;
-    // The web keeps app_settings 5 s in memory: reload until the new limit is read.
+    // The web (and the runner) keep the server's limits a few seconds in memory: reload until the new limit is read.
     await expect(async () => {
       await openSessions(page);
       await expect(visible(page, 'section[aria-label="Capacité"]').getByRole('meter')).toHaveAttribute('aria-valuemax', String(capacity.live), { timeout: 1_000 });
@@ -324,6 +326,6 @@ test('Capacité atteinte : boutons désactivés avec leur raison, création refu
     expect(body.error).toMatchObject({ code: 'CONFLICT', untouched: 'Aucun worktree créé, aucune session démarrée.' });
     expect(body.error.message).toMatch(new RegExp(`^${capacity.live} sessions? actives? sur ${capacity.live} autorisées? : arrêtez-en une`));
   } finally {
-    await database.update(appSettings).set({ maxConcurrentSessions: before }).where(eq(appSettings.id, 1));
+    await database.update(environments).set({ maxConcurrentSessions: before }).where(eq(environments.id, serverId));
   }
 });

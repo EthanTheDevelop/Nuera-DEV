@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { createDb } from '@nuera/db';
+import { environments, spaceMembers, user } from '@nuera/db/schema';
+import { eq } from 'drizzle-orm';
 import {
+  E2E_DATABASE_URL,
   E2E_OWNER,
   completeOwnerSetup,
   createOwnerAndSignIn,
@@ -75,9 +79,37 @@ test('configuration initiale : jeton refusé puis compte, double authentificatio
   expect(owner.backupCodes).toHaveLength(8);
   await expect(page).toHaveURL(/\/$/);
 
+  // The first account is the instance owner, in its personal space, with the default server attached.
+  const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'e2e-auth' });
+  try {
+    const [created] = await db.select({ id: user.id, role: user.role, twoFactorEnabled: user.twoFactorEnabled }).from(user).where(eq(user.email, owner.email));
+    expect(created).toMatchObject({ role: 'owner', twoFactorEnabled: true });
+    const [membership] = await db.select({ spaceId: spaceMembers.spaceId, role: spaceMembers.role }).from(spaceMembers).where(eq(spaceMembers.userId, created!.id));
+    expect(membership).toMatchObject({ role: 'owner' });
+    const [server] = await db.select({ spaceId: environments.spaceId, status: environments.status }).from(environments).where(eq(environments.isDefault, true));
+    expect(server).toEqual({ spaceId: membership!.spaceId, status: 'active' });
+  } finally {
+    await db.$client.end({ timeout: 5 });
+  }
+
   // Setup is closed once the owner has 2FA.
   const response = await page.goto('/configuration');
   expect(response?.status()).toBe(404);
+});
+
+test("l'inscription publique reste fermée : aucun compte ne se crée hors invitation", async ({ page }) => {
+  const email = `inconnu-${Date.now().toString(36)}@exemple.test`;
+  const response = await page.request.post('/api/auth/sign-up/email', {
+    data: { name: 'Inconnu', email, password: 'Mot-de-passe-solide-2026!' },
+    headers: { origin: test.info().project.use.baseURL!, 'content-type': 'application/json' },
+  });
+  expect(response.status()).toBeGreaterThanOrEqual(400);
+  const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'e2e-auth' });
+  try {
+    expect(await db.select({ id: user.id }).from(user).where(eq(user.email, email))).toHaveLength(0);
+  } finally {
+    await db.$client.end({ timeout: 5 });
+  }
 });
 
 test("déconnexion puis connexion avec le code de l'application d'authentification", async ({ page }) => {

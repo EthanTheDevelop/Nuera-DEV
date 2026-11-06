@@ -3,16 +3,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { eq } from 'drizzle-orm';
 import pino from 'pino';
-import { createDb, projects, type Database } from '@nuera/db';
-import { buildRunner, type Runner } from '../src/app';
+import { createDb, environments, projects, spaces, type Database } from '@nuera/db';
+import { seedMember } from '@nuera/db/test';
+import { hashToken } from '@nuera/shared/tokens';
+import { buildRunner, type BuildRunnerOptions, type Runner } from '../src/app';
 import type { RunnerConfig } from '../src/config';
+import { TOKEN } from './constants';
 
+export { TOKEN };
 export const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const FAKE_CLAUDE = path.join(TEST_DIR, 'fixtures', 'fake-claude.mjs');
 export const dbReady = process.env.NUERA_TEST_DB === '1';
 export const dbUrl = process.env.RUNNER_TEST_DATABASE_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/nuera_runner_test';
-export const TOKEN = 'test-runner-token-0123456789abcdef';
 export const silentLogger = pino({ level: process.env.RUNNER_TEST_LOG ?? 'silent' });
 
 export function tmpDir(prefix: string): string {
@@ -79,6 +83,9 @@ export function testConfig(dirs: { projects: string; data: string; remotes: stri
     hookPort: 0,
     token: TOKEN,
     databaseUrl: dbUrl,
+    dbPoolMax: 5,
+    environmentId: null,
+    claudeConfigDir: null,
     appUrl: 'http://127.0.0.1:9',
     webInternalUrl: 'http://127.0.0.1:9',
     projectsRoot: dirs.projects,
@@ -93,22 +100,37 @@ export function testConfig(dirs: { projects: string; data: string; remotes: stri
   };
 }
 
+/** `Authorization` header of a runner token. */
+export const authFor = (token: string) => ({ authorization: `Bearer ${token}` });
+export const auth = authFor(TOKEN);
+
 export interface TestEnv {
   root: string;
   dirs: { projects: string; data: string; remotes: string };
   db: Database;
   runner: Runner;
   apiUrl: string;
-  close(): Promise<void>;
+  /** Bearer header of this runner's token. */
+  auth: { authorization: string };
+  /** Stops the runner; its temporary folders are removed unless `keepFolders` (restart scenarios). */
+  close(options?: { keepFolders?: boolean }): Promise<void>;
 }
 
-export async function startTestRunner(overrides: Partial<RunnerConfig> = {}, env: Record<string, string> = {}): Promise<TestEnv> {
+export interface StartTestRunnerOptions {
+  /** Existing folders (a restarted runner keeps its data); fresh temporary ones otherwise. */
+  dirs?: { projects: string; data: string; remotes: string };
+  /** Database client (a restricted role's in its suite); a new pool on the test database otherwise. */
+  db?: Database;
+  runner?: Omit<BuildRunnerOptions, 'logger' | 'db'>;
+}
+
+export async function startTestRunner(overrides: Partial<RunnerConfig> = {}, options: StartTestRunnerOptions = {}): Promise<TestEnv> {
   const root = tmpDir('runner');
-  const dirs = { projects: path.join(root, 'projects'), data: path.join(root, 'data'), remotes: path.join(root, 'remotes') };
+  const dirs = options.dirs ?? { projects: path.join(root, 'projects'), data: path.join(root, 'data'), remotes: path.join(root, 'remotes') };
   for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
-  Object.assign(process.env, env);
-  const db = createDb(dbUrl, { max: 5, applicationName: 'nuera-runner-test' });
-  const runner = await buildRunner(testConfig(dirs, overrides), { logger: silentLogger, db });
+  const db = options.db ?? createDb(overrides.databaseUrl ?? dbUrl, { max: 5, applicationName: 'nuera-runner-test' });
+  const config = testConfig(dirs, overrides);
+  const runner = await buildRunner(config, { logger: silentLogger, db, standbyRetryMs: 200, ...options.runner });
   const { apiUrl } = await runner.start({ listen: true });
   return {
     root,
@@ -116,20 +138,66 @@ export async function startTestRunner(overrides: Partial<RunnerConfig> = {}, env
     db,
     runner,
     apiUrl: apiUrl!,
-    async close() {
+    auth: authFor(config.token),
+    async close(closeOptions = {}) {
       await runner.close();
-      cleanup(root);
+      if (!closeOptions.keepFolders) cleanup(root);
     },
   };
 }
 
+export interface TestServer {
+  environmentId: string;
+  spaceId: string;
+  userId: string;
+}
+
+/** The default server « VPS-3 » (token {@link TOKEN}, adopted by the owner in global-setup). */
+export async function defaultServer(db: Database): Promise<TestServer> {
+  const [row] = await db
+    .select({ id: environments.id, spaceId: spaces.id, ownerUserId: spaces.ownerUserId })
+    .from(environments)
+    .innerJoin(spaces, eq(spaces.id, environments.spaceId))
+    .where(eq(environments.tokenHash, hashToken(TOKEN)))
+    .limit(1);
+  if (!row?.ownerUserId) throw new Error('Serveur par défaut des tests introuvable : global-setup a-t-il tourné ?');
+  return { environmentId: row.id, spaceId: row.spaceId, userId: row.ownerUserId };
+}
+
+let serverCounter = 0;
+/** Another account with its own space and server, reached with `token` (as the administration registers it). */
+export async function seedServer(
+  db: Database,
+  options: { token: string; name?: string; dbRole?: string | null; maxConcurrentSessions?: number; sessionMemoryLimitMb?: number | null },
+): Promise<TestServer> {
+  serverCounter += 1;
+  const account = await seedMember(db, {
+    email: `membre-${Date.now().toString(36)}-${serverCounter}@example.test`,
+    name: 'Camille Test',
+    environment: {
+      name: options.name ?? 'Serveur de test',
+      tokenHash: hashToken(options.token),
+      dbRole: options.dbRole ?? null,
+      ...(options.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: options.maxConcurrentSessions } : {}),
+      sessionMemoryLimitMb: options.sessionMemoryLimitMb ?? null,
+    },
+  });
+  return { environmentId: account.environmentId!, spaceId: account.spaceId, userId: account.userId };
+}
+
 let projectCounter = 0;
-export async function seedProject(db: Database, input: { fullName: string; path: string; status?: 'cloning' | 'ready'; slug?: string; defaultBranch?: string }) {
+export async function seedProject(
+  db: Database,
+  input: { fullName: string; path: string; status?: 'cloning' | 'ready'; slug?: string; defaultBranch?: string; server?: TestServer },
+) {
   projectCounter += 1;
   const slug = input.slug ?? `p${Date.now().toString(36)}${projectCounter}`;
+  const server = input.server ?? (await defaultServer(db));
   const [row] = await db
     .insert(projects)
     .values({
+      spaceId: server.spaceId,
+      environmentId: server.environmentId,
       slug,
       name: input.fullName.split('/')[1] ?? slug,
       githubFullName: input.fullName,
@@ -141,8 +209,6 @@ export async function seedProject(db: Database, input: { fullName: string; path:
     .returning();
   return row!;
 }
-
-export const auth = { authorization: `Bearer ${TOKEN}` };
 
 export async function waitFor<T>(fn: () => Promise<T | null | undefined | false> | T | null | undefined | false, options: { timeoutMs?: number; intervalMs?: number; label?: string } = {}): Promise<T> {
   const deadline = Date.now() + (options.timeoutMs ?? 30_000);

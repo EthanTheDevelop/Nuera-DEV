@@ -10,20 +10,22 @@ import type {
   WorkspacePullRequest,
   WorktreeStatusView,
 } from '@/features/workspace/lib/contract';
-import type { CurrentUser } from '@/server/auth/session';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { createPullRequest, getGitAuthForRepo, listProtectedBranches } from '@/server/github';
-import { runner } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
+import { createPullRequest, getGitAuthForProject, listProtectedBranches } from '@/server/github';
+import { getGitIdentity } from '@/server/sessions';
+import type { RequestContext } from '@/server/tenancy/context';
+import { auditIn } from '@/server/tenancy/scope';
 import { assertSessionOfWorktree, githubHtmlUrl, requireWorktreeContext } from './access';
 import { readBranchStatus } from './data';
 
 /**
- * Git side of the Workspace (D05 `Modifications` / `Actions Git`, W4, W5, S2, S3). The runner runs
- * git in the worktree; the web mints the GitHub token (contents:write, this repository only) for
- * the push and calls the GitHub API for the pull request. Commit, push and pull request are
- * audited (`git.commit`, `git.push`, `github.pull_request`).
+ * Git side of the Workspace (D05 `Modifications` / `Actions Git`, W4, W5, S2, S3). The runner of
+ * the server holding the project runs git in the worktree; the web mints the GitHub token of the
+ * project's GitHub source (contents:write, this repository only) for the push and calls the GitHub
+ * API through that source for the pull request. Commits are authored with the account's Git
+ * identity (Paramètres, else the account). Commit, push and pull request are audited in the
+ * space (`git.commit`, `git.push`, `github.pull_request`).
  */
 
 export const GIT_AUDIT_ACTIONS = {
@@ -32,63 +34,62 @@ export const GIT_AUDIT_ACTIONS = {
   pullRequest: 'github.pull_request',
 } as const;
 
-export async function getChanges(worktreeId: string): Promise<ChangesResponse> {
-  await requireWorktreeContext(worktreeId);
-  return runner.worktreeChanges({ params: { worktreeId }, query: { against: 'head' } }, { timeoutMs: 20_000 });
+type WorkspaceCtx = Pick<RequestContext, 'user' | 'space' | 'environment'>;
+
+export async function getChanges(ctx: Pick<RequestContext, 'space'>, worktreeId: string): Promise<ChangesResponse> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  return scope.runner.worktreeChanges({ params: { worktreeId: scope.worktreeId }, query: { against: 'head' } }, { timeoutMs: 20_000 });
 }
 
-export async function getDiff(worktreeId: string, path: string, against: 'head' | 'staged' = 'head'): Promise<FileDiff> {
-  await requireWorktreeContext(worktreeId);
-  return runner.worktreeDiff({ params: { worktreeId }, query: { path, against } }, { timeoutMs: 20_000 });
+export async function getDiff(ctx: Pick<RequestContext, 'space'>, worktreeId: string, path: string, against: 'head' | 'staged' = 'head'): Promise<FileDiff> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  return scope.runner.worktreeDiff({ params: { worktreeId: scope.worktreeId }, query: { path, against } }, { timeoutMs: 20_000 });
 }
 
-export async function getWorktreeStatus(worktreeId: string): Promise<WorktreeStatusView> {
-  const { worktree, project } = await requireWorktreeContext(worktreeId);
+export async function getWorktreeStatus(ctx: Pick<RequestContext, 'space'>, worktreeId: string): Promise<WorktreeStatusView> {
+  const { scope, worktree, project } = await requireWorktreeContext(ctx, worktreeId);
   const [status, branch] = await Promise.all([
-    runner.worktreeStatus({ params: { worktreeId } }, { timeoutMs: 15_000 }),
-    readBranchStatus(worktreeId, worktree.baseBranch ?? project.defaultBranch),
+    scope.runner.worktreeStatus({ params: { worktreeId: scope.worktreeId } }, { timeoutMs: 15_000 }),
+    readBranchStatus(scope.runner, scope.worktreeId, worktree.baseBranch ?? project.defaultBranch),
   ]);
   return { status, branch };
 }
 
-export async function stagePaths(worktreeId: string, paths: string[]): Promise<{ status: GitStatus }> {
-  await requireWorktreeContext(worktreeId);
-  return runner.stagePaths({ params: { worktreeId }, body: { paths } });
+export async function stagePaths(ctx: Pick<RequestContext, 'space'>, worktreeId: string, paths: string[]): Promise<{ status: GitStatus }> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  return scope.runner.stagePaths({ params: { worktreeId: scope.worktreeId }, body: { paths } });
 }
 
-export async function unstagePaths(worktreeId: string, paths: string[]): Promise<{ status: GitStatus }> {
-  await requireWorktreeContext(worktreeId);
-  return runner.unstagePaths({ params: { worktreeId }, body: { paths } });
+export async function unstagePaths(ctx: Pick<RequestContext, 'space'>, worktreeId: string, paths: string[]): Promise<{ status: GitStatus }> {
+  const { scope } = await requireWorktreeContext(ctx, worktreeId);
+  return scope.runner.unstagePaths({ params: { worktreeId: scope.worktreeId }, body: { paths } });
 }
 
-/** W5 step 1: `git add -- <paths>` then `git commit` with the owner as author. */
-export async function commitChanges(
-  worktreeId: string,
-  input: CommitInput,
-  actor: Pick<CurrentUser, 'id' | 'name' | 'email'>,
-): Promise<CommitResultView> {
-  const { worktree, project } = await requireWorktreeContext(worktreeId);
-  await assertSessionOfWorktree(worktreeId, input.sessionId);
+/** W5 step 1: `git add -- <paths>` then `git commit` with the account's Git identity as author. */
+export async function commitChanges(ctx: WorkspaceCtx, worktreeId: string, input: CommitInput): Promise<CommitResultView> {
+  const { scope, worktree, project } = await requireWorktreeContext(ctx, worktreeId);
+  await assertSessionOfWorktree(scope.worktreeId, input.sessionId);
   const body = input.body?.trim() ? input.body.trim() : undefined;
-  const result = await runner.commit({
-    params: { worktreeId },
+  const author = (await getGitIdentity(ctx.user)) ?? { name: ctx.user.name, email: ctx.user.email };
+  const result = await scope.runner.commit({
+    params: { worktreeId: scope.worktreeId },
     body: {
       message: input.message,
       ...(body ? { body } : {}),
-      author: { name: actor.name, email: actor.email },
+      author,
       paths: input.paths,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      actorUserId: actor.id,
+      actorUserId: ctx.user.id,
     },
   });
-  await audit({
+  await auditIn(ctx, {
     action: GIT_AUDIT_ACTIONS.commit,
     summary: `commit ${result.shortSha} « ${input.message} » · ${result.branch ?? worktree.branch} · ${project.name}`,
     targetType: 'project',
     targetId: project.id,
-    actorUserId: actor.id,
+    environmentId: scope.environmentId,
     metadata: {
-      worktreeId,
+      worktreeId: scope.worktreeId,
       sessionId: input.sessionId ?? null,
       sha: result.sha,
       files: result.filesCommitted,
@@ -107,43 +108,39 @@ export async function commitChanges(
 }
 
 /** W5 step 2: `git push` of the worktree branch to GitHub (never the default branch). */
-export async function pushBranch(
-  worktreeId: string,
-  input: { sessionId?: string | undefined },
-  actor: Pick<CurrentUser, 'id'>,
-): Promise<PushResultView> {
-  const { worktree, project } = await requireWorktreeContext(worktreeId);
-  await assertSessionOfWorktree(worktreeId, input.sessionId);
+export async function pushBranch(ctx: WorkspaceCtx, worktreeId: string, input: { sessionId?: string | undefined }): Promise<PushResultView> {
+  const { scope, worktree, project } = await requireWorktreeContext(ctx, worktreeId);
+  await assertSessionOfWorktree(scope.worktreeId, input.sessionId);
   if (worktree.branch === project.defaultBranch) {
     throw new AppError('CONFLICT', `${project.defaultBranch} est la branche par défaut : elle évolue par pull request, jamais par un push direct.`, {
       untouched: "Rien n'a été envoyé sur GitHub.",
     });
   }
-  const protectedBranches = await listProtectedBranches(project.githubFullName, project.defaultBranch, { maxAgeMs: 0 });
+  const protectedBranches = await listProtectedBranches(project, project.defaultBranch, { maxAgeMs: 0 });
   if (worktree.branch && protectedBranches.includes(worktree.branch)) {
     throw new AppError('CONFLICT', `${worktree.branch} est protégée sur GitHub : elle évolue par pull request, jamais par un push direct.`, {
       untouched: "Rien n'a été envoyé sur GitHub.",
     });
   }
-  const { extraHeader } = await getGitAuthForRepo(project.githubFullName, 'write');
-  const result = await runner.push({
-    params: { worktreeId },
+  const { extraHeader } = await getGitAuthForProject(project, 'write');
+  const result = await scope.runner.push({
+    params: { worktreeId: scope.worktreeId },
     body: {
       extraHeader,
       setUpstream: true,
       protectedBranches,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      actorUserId: actor.id,
+      actorUserId: ctx.user.id,
     },
   });
-  await audit({
+  await auditIn(ctx, {
     action: GIT_AUDIT_ACTIONS.push,
     summary: `push de ${result.branch} vers origin/${result.remoteBranch} · ${project.name}`,
     targetType: 'project',
     targetId: project.id,
-    actorUserId: actor.id,
+    environmentId: scope.environmentId,
     metadata: {
-      worktreeId,
+      worktreeId: scope.worktreeId,
       sessionId: input.sessionId ?? null,
       headSha: result.headSha,
       upToDate: result.upToDate,
@@ -160,18 +157,13 @@ export async function pushBranch(
   };
 }
 
-/** W5 step 3: pull request from the worktree branch (GitHub API, token limited to pull_requests:write). */
-export async function openPullRequest(
-  worktreeId: string,
-  input: PullRequestInput,
-  actor: Pick<CurrentUser, 'id'>,
-): Promise<WorkspacePullRequest> {
-  const { worktree, project } = await requireWorktreeContext(worktreeId);
-  await assertSessionOfWorktree(worktreeId, input.sessionId);
+/** W5 step 3: pull request from the worktree branch (GitHub source of the project, pull_requests:write). */
+export async function openPullRequest(ctx: WorkspaceCtx, worktreeId: string, input: PullRequestInput): Promise<WorkspacePullRequest> {
+  const { scope, worktree, project } = await requireWorktreeContext(ctx, worktreeId);
+  await assertSessionOfWorktree(scope.worktreeId, input.sessionId);
   const base = input.base ?? worktree.baseBranch ?? project.defaultBranch;
   const body = input.body?.trim() ? input.body.trim() : undefined;
-  const pr = await createPullRequest({
-    fullName: project.githubFullName,
+  const pr = await createPullRequest(project, {
     title: input.title,
     head: worktree.branch,
     base,
@@ -196,13 +188,20 @@ export async function openPullRequest(
       target: [pullRequests.projectId, pullRequests.number],
       set: { title: pr.title, url: pr.url, state: pr.state, draft: pr.draft, lastSyncedAt: new Date() },
     });
-  await audit({
+  await auditIn(ctx, {
     action: GIT_AUDIT_ACTIONS.pullRequest,
     summary: `pull request #${pr.number} ouverte : « ${pr.title} » · ${pr.headRef} → ${pr.baseRef} · ${project.name}`,
     targetType: 'project',
     targetId: project.id,
-    actorUserId: actor.id,
-    metadata: { worktreeId, sessionId: input.sessionId ?? null, number: pr.number, url: pr.url, draft: pr.draft, headSha: shortSha(pr.headSha) },
+    environmentId: scope.environmentId,
+    metadata: {
+      worktreeId: scope.worktreeId,
+      sessionId: input.sessionId ?? null,
+      number: pr.number,
+      url: pr.url,
+      draft: pr.draft,
+      headSha: shortSha(pr.headSha),
+    },
   });
   return {
     number: pr.number,

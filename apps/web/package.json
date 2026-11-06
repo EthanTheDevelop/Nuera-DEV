@@ -9,7 +9,9 @@
     "start": "next start --port 3000",
     "typecheck": "next typegen && tsc --noEmit -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "test:harness": "vitest run --config e2e/harness/vitest.config.ts",
+    "e2e:pile": "node e2e/harness/stack.mjs"
   },
   "dependencies": {
     "@better-auth/passkey": "1.7.17",

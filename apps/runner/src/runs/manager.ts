@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { commandRuns, type Database } from '@nuera/db';
 import { formatTestCounts } from '@nuera/shared/events';
-import type { RunDto, TestReport } from '@nuera/shared/runner';
+import type { GitIdentity, RunDto, TestReport } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
-import { getProject } from '../db/lookups';
+import { claudeEnv, gitIdentityEnv } from '../claude/env';
+import { getProject, getRunRow } from '../db/lookups';
+import type { EnvironmentScope } from '../environment';
 import { GLOBAL, runChannel, type EventBus } from '../events/bus';
 import { RunnerError } from '../errors';
 import type { GitService } from '../git/service';
@@ -54,7 +56,16 @@ export class RunManager {
   private readonly live = new Map<string, LiveRun>();
 
   constructor(
-    private readonly deps: { db: Database; bus: EventBus; git: GitService; terminals: TerminalManager; logger: Logger },
+    private readonly deps: {
+      db: Database;
+      environment: EnvironmentScope;
+      bus: EventBus;
+      git: GitService;
+      terminals: TerminalManager;
+      logger: Logger;
+      /** NUERA_CLAUDE_CONFIG_DIR: the server's Claude config, for a `claude` started by a command. */
+      claudeConfigDir?: string | null;
+    },
   ) {}
 
   get liveCount(): number {
@@ -94,9 +105,14 @@ export class RunManager {
     env: Record<string, string>;
     cols: number;
     rows: number;
+    /** Account starting the command (`command_runs.actor_user_id`). */
+    actorUserId?: string | null;
+    /** Author and committer of the commits made by the command (trusted GIT_AUTHOR_* / GIT_COMMITTER_*). */
+    gitIdentity?: GitIdentity | null;
   }): Promise<RunDto> {
     if (this.live.size >= MAX_LIVE_RUNS) throw new RunnerError('CONFLICT', 'Trop de commandes en cours sur le serveur.', { reason: 'RUN_LIMIT' });
-    const project = await getProject(this.deps.db, input.projectId);
+    const project = await getProject(this.deps.db, this.deps.environment.id, input.projectId);
+    await this.deps.environment.assertCanStartWork();
     const { worktree, cwd } = await this.deps.git.resolveProjectWorktree(project.id, input.worktreeId);
     const configured = (project.commands ?? {}) as Record<string, string | null | undefined>;
     const command = input.command ?? (input.kind !== 'custom' ? configured[input.kind] ?? null : null);
@@ -108,10 +124,25 @@ export class RunManager {
     const id = randomUUID();
     const [row] = await this.deps.db
       .insert(commandRuns)
-      .values({ id, projectId: project.id, worktreeId: worktree.id, kind: input.kind, command, status: 'running' })
+      .values({
+        id,
+        projectId: project.id,
+        environmentId: project.environmentId,
+        worktreeId: worktree.id,
+        kind: input.kind,
+        command,
+        status: 'running',
+        actorUserId: input.actorUserId ?? null,
+      })
       .returning();
     const shell = platformShellForPty(command);
-    const env = terminalEnv({ ...buildChildEnv(input.env, { policy: 'project', source: {} }), ...(input.kind === 'test' ? { CI: '1' } : {}) });
+    const env = terminalEnv({
+      ...buildChildEnv(input.env, { policy: 'project', source: {} }),
+      ...(input.kind === 'test' ? { CI: '1' } : {}),
+      // Trusted, after the project variables (where the GIT_ prefix is refused anyway).
+      ...gitIdentityEnv(input.gitIdentity),
+      ...claudeEnv(this.deps.claudeConfigDir ?? null),
+    });
     let terminal: Terminal;
     try {
       terminal = this.deps.terminals.spawn({
@@ -226,8 +257,7 @@ export class RunManager {
   async get(runId: string): Promise<RunDto> {
     const live = this.live.get(runId);
     if (live) return this.dto(live.row, live.tests);
-    const [row] = await this.deps.db.select().from(commandRuns).where(eq(commandRuns.id, runId)).limit(1);
-    if (!row) throw new RunnerError('NOT_FOUND', 'Lancement introuvable.');
+    const row = await getRunRow(this.deps.db, this.deps.environment.id, runId);
     return this.dto(row, row.details?.report ?? null);
   }
 
@@ -235,7 +265,11 @@ export class RunManager {
   async outputTail(runId: string): Promise<string> {
     const live = this.live.get(runId);
     if (live) return live.output;
-    const [row] = await this.deps.db.select({ outputTail: commandRuns.outputTail }).from(commandRuns).where(eq(commandRuns.id, runId)).limit(1);
+    const [row] = await this.deps.db
+      .select({ outputTail: commandRuns.outputTail })
+      .from(commandRuns)
+      .where(and(eq(commandRuns.id, runId), eq(commandRuns.environmentId, this.deps.environment.id)))
+      .limit(1);
     return row?.outputTail ?? '';
   }
 
@@ -251,12 +285,12 @@ export class RunManager {
     return this.get(runId);
   }
 
-  /** Runs left `running` by a previous runner process. */
+  /** Runs left `running` by a previous runner process of THIS server. */
   async markInterrupted(): Promise<number> {
     const rows = await this.deps.db
       .update(commandRuns)
       .set({ status: 'stopped', finishedAt: new Date(), summary: 'Interrompue par un redémarrage du runner' })
-      .where(inArray(commandRuns.status, ['running']))
+      .where(and(eq(commandRuns.environmentId, this.deps.environment.id), inArray(commandRuns.status, ['running'])))
       .returning({ id: commandRuns.id });
     return rows.length;
   }

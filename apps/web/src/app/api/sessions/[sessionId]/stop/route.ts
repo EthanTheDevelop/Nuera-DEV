@@ -17,5 +17,5 @@ export const POST = apiRoute({
   body: bodySchema,
   maxBodyBytes: 1024,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: async ({ params, body, user }) => stopSession(params.sessionId, user, { force: body?.force ?? false }),
+  handler: async ({ params, body, ctx }) => stopSession(ctx, params.sessionId, { force: body?.force ?? false }),
 });

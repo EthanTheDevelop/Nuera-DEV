@@ -11,6 +11,7 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
   let env: TestEnv;
   let projectId: string;
   let sessionId: string;
+  let claudeConfig: string;
 
   const inject = (method: 'GET' | 'POST', url: string, payload?: unknown) =>
     env.runner.api.inject({ method, url, headers: { ...auth, ...(payload !== undefined ? { 'content-type': 'application/json' } : {}) }, ...(payload !== undefined ? { payload: JSON.stringify(payload) } : {}) });
@@ -20,9 +21,9 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
   beforeAll(async () => {
     const t0 = Date.now();
     const step = (label: string) => console.info(`[sessions.test] ${label} : ${Math.round((Date.now() - t0) / 1000)} s`);
-    const claudeConfig = tmpDir('claude-config');
+    claudeConfig = tmpDir('claude-config');
     mkdirSync(path.join(claudeConfig, 'projects'), { recursive: true });
-    env = await startTestRunner({}, { CLAUDE_CONFIG_DIR: claudeConfig });
+    env = await startTestRunner({ claudeConfigDir: claudeConfig });
     step('runner démarré');
     const remote = createBareRemote(env.dirs.remotes, 'nuera-studio/app');
     step('dépôt distant créé');
@@ -42,7 +43,7 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
       projectId,
       title: 'Module CRM · pipeline',
       worktree: { mode: 'new', branch: 'feature/crm-core' },
-      launch: { permissionWaitSeconds: 60, denyRules: ['mcp__coolify__deploy'] },
+      launch: { permissionWaitSeconds: 60, denyRules: ['mcp__coolify__deploy'], gitIdentity: { name: 'Camille Martin', email: 'camille@example.test' } },
     });
     expect(res.statusCode).toBe(200);
     const dto = res.json() as SessionDto;
@@ -54,6 +55,9 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
     };
     expect(Object.keys(settings.hooks)).toContain('PermissionRequest');
     expect(settings.permissions.deny).toEqual(['mcp__coolify__deploy']);
+    // Launch options kept with the session (resume after a restart): the Git identity included.
+    const launch = JSON.parse(readFileSync(path.join(env.dirs.data, 'sessions', sessionId, 'launch.json'), 'utf8')) as Record<string, unknown>;
+    expect(launch).toMatchObject({ permissionWaitSeconds: 60, gitIdentity: { name: 'Camille Martin', email: 'camille@example.test' } });
   }, 600_000);
 
   it('runs a full turn: instruction, plan, tools, permission decided in Nuera, final message', async () => {
@@ -129,6 +133,15 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
       return s.status === 'waiting_input' && s.lastInstruction ? s : null;
     }, { timeoutMs: 420_000, intervalMs: 500, label: 'end of turn' });
     expect(done.planTotal).toBe(3);
+    // The CLI got the runner's Claude config dir and the trusted Git identity of the session.
+    const received = JSON.parse(readFileSync(path.join(claudeConfig, 'nuera-fake-env', `${sessionId}.json`), 'utf8')) as Record<string, string | null>;
+    expect(received).toEqual({
+      CLAUDE_CONFIG_DIR: claudeConfig,
+      GIT_AUTHOR_NAME: 'Camille Martin',
+      GIT_AUTHOR_EMAIL: 'camille@example.test',
+      GIT_COMMITTER_NAME: 'Camille Martin',
+      GIT_COMMITTER_EMAIL: 'camille@example.test',
+    });
     // The conversation id is kept in the database (not only in launch.json).
     const [stored] = await env.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(eq(sessions.id, sessionId));
     expect(stored!.claudeSessionId).toBe(sessionId);

@@ -10,5 +10,5 @@ export const POST = apiRoute({
   params: worktreeParamsSchema,
   body: pathsInputSchema,
   rateLimit: { limit: 240, windowMs: 10 * 60_000 },
-  handler: ({ params, body }) => withWorkspaceErrors(() => unstagePaths(params.worktreeId, body.paths)),
+  handler: ({ params, body, ctx }) => withWorkspaceErrors(() => unstagePaths(ctx, params.worktreeId, body.paths)),
 });

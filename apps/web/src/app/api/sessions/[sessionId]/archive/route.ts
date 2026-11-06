@@ -8,5 +8,5 @@ export const runtime = 'nodejs';
 export const POST = apiRoute({
   params: sessionIdParamsSchema,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: async ({ params, user }) => archiveSession(params.sessionId, user),
+  handler: async ({ params, ctx }) => archiveSession(ctx, params.sessionId),
 });

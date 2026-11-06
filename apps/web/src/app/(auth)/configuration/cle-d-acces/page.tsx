@@ -18,11 +18,11 @@ export default async function CleDAccesPage() {
   const device = describeDevice((await headers()).get('user-agent'));
   return (
     <AuthCard
-      header={<SetupProgress current={4} />}
+      header={<SetupProgress current={4} activation={user.role !== 'owner'} />}
       title="Clé d'accès (facultatif)"
       description="Sur cet appareil, une clé d'accès (Face ID, Touch ID, Windows Hello ou clé de sécurité) remplace le mot de passe et le code en une seule étape. Vous pourrez en ajouter plus tard depuis Paramètres."
     >
-      <PasskeyStep suggestedName={device.label} />
+      <PasskeyStep suggestedName={device.label} activation={user.role !== 'owner'} />
     </AuthCard>
   );
 }

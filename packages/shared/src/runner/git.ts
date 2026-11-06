@@ -308,6 +308,13 @@ export const RemoveWorktreeQuerySchema = z.object({
     .union([z.boolean(), z.enum(['1', '0', 'true', 'false'])])
     .optional()
     .transform((v) => v === true || v === '1' || v === 'true'),
+  /** Account removing the worktree (recorded on the operation). Optional for older webs. */
+  actorUserId: z.string().trim().min(1).max(128).optional(),
+});
+/** Query of `DELETE /v1/repos/:projectId/clone`. */
+export const RemoveCloneQuerySchema = z.object({
+  /** Account removing the clone (recorded on the operation). Optional for older webs. */
+  actorUserId: z.string().trim().min(1).max(128).optional(),
 });
 export const RemoveWorktreeResultSchema = z.object({
   operationId: UuidSchema.nullable(),

@@ -14,5 +14,5 @@ export const POST = apiRoute({
   params: z.object({ projectId: z.uuid() }),
   body: checkoutInputSchema,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: ({ params: { projectId }, body, user }) => withProjectErrors(() => checkoutProjectBranch(projectId, body, user)),
+  handler: ({ params: { projectId }, body, ctx }) => withProjectErrors(() => checkoutProjectBranch(ctx, projectId, body)),
 });

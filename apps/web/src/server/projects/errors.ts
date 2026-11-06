@@ -12,20 +12,19 @@ import type { ProjectErrorBody } from './types';
  * is forwarded (paths, counts, branch names — never a secret).
  */
 
-/** AppError carrying a reason/data pair produced by the web itself (destination checks…). */
+/**
+ * AppError carrying a reason/data pair produced by the web itself (destination checks…). Its
+ * `data` is forwarded to the browser through the allow-list below (never a secret, and only ever
+ * built from rows of the request's space).
+ */
 export class ProjectError extends AppError {
-  readonly reason?: string;
-  readonly data?: Record<string, unknown>;
   constructor(
     code: ConstructorParameters<typeof AppError>[0],
     message: string,
     options: { reason?: string; data?: Record<string, unknown>; untouched?: string; detail?: string; raw?: string; cause?: unknown } = {},
   ) {
-    const { reason, data, ...rest } = options;
-    super(code, message, rest);
+    super(code, message, options);
     this.name = 'ProjectError';
-    if (reason !== undefined) this.reason = reason;
-    if (data !== undefined) this.data = data;
   }
 }
 
@@ -66,9 +65,9 @@ function safeData(data: Record<string, unknown> | undefined): Record<string, unk
 }
 
 export function projectErrorBody(error: unknown): ProjectErrorBody {
+  // `reason` of any AppError (NO_ENVIRONMENT, ENVIRONMENT_DISABLED…) is kept by toErrorBody.
   const body = toErrorBody(error) as ProjectErrorBody;
   if (error instanceof RunnerError || error instanceof ProjectError) {
-    if (error.reason) body.error.reason = error.reason;
     const data = safeData(error.data);
     if (data) body.error.data = data;
   }

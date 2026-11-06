@@ -1,0 +1,58 @@
+# Nuera Dev — serveur SUPPLÉMENTAIRE (environnement d'exécution d'un compte) : une ressource Coolify « Docker
+# Compose » par serveur, construite depuis ce fichier. Procédure : docs/DEPLOY.md §13.
+# - Ce fichier n'est PAS celui du serveur par défaut (« VPS-3 ») : ce dernier reste le service `runner` de
+#   deploy/docker-compose.yml, avec ses volumes. Ne jamais déployer ce fichier pour lui.
+# - Un seul service, `environment-runner` (jamais `runner` : sur le réseau prédéfini de Coolify, deux services
+#   `runner` se partageraient ce nom). Pas de `migrate` : seule la ressource principale migre la base.
+# - Option Coolify « Connect to predefined network » activée (base de données et `web` de la ressource principale),
+#   aucun domaine, aucun port publié : `web` le joint par le nom de son conteneur, jeton exigé sur chaque route.
+# - Jeton et DSN restreint : affichés une seule fois par Administration › Serveurs. Ce conteneur ne reçoit jamais le
+#   DSN complet de l'instance (DATABASE_URL de la ressource principale).
+# - Volumes propres au serveur, nommés d'après NUERA_SERVER_SLUG : unique et jamais réutilisé (un slug déjà servi
+#   remonterait les clones et la connexion Claude d'une autre personne). Coolify peut renommer les volumes qu'il gère :
+#   relever les noms réels après le premier déploiement (docs/DEPLOY.md §13).
+
+services:
+  environment-runner:
+    build:
+      context: ..
+      dockerfile: deploy/docker/runner.Dockerfile
+    # No `image:` tag on purpose: a tag shared with the main resource (nuera-dev-runner) would be overwritten by
+    # each resource's build.
+    environment:
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?RUNNER_TOKEN requis}
+      RUNNER_DATABASE_URL: ${RUNNER_DATABASE_URL:?RUNNER_DATABASE_URL requis}
+      # The same restricted DSN under the usual name: the instance DSN never enters this container.
+      DATABASE_URL: ${RUNNER_DATABASE_URL:?RUNNER_DATABASE_URL requis}
+      # Public URL (links, notifications) and internal URL of the main resource's web (/api/internal/* callbacks).
+      APP_URL: ${APP_URL:?APP_URL requis}
+      NUERA_WEB_INTERNAL_URL: ${NUERA_WEB_INTERNAL_URL:?NUERA_WEB_INTERNAL_URL requis}
+      # Optional: id of this server (Administration › Serveurs); the runner refuses to start if it does not match
+      # the server of RUNNER_TOKEN. Empty = not checked.
+      NUERA_ENVIRONMENT_ID: ${NUERA_ENVIRONMENT_ID:-}
+      NUERA_DB_POOL_MAX: ${NUERA_DB_POOL_MAX:-5}
+      NUERA_SESSION_BACKEND: tmux
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - server-projects:/srv/dev
+      - server-data:/data
+      - server-home:/home/nuera
+    # Same limits as the default server (deploy/docker-compose.yml); healthcheck: the image's (runner.Dockerfile).
+    deploy:
+      resources:
+        limits:
+          cpus: "${RUNNER_CPUS:-6}"
+          memory: ${RUNNER_MEMORY:-12g}
+          pids: 4096
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+# Clones and worktrees, session runtime, Claude Code CLI and the login of the person this server belongs to.
+volumes:
+  server-projects:
+    name: nuera-server-${NUERA_SERVER_SLUG:?NUERA_SERVER_SLUG requis}-projects
+  server-data:
+    name: nuera-server-${NUERA_SERVER_SLUG:?NUERA_SERVER_SLUG requis}-data
+  server-home:
+    name: nuera-server-${NUERA_SERVER_SLUG:?NUERA_SERVER_SLUG requis}-home

@@ -689,3 +689,52 @@ export const NOTES = {
 };
 
 export { GITIGNORE };
+
+// ---------------------------------------------------------------------------------------------
+// Portable delay (`node scripts/attendre.js 15 && npm ci`): cmd.exe has no `sleep`
+// ---------------------------------------------------------------------------------------------
+
+export const ATTENDRE = l(
+  "const secondes = Number(process.argv[2] ?? '1');",
+  "if (!Number.isFinite(secondes) || secondes < 0) throw new Error('Durée invalide : un nombre de secondes est attendu.');",
+  'setTimeout(() => undefined, secondes * 1000);',
+);
+
+// ---------------------------------------------------------------------------------------------
+// hugo-test/carnet-chantier — personal account of the second test account (member « Hugo Martin »)
+// ---------------------------------------------------------------------------------------------
+
+export const CARNET = {
+  packageJson: packageJson('carnet-chantier', '0.2.0', 'Carnet de chantier : interventions, durées et matériaux.', { build: 'node scripts/build.js', ...TEST_SCRIPTS }),
+  packageLock: packageLock('carnet-chantier', '0.2.0'),
+  readme: l('# Carnet de chantier', '', 'Suivi des interventions sur les chantiers : durée, matériaux, remarques.'),
+  claudeMd: l('# Carnet de chantier — consignes pour Claude', '', '- Node 22, modules ES, aucune dépendance.', '- Durées en minutes, affichées « 1 h 30 ».', '- Un test par fonction exportée.'),
+  durees: l(
+    'export function formaterDuree(minutes) {',
+    '  const heures = Math.floor(minutes / 60);',
+    '  const reste = minutes % 60;',
+    "  if (heures === 0) return `${reste} min`;",
+    "  return reste === 0 ? `${heures} h` : `${heures} h ${String(reste).padStart(2, '0')}`;",
+    '}',
+    '',
+    'export function totalMinutes(interventions) {',
+    '  return interventions.reduce((total, item) => total + item.minutes, 0);',
+    '}',
+  ),
+  dureesTest: l(
+    "import assert from 'node:assert/strict';",
+    "import { test } from 'node:test';",
+    "import { formaterDuree, totalMinutes } from '../src/durees.js';",
+    '',
+    "test('formate les heures et les minutes', () => {",
+    "  assert.equal(formaterDuree(90), '1 h 30');",
+    "  assert.equal(formaterDuree(45), '45 min');",
+    "  assert.equal(formaterDuree(120), '2 h');",
+    '});',
+    '',
+    "test('additionne les interventions', () => {",
+    '  assert.equal(totalMinutes([{ minutes: 30 }, { minutes: 75 }]), 105);',
+    '});',
+  ),
+  build: buildScript('carnet-chantier.js'),
+};

@@ -7,6 +7,8 @@ import {
   claudeBadge,
   claudeNote,
   claudePill,
+  firstSteps,
+  firstStepsVisible,
   lowerFirst,
   pendingAlert,
   pickQuickResume,
@@ -165,5 +167,64 @@ describe('Accueil · mises à jour en direct', () => {
     const next = applySessionStatus([session({ status: 'waiting_permission', pendingPermission: pending })], statusEvent());
     expect(next?.[0]?.pendingPermission).toBeNull();
     expect(next?.[0]?.status).toBe('running');
+  });
+});
+
+describe('premiers pas', () => {
+  const server = { name: 'VPS-3', availability: 'available' as const };
+  const states = (steps: ReturnType<typeof firstSteps>) => steps.map((step) => [step.id, step.state]);
+
+  it('se masque quand Claude Code, GitHub et un projet sont en place', () => {
+    const steps = firstSteps({ server, claudeState: 'connected', onboarding: { github: true, project: true } });
+    expect(states(steps)).toEqual([
+      ['claude', 'done'],
+      ['github', 'done'],
+      ['project', 'done'],
+    ]);
+    expect(firstStepsVisible(steps)).toBe(false);
+  });
+
+  it('propose seulement ce qui reste vraiment à faire, avec son action', () => {
+    const steps = firstSteps({ server, claudeState: 'disconnected', onboarding: { github: false, project: false } });
+    expect(states(steps)).toEqual([
+      ['claude', 'todo'],
+      ['github', 'todo'],
+      ['project', 'todo'],
+    ]);
+    expect(steps.map((step) => step.action?.label)).toEqual(['Se connecter dans un terminal', 'Ouvrir Intégrations', 'Ajouter un projet']);
+    expect(steps[2]?.text).toBe('Clonez un dépôt GitHub sur VPS-3, prêt pour Claude Code.');
+    expect(firstStepsVisible(steps)).toBe(true);
+  });
+
+  it("n'invente rien quand un état n'a pas pu être lu", () => {
+    const steps = firstSteps({ server: { name: 'VPS-3', availability: 'unavailable' }, claudeState: 'unknown', onboarding: { github: null, project: true } });
+    expect(states(steps)).toEqual([
+      ['claude', 'unknown'],
+      ['github', 'unknown'],
+      ['project', 'done'],
+    ]);
+    expect(steps.every((step) => step.action === null)).toBe(true);
+    expect(firstStepsVisible(steps)).toBe(false);
+  });
+
+  it("reste masquée pour un espace qui a déjà travaillé, même si le CLI se déconnecte (T6 s'en charge)", () => {
+    const onboarding = { github: true, project: true, session: true };
+    const steps = firstSteps({ server, claudeState: 'disconnected', onboarding });
+    expect(states(steps)[0]).toEqual(['claude', 'todo']);
+    expect(firstStepsVisible(steps, onboarding)).toBe(false);
+    // Never a session yet: the step is still offered.
+    expect(firstStepsVisible(steps, { ...onboarding, session: false })).toBe(true);
+  });
+
+  it('sans serveur, attend un administrateur pour Claude Code et le premier projet', () => {
+    const steps = firstSteps({ server: null, claudeState: 'unknown', onboarding: { github: true, project: false } });
+    expect(states(steps)).toEqual([
+      ['claude', 'blocked'],
+      ['github', 'done'],
+      ['project', 'blocked'],
+    ]);
+    expect(steps[0]?.text).toBe("Disponible dès qu'un administrateur vous attribue un serveur.");
+    expect(steps.filter((step) => step.state === 'blocked').every((step) => step.action === null)).toBe(true);
+    expect(firstStepsVisible(steps)).toBe(true);
   });
 });

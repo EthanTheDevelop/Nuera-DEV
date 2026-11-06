@@ -50,6 +50,7 @@ import {
   worktreeHint,
   type NewSessionFormState,
 } from './lib/form';
+import { NO_SERVER_TEXT, NO_SERVER_TITLE, serverLabel } from './lib/view';
 
 export interface NewSessionDialogProps {
   open: boolean;
@@ -107,7 +108,7 @@ export function NewSessionDialog({ open, onOpenChange, defaultProjectId, onCreat
   // While closed, follow the viewport (so the first opening uses the right layout).
   const current = open ? layout : isDesktop ? 'dialog' : 'sheet';
 
-  const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+  const serverName = serverLabel(useOptionalShellData()?.server.name);
   const [busy, setBusy] = useState(false);
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const handleOpenChange = useCallback(
@@ -181,7 +182,7 @@ const EMPTY_FORM: NewSessionFormState = {
   instruction: '',
 };
 
-function NewSessionForm({ serverName, layout, defaultProjectId, onBusyChange, onCancel, onClose, onCreated }: NewSessionFormProps) {
+function NewSessionForm({ serverName: shellServerName, layout, defaultProjectId, onBusyChange, onCancel, onClose, onCreated }: NewSessionFormProps) {
   const router = useRouter();
   const formId = useId();
   const [options, setOptions] = useState<Load<NewSessionOptions>>({ state: 'loading' });
@@ -193,6 +194,8 @@ function NewSessionForm({ serverName, layout, defaultProjectId, onBusyChange, on
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [created, setCreated] = useState<{ result: CreateSessionResult; retrying: boolean; error: Failure } | null>(null);
+  // The server of the space as the options read it (the shell's until they arrive).
+  const serverName = serverLabel(options.state === 'ready' ? options.data.environment?.name : null, shellServerName);
 
   useEffect(() => onBusyChange(submitting), [submitting, onBusyChange]);
 
@@ -286,6 +289,7 @@ function NewSessionForm({ serverName, layout, defaultProjectId, onBusyChange, on
   const capacity = options.state === 'ready' ? options.data.capacity : null;
   const capacityFull = capacity ? capacity.active >= capacity.max : false;
   const runnerDown = options.state === 'ready' && options.data.runnerUnavailable;
+  const noServer = options.state === 'ready' && options.data.environment === null;
   const blockBypass = options.state === 'ready' ? options.data.defaults.blockBypassPermissions : true;
 
   const errors = {
@@ -303,11 +307,13 @@ function NewSessionForm({ serverName, layout, defaultProjectId, onBusyChange, on
     title: form.title.length > 200 ? '200 caractères au maximum.' : null,
   };
   const hasErrors = Object.values(errors).some(Boolean);
-  const blockedReason = runnerDown
-    ? `${serverName} ne répond pas : impossible de créer une session pour le moment.`
-    : capacityFull && capacity
-      ? capacityFullReason(capacity.active, capacity.max)
-      : null;
+  const blockedReason = noServer
+    ? NO_SERVER_TEXT
+    : runnerDown
+      ? `${serverName} ne répond pas : impossible de créer une session pour le moment.`
+      : capacityFull && capacity
+        ? capacityFullReason(capacity.active, capacity.max)
+        : null;
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -362,6 +368,13 @@ function NewSessionForm({ serverName, layout, defaultProjectId, onBusyChange, on
         onRetry={() => void loadOptions()}
         retryLabel="Réessayer"
       />
+    );
+  }
+  if (noServer) {
+    return (
+      <EmptyState icon="server" title={NO_SERVER_TITLE} variant="plain">
+        {NO_SERVER_TEXT}
+      </EmptyState>
     );
   }
   if (options.data.projects.length === 0) {

@@ -5,12 +5,13 @@ import { z } from 'zod';
 import { requireUser } from '@/server/auth/session';
 import { markAllNotificationsRead, markNotificationsRead } from '@/server/notifications';
 import { assertSameOriginHeaders } from '@/server/security/origin';
-import { updateAppSettings } from '@/server/settings';
+import { updateUserPreferences } from '@/server/settings';
 import { THEME_COOKIE, THEME_COOKIE_MAX_AGE, THEME_PREFERENCES, type ThemePreference } from '@/lib/theme';
 
 /**
- * Server actions of the shell. Each one re-checks the session (requireUser) and the Origin of the
- * request (CSRF, same rule as every mutation — Next's own server-action check is only a second layer).
+ * Server actions of the shell, always for the signed-in account. Each one re-checks the session
+ * (requireUser) and the Origin of the request (CSRF, same rule as every mutation — Next's own
+ * server-action check is only a second layer).
  */
 
 async function guard() {
@@ -21,11 +22,14 @@ async function guard() {
 
 const themeSchema = z.enum(THEME_PREFERENCES);
 
-/** Saves the theme preference (app_settings.theme, audited by updateAppSettings) and its cookie mirror. */
+/**
+ * Saves the account's theme (user_preferences.theme, audited by updateUserPreferences) and its cookie
+ * mirror (used by the signed-out pages of this browser).
+ */
 export async function setThemePreferenceAction(preference: ThemePreference): Promise<{ ok: true; theme: ThemePreference }> {
   const user = await guard();
   const theme = themeSchema.parse(preference);
-  await updateAppSettings({ theme }, { actorUserId: user.id });
+  await updateUserPreferences(user.id, { theme });
   const jar = await cookies();
   jar.set(THEME_COOKIE, theme, {
     path: '/',
@@ -39,15 +43,19 @@ export async function setThemePreferenceAction(preference: ThemePreference): Pro
 
 const idsSchema = z.array(z.uuid()).min(1).max(100);
 
-/** Marks notifications as read (bell panel: opening a notification, « Tout marquer comme lu »). */
+/**
+ * Marks notifications of the signed-in account as read (bell panel: opening a notification). Ids of
+ * another account's notifications are ignored (not counted, nothing written).
+ */
 export async function markNotificationsReadAction(ids: string[]): Promise<{ updated: number }> {
-  await guard();
+  const user = await guard();
   const parsed = idsSchema.safeParse(ids);
   if (!parsed.success) return { updated: 0 };
-  return { updated: await markNotificationsRead(parsed.data) };
+  return { updated: await markNotificationsRead(user.id, parsed.data) };
 }
 
+/** « Tout marquer comme lu »: every unread notification of the signed-in account. */
 export async function markAllNotificationsReadAction(): Promise<{ updated: number }> {
-  await guard();
-  return { updated: await markAllNotificationsRead() };
+  const user = await guard();
+  return { updated: await markAllNotificationsRead(user.id) };
 }

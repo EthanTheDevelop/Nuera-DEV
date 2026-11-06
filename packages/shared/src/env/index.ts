@@ -7,6 +7,10 @@
  *   isDeniedEnvName('GITHUB_TOKEN')            // true  — never inherited, never in a session env
  *   isRejectedSessionEnvName('PATH')           // true  — a session env may not set it
  *   isDeniedProjectEnvName('DATABASE_URL')     // false — a project may define its own
+ *
+ * The lists are the same for the runner of every server. What the runner must set itself
+ * (GIT_AUTHOR_* / GIT_COMMITTER_* from `gitIdentity`, CLAUDE_CONFIG_DIR from NUERA_CLAUDE_CONFIG_DIR,
+ * NUERA_HOOK_*) is injected as trusted values, never accepted from a session env.
  */
 
 /** Never passed to a child, whatever the allow-list says (exact names, compared in upper case too). */
@@ -23,10 +27,12 @@ export const DENIED_ENV_NAMES: ReadonlySet<string> = new Set([
   'DISABLE_GROWTHBOOK',
   'RUNNER_TOKEN',
   'RUNNER_URL',
+  'RUNNER_DATABASE_URL',
   'DATABASE_URL',
   'BETTER_AUTH_SECRET',
   'BETTER_AUTH_URL',
   'APP_ENCRYPTION_KEY',
+  'APP_ENCRYPTION_PREVIOUS_KEYS',
   'SETUP_TOKEN',
   'NODE_OPTIONS',
   'NUERA_HOOK_TOKEN',

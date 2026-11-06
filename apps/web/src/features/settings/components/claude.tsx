@@ -6,7 +6,7 @@ import { Badge, Card, CompactButton, Field, KeyValueList, TileHeader } from '@/c
 import { cn } from '@/lib/cn';
 import { authMethodLabel, claudeBadge, claudeStateNote, formatSeconds, planLabel } from '../lib/copy';
 import { BlockBypassSwitch, BooleanSwitch, EffortSelect, ModelSelect, NumberSetting, PermissionModeSelect } from './controls';
-import { InlineError, SettingsRow, SettingsRows, UnavailableNote } from './parts';
+import { AdminSetNote, InlineError, NoServerNote, SettingsRow, SettingsRows, UnavailableNote } from './parts';
 import { useSettings } from './SettingsContext';
 
 /** Figma copy when the CLI is connected; « se connecte » otherwise (never claim a connection that is not there). */
@@ -19,11 +19,15 @@ function useRunnerReason(): string | null {
   return data.claude.ok ? null : data.claude.error.unavailable ? `${serverName} ne répond pas : le terminal ne peut pas s'ouvrir.` : null;
 }
 
-/** D08 `Tuile · Claude Code · compte Claude` (featured tile, 1.5 px accent border). */
+/**
+ * D08 `Tuile · Claude Code · compte Claude` (featured tile, 1.5 px accent border). The CLI is the one
+ * of the server of the account's space (its own Claude login). Without a server: no CLI to show nor
+ * to connect — the tile says so; the defaults of new sessions stay editable (space settings).
+ */
 export function ClaudeTile({ className }: { className?: string }) {
-  const { claude, data, serverName, openLogin, openStatus, errorFor } = useSettings();
-  const badge = claudeBadge(claude);
-  const note = claude ? claudeStateNote(claude, serverName) : null;
+  const { claude, data, serverName, openLogin, openStatus, errorFor, canEdit, settings } = useSettings();
+  const badge = serverName === null ? { tone: 'neutral' as const, label: 'Aucun serveur' } : claudeBadge(claude);
+  const note = claude && serverName ? claudeStateNote(claude, serverName) : null;
   const modelId = useId();
   const modeId = useId();
   const guardTitle = useId();
@@ -37,9 +41,13 @@ export function ClaudeTile({ className }: { className?: string }) {
         title={<span id={`${modelId}-titre`}>Claude Code · compte Claude</span>}
         action={<Badge tone={badge.tone}>{badge.label}</Badge>}
       />
-      <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">{DESCRIPTION(serverName, claude?.state === 'connected')}</p>
+      {serverName === null ? (
+        <NoServerNote />
+      ) : (
+        <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">{DESCRIPTION(serverName, claude?.state === 'connected')}</p>
+      )}
       {note ? <p className="m-0 font-sans text-app-13 leading-[18px] text-warn">{note}</p> : null}
-      {!data.claude.ok && !claude ? (
+      {serverName !== null && !data.claude.ok && !claude ? (
         <UnavailableNote>
           {data.claude.error.unavailable
             ? `${serverName} ne répond pas : l'état du CLI n'a pas pu être lu.`
@@ -64,31 +72,36 @@ export function ClaudeTile({ className }: { className?: string }) {
           control={<BlockBypassSwitch labelledBy={guardTitle} describedBy={guardCaption} />}
         >
           <InlineError>{errorFor('blockBypassPermissions')}</InlineError>
+          {settings.forceBlockBypassPermissions || !canEdit('blockBypassPermissions') ? <AdminSetNote /> : null}
         </SettingsRow>
-        <SettingsRow
-          className="py-4"
-          title="Utilisation et limites"
-          caption="Celles qu'affiche le CLI : Nuera Dev n'estime ni coût, ni quota, ni jetons."
-          control={
-            <CompactButton variant="secondaire" icon="terminal" onClick={openStatus} disabled={Boolean(unavailable)} title={unavailable ?? undefined}>
-              Ouvrir /status
-            </CompactButton>
-          }
-        />
+        {serverName !== null ? (
+          <SettingsRow
+            className="py-4"
+            title="Utilisation et limites"
+            caption="Celles qu'affiche le CLI : Nuera Dev n'estime ni coût, ni quota, ni jetons."
+            control={
+              <CompactButton variant="secondaire" icon="terminal" onClick={openStatus} disabled={Boolean(unavailable)} title={unavailable ?? undefined}>
+                Ouvrir /status
+              </CompactButton>
+            }
+          />
+        ) : null}
       </SettingsRows>
 
-      <div className="flex flex-col gap-1">
-        <CompactButton
-          variant={claude && claude.state !== 'connected' ? 'principal' : 'discret'}
-          icon={claude && claude.state !== 'connected' ? 'terminal' : 'refresh'}
-          onClick={openLogin}
-          disabled={Boolean(unavailable)}
-          className="self-start"
-        >
-          Se reconnecter dans un terminal
-        </CompactButton>
-        {unavailable ? <p className="m-0 font-sans text-app-12 text-muted">{unavailable}</p> : null}
-      </div>
+      {serverName !== null ? (
+        <div className="flex flex-col gap-1">
+          <CompactButton
+            variant={claude && claude.state !== 'connected' ? 'principal' : 'discret'}
+            icon={claude && claude.state !== 'connected' ? 'terminal' : 'refresh'}
+            onClick={openLogin}
+            disabled={Boolean(unavailable)}
+            className="self-start"
+          >
+            Se reconnecter dans un terminal
+          </CompactButton>
+          {unavailable ? <p className="m-0 font-sans text-app-12 text-muted">{unavailable}</p> : null}
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -112,12 +125,16 @@ export function ClaudeTab() {
             icon="monitor"
             title="État du CLI"
             action={
-              <CompactButton variant="secondaire" icon="refresh" onClick={() => void refreshClaude()} loading={refreshingClaude}>
-                Actualiser
-              </CompactButton>
+              serverName !== null ? (
+                <CompactButton variant="secondaire" icon="refresh" onClick={() => void refreshClaude()} loading={refreshingClaude}>
+                  Actualiser
+                </CompactButton>
+              ) : null
             }
           />
-          {claude ? (
+          {serverName === null ? (
+            <NoServerNote />
+          ) : claude ? (
             <>
               <KeyValueList
                 items={[

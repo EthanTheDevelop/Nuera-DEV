@@ -5,6 +5,21 @@ import type { SessionStatusEvent } from '@nuera/shared/events';
 import { formatBytes, formatNumber, formatPercent } from '@nuera/shared/format';
 import { isActiveStatus, isLiveStatus, workspaceUrl, type SessionListItem, type SessionStatus } from './contract';
 
+/** « Aucun serveur attribué » (docs/MULTICOMPTE.md §10): a space without server cannot start a session. */
+export const NO_SERVER_TITLE = 'Aucun serveur attribué';
+export const NO_SERVER_TEXT = 'Aucun serveur ne vous est encore attribué : un administrateur doit vous en attribuer un.';
+/** Reason of the disabled « Nouvelle session » (tooltip, phone caption). */
+export const NO_SERVER_REASON = 'Aucun serveur attribué : un administrateur doit vous en attribuer un.';
+
+/**
+ * Name of the server the session pages talk about: the one of the data (capacity, options), else
+ * the shell's; « le serveur » only while neither is known.
+ */
+export function serverLabel(...names: Array<string | null | undefined>): string {
+  for (const name of names) if (name && name.trim()) return name;
+  return 'le serveur';
+}
+
 /** « 2 sessions actives sur 4 autorisées » (D06 capacity tile). */
 export function capacityTitle(active: number, max: number): string {
   return `${formatNumber(active)} ${active >= 2 ? 'sessions actives' : 'session active'} sur ${formatNumber(max)} ${max >= 2 ? 'autorisées' : 'autorisée'}`;

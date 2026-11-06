@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { Icon } from '@/components/icons';
@@ -10,8 +10,8 @@ import { useToastOffset } from '@/components/ui/Toast';
 import { LiveEventsProvider, useLiveEvents } from '@/hooks/useLiveEvents';
 import { useIsDesktopNav } from '@/hooks/useMediaQuery';
 import { CommandPalette, CommandRegistryProvider, useCommandPaletteShortcut } from './CommandPalette';
-import { ClaudeDisconnected, ConnectionLostBanner, Delayed, ServerUnavailable } from './GlobalStates';
-import { CLAUDE_RECONNECT_HREF, hidesTabBar } from './nav-items';
+import { ClaudeDisconnected, ConnectionLostBanner, Delayed, ServerUnavailable, ServerUnavailableBanner } from './GlobalStates';
+import { CLAUDE_RECONNECT_HREF, hidesTabBar, isRunnerIndependentPage } from './nav-items';
 import { ShellDataProvider, useCommandPaletteControl, useShellData } from './ShellContext';
 import { Sidebar } from './Sidebar';
 import { SidebarRail } from './SidebarRail';
@@ -37,9 +37,15 @@ export interface AppShellProps {
 const TABBAR_PX = 57;
 
 /**
- * Client root of the authenticated app: live events (one EventSource), command palette (⌘K), shell
- * data, navigation (Sidebar / SidebarRail / TabBar) and the global states:
- *  - T5 `ServerUnavailable` replaces the content while the runner does not answer (navigation kept);
+ * Client root of the authenticated app: live events (one EventSource, multi-tab identity guard),
+ * command palette (⌘K), shell data, navigation (Sidebar / SidebarRail / TabBar, « Administration » for
+ * the owner and administrators) and the global states:
+ *  - T5 `ServerUnavailable` replaces the content while the runner of the account's server does not
+ *    answer (navigation kept) — except on the pages that do not need it (Administration, Paramètres ›
+ *    Compte et sécurité and Préférences, and Paramètres' default tab that leads to them), which keep
+ *    their content under a T5 banner;
+ *  - no server assigned: never T5 nor T6 (the server card says « Aucun serveur attribué »; pages that
+ *    need a runner render `NoServerAssigned`);
  *  - T6 banner while the Claude CLI is not connected (sidebar variant);
  *  - W7-style banner while the browser cannot reach the web app (sidebar variant; the Workspace
  *    shows its own inline W7 banner with `ConnectionLostBanner context="workspace"`).
@@ -65,6 +71,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
   const data = useShellData();
   const live = useLiveEvents();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const desktop = useIsDesktopNav();
   const palette = useCommandPaletteControl();
   const [retrying, setRetrying] = useState(false);
@@ -76,7 +83,10 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
   const showTabBar = variant === 'sidebar' && !hidesTabBar(pathname);
   useToastOffset(showTabBar && !desktop ? TABBAR_PX + 16 : null);
 
-  const unavailable = live.runner === 'unavailable';
+  const hasServer = data.environment !== null;
+  const unavailable = hasServer && live.runner === 'unavailable';
+  // T5 never takes the pages that do not need the runner (an administrator must reach the console).
+  const replaceByT5 = unavailable && !isRunnerIndependentPage(pathname, searchParams.get('onglet'));
   useEffect(() => {
     if (!retrying) return;
     const done = setTimeout(() => setRetrying(false), unavailable ? 4_000 : 0);
@@ -93,7 +103,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
 
   const claudeState = live.claude.state;
   const claudeProblem =
-    !unavailable && (claudeState === 'disconnected' || claudeState === 'wrong_method' || claudeState === 'not_installed')
+    hasServer && !unavailable && (claudeState === 'disconnected' || claudeState === 'wrong_method' || claudeState === 'not_installed')
       ? claudeState
       : null;
 
@@ -120,9 +130,9 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
           activeSessions={activeSessions}
           serverUnavailable={unavailable}
           onOpenSearch={() => palette.setOpen(true)}
-          user={{ name: data.user.name, twoFactorEnabled: data.user.twoFactorEnabled }}
+          user={{ name: data.user.name, role: data.user.role, twoFactorEnabled: data.user.twoFactorEnabled }}
           server={{
-            name: data.server.name,
+            name: hasServer ? data.server.name : null,
             location,
             availability: live.runner,
             metrics: live.metrics,
@@ -131,7 +141,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
           }}
         />
       ) : (
-        <SidebarRail className="hidden nav:flex" userName={data.user.name} serverUnavailable={unavailable} />
+        <SidebarRail className="hidden nav:flex" userName={data.user.name} role={data.user.role} serverUnavailable={unavailable} />
       )}
 
       <main
@@ -144,7 +154,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
           variant === 'rail' && 'min-h-dvh',
         )}
       >
-        {unavailable ? (
+        {replaceByT5 ? (
           <div className={cn('flex flex-1 items-start justify-center', variant === 'rail' && 'flex-col items-stretch justify-start px-4 pt-[calc(8px+env(safe-area-inset-top))] pb-7 nav:flex-row nav:items-start nav:justify-center nav:px-8 nav:py-7')}>
             {variant === 'rail' ? (
               // T5 « sans masquer la navigation »: the phone Workspace has neither rail nor tab bar, so its
@@ -166,6 +176,9 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
           </div>
         ) : (
           <>
+            {unavailable ? (
+              <ServerUnavailableBanner serverName={data.server.name} lastContactAt={live.lastRunnerContactAt} onRetry={retry} retrying={retrying} />
+            ) : null}
             {variant === 'sidebar' ? (
               <>
                 <Delayed active={live.connection === 'reconnecting'}>

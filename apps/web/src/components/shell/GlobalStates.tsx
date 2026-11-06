@@ -8,14 +8,17 @@ import { Button } from '@/components/ui/Button';
 import { CompactButton } from '@/components/ui/CompactButton';
 import { Pastille } from '@/components/ui/Pastille';
 import { useNow } from '@/hooks/useNow';
-import { useOptionalShellData } from './ShellContext';
-import { lastContactText } from './status-text';
+import { useServerName as useShellServerName } from './ShellContext';
+import { lastContactText, NO_SERVER_MESSAGE } from './status-text';
 import type { ClaudeState } from './types';
 
-/** app_settings.serverName inside the shells (« VPS-3 » is only the schema default, used by the gallery). */
+/**
+ * Name of the server of the copy: explicit (the session's own server in the Workspace, the gallery),
+ * else the server of the account's space, else « le serveur » (never a made-up « VPS-3 »).
+ */
 function useServerName(explicit: string | undefined): string {
-  const shell = useOptionalShellData();
-  return explicit ?? shell?.server.name ?? 'VPS-3';
+  const shellName = useShellServerName();
+  return explicit ?? shellName ?? 'le serveur';
 }
 
 /* -----------------------------------------------------------------------------------------------
@@ -249,6 +252,85 @@ export function ConnectionLostBanner({ nextRetryAt, onRetry, context = 'workspac
         ? `La session continue sur ${server} : rien n'est perdu, le fil se recharge à la reconnexion.`
         : 'Les valeurs affichées sont figées ; elles se mettent à jour dès la reconnexion.'}
     </Banner>
+  );
+}
+
+export interface ServerUnavailableBannerProps {
+  serverName: string;
+  lastContactAt: string | null;
+  onRetry: () => void;
+  retrying?: boolean;
+  className?: string;
+}
+
+/**
+ * T5 as a banner, on the pages T5 never replaces (Administration, Paramètres › Compte et sécurité and
+ * Préférences, and Paramètres' default tab that leads to them: they do not need the runner —
+ * docs/MULTICOMPTE.md §10; `isRunnerIndependentPage`). Same copy as the T5 card.
+ */
+export function ServerUnavailableBanner({ serverName, lastContactAt, onRetry, retrying = false, className }: ServerUnavailableBannerProps) {
+  const now = useNow(10_000);
+  const contact = lastContactText(lastContactAt, now);
+  return (
+    <Banner
+      tone="danger"
+      icon="wifi-off"
+      title={`${serverName} ne répond pas`}
+      action={
+        <CompactButton variant="secondaire" onClick={onRetry} loading={retrying}>
+          Réessayer maintenant
+        </CompactButton>
+      }
+      className={className}
+    >
+      <span suppressHydrationWarning>{contact ? `${contact}. ` : ''}Nuera Dev réessaie toutes les 10 s, sans rien faire de plus.</span>
+    </Banner>
+  );
+}
+
+export interface NoServerAssignedProps {
+  /** `card` = in place of a page that needs a server · `banner` = above a page that partly needs one. */
+  variant?: 'card' | 'banner';
+  /** Heading level of the card (h1 when it replaces the whole page content). */
+  titleAs?: 'h1' | 'h2';
+  className?: string;
+}
+
+/**
+ * « Aucun serveur attribué » — shown wherever a runner is required while no server is assigned to
+ * the account's space (never T5: nothing is down, nothing is configured yet). Not drawn in Figma:
+ * built from the T5 anatomy (card) and `Banner`, with the neutral server icon.
+ */
+export function NoServerAssigned({ variant = 'card', titleAs: Title = 'h2', className }: NoServerAssignedProps) {
+  const titleId = useId();
+  if (variant === 'banner') {
+    return (
+      <Banner tone="info" icon="server" title="Aucun serveur attribué" className={className}>
+        {NO_SERVER_MESSAGE}
+      </Banner>
+    );
+  }
+  return (
+    <section
+      aria-labelledby={titleId}
+      className={cn('flex w-full max-w-[656px] flex-col items-start gap-3.5 rounded-xl bg-bg p-7 shadow-soft', className)}
+    >
+      <Pastille icon="server" size={48} tone="accent" />
+      <Title id={titleId} className="m-0 font-sans text-app-20 font-semibold text-text">
+        Aucun serveur attribué
+      </Title>
+      <p className="m-0 font-sans text-app-14 leading-5 text-muted">{NO_SERVER_MESSAGE}</p>
+      <FactsBox
+        label="Ce qui reste disponible"
+        facts={[
+          { kind: 'ok', text: 'Votre compte, sa sécurité et vos préférences se règlent dans Paramètres.' },
+          { kind: 'ok', text: 'Vos projets et vos sessions Claude Code apparaîtront ici dès que votre serveur sera attribué.' },
+        ]}
+      />
+      <CompactButton href="/parametres?onglet=compte-et-securite" variant="secondaire" icon="reglages">
+        Ouvrir Paramètres
+      </CompactButton>
+    </section>
   );
 }
 

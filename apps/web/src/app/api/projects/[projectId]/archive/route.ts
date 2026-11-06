@@ -8,5 +8,5 @@ export const runtime = 'nodejs';
 
 export const GET = apiRoute({
   params: z.object({ projectId: z.uuid() }),
-  handler: ({ params: { projectId } }) => withProjectErrors(() => getArchivePreview(projectId)),
+  handler: ({ params: { projectId }, ctx }) => withProjectErrors(() => getArchivePreview(ctx, projectId)),
 });

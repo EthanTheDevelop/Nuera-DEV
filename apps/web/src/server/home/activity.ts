@@ -2,7 +2,8 @@ import 'server-only';
 import type { CommitSummary } from '@nuera/shared/runner';
 import type { HomeActivity, HomeGitEvent } from '@/features/home/types';
 import { githubWebUrl } from '@/server/github/config';
-import { isRunnerUnavailable, runner, RunnerError } from '@/server/runner/client';
+import { getRunnerForEnvironment, isRunnerUnavailable, RunnerError } from '@/server/runner/client';
+import type { RequestContext } from '@/server/tenancy/context';
 import { loadRecentPullRequests, loadRecentWorktrees, loadSessionCommitShas, type LogTarget, type PullRequestRow } from './queries';
 
 /**
@@ -16,7 +17,7 @@ const COMMITS_PER_SOURCE = 4;
 const LOG_TIMEOUT_MS = 4_000;
 
 /**
- * VPS-3 down, or so slow that a bounded read timed out (`UPSTREAM` caused by a `TimeoutError`, for
+ * The server down, or so slow that a bounded read timed out (`UPSTREAM` caused by a `TimeoutError`, for
  * which `isRunnerUnavailable` is false): both mean « le serveur ne répond pas ».
  */
 export function runnerNotAnswering(error: unknown): boolean {
@@ -111,12 +112,16 @@ export function activityGithubUrl(first: HomeGitEvent | undefined, targets: read
   return first.branch ? `${repo}/commits/${encodeURIComponent(first.branch).replace(/%2F/g, '/')}` : repo;
 }
 
-export async function loadActivity(primaries: readonly LogTarget[]): Promise<HomeActivity> {
+/**
+ * Activity of the space: `primaries` (recent projects of the space) plus its recent session
+ * worktrees, each history read on the runner of the server holding the project.
+ */
+export async function loadActivity(ctx: Pick<RequestContext, 'space'>, primaries: readonly LogTarget[]): Promise<HomeActivity> {
   const webBase = githubWebUrl();
   const [worktreeTargets, pullRequests, claudeShas] = await Promise.all([
-    loadRecentWorktrees(3),
-    loadRecentPullRequests(4),
-    loadSessionCommitShas(),
+    loadRecentWorktrees(ctx, 3),
+    loadRecentPullRequests(ctx, 4),
+    loadSessionCommitShas(ctx),
   ]);
   const targets = [...primaries, ...worktreeTargets];
   let unavailable = false;
@@ -124,7 +129,7 @@ export async function loadActivity(primaries: readonly LogTarget[]): Promise<Hom
   const settled = await Promise.all(
     targets.map(async (target): Promise<CommitSource | null> => {
       try {
-        const { commits } = await runner.repoLog(
+        const { commits } = await getRunnerForEnvironment(target.environmentId).repoLog(
           { params: { projectId: target.projectId }, query: { n: COMMITS_PER_SOURCE, ...(target.worktreeId ? { worktreeId: target.worktreeId } : {}) } },
           { timeoutMs: LOG_TIMEOUT_MS },
         );

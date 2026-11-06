@@ -3,7 +3,11 @@ import type { Load, LoadError } from '@/features/settings/lib/types';
 import { toAppError } from '@/server/errors';
 import { isRunnerUnavailable } from '@/server/runner/client';
 
-/** French error body of a section that failed (T4), never a stack trace. */
+/**
+ * French error body of a section that failed (T4), never a stack trace. Two failures get a flag of
+ * their own: the runner of the account's server does not answer (`unavailable`), or no server is
+ * assigned to the account yet (`noEnvironment`, AppError reason NO_ENVIRONMENT of `requireEnvironment`).
+ */
 export function toLoadError(error: unknown): LoadError {
   const appError = toAppError(error);
   if (appError.code === 'INTERNAL') console.error('[paramètres]', error);
@@ -12,6 +16,7 @@ export function toLoadError(error: unknown): LoadError {
     ...(appError.detail ? { detail: appError.detail } : {}),
     ...(appError.raw ? { raw: appError.raw } : {}),
     ...(isRunnerUnavailable(error) ? { unavailable: true } : {}),
+    ...(appError.reason === 'NO_ENVIRONMENT' ? { noEnvironment: true } : {}),
   };
 }
 

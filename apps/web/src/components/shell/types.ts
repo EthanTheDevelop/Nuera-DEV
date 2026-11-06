@@ -18,12 +18,17 @@ export interface ShellMetrics {
   sampledAt: string;
 }
 
+/**
+ * Live state of the server of the account's space (`environment`). With no server assigned, `name`
+ * is empty and nothing else is known: read {@link ShellData.environment} (or `useServerName()`)
+ * before showing a server name.
+ */
 export interface ShellServer {
-  /** app_settings.serverName (« VPS-3 »). */
+  /** Name of the server (« VPS-3 » for the default one); empty when no server is assigned. */
   name: string;
-  /** app_settings.serverLocation (« OVH Gravelines »), null when not set. */
+  /** Location (« OVH Gravelines »), null when not set. */
   location: string | null;
-  /** Provider status page (env NUERA_SERVER_STATUS_URL), null when not configured. */
+  /** Provider status page (env NUERA_SERVER_STATUS_URL, default server only), null when not configured. */
   statusUrl: string | null;
   availability: ServerAvailability;
   metrics: ShellMetrics | null;
@@ -49,22 +54,48 @@ export interface ShellNotification {
   createdAt: string;
 }
 
+/** Instance role (docs/MULTICOMPTE.md §2): « Propriétaire » · « Administrateur » · « Membre ». */
+export type ShellRole = 'owner' | 'admin' | 'member';
+
 export interface ShellUser {
+  /** Account id (multi-tab identity guard: `stream.hello` must name the same account). */
+  id: string;
   name: string;
   /** First word of the name (« Bonjour Nezar »). */
   firstName: string;
+  role: ShellRole;
   twoFactorEnabled: boolean;
+}
+
+/** The account's space (v1: its personal space, never chosen by the client). */
+export interface ShellSpace {
+  id: string;
+  name: string;
+}
+
+/** The server (runner instance) of the space; null in ShellData while none is assigned. */
+export interface ShellEnvironment {
+  id: string;
+  /** « VPS-3 » for the default server (Figma copy unchanged). */
+  name: string;
+  location: string | null;
+  /** `active`, or `suspended` while the account is disabled. */
+  status: 'pending' | 'active' | 'suspended' | 'retired';
+  isDefault: boolean;
 }
 
 export interface ShellData {
   user: ShellUser;
+  space: ShellSpace;
+  /** null: no server assigned to the space yet (« Aucun serveur attribué », never T5). */
+  environment: ShellEnvironment | null;
   server: ShellServer;
   claude: ShellClaude;
   sessions: {
-    /** Ids of sessions in new / running / waiting_permission / waiting_input (not archived). */
+    /** Ids of the space's sessions in new / running / waiting_permission / waiting_input (not archived). */
     activeIds: string[];
-    /** app_settings.maxConcurrentSessions. */
-    max: number;
+    /** Sessions parallèles of the server; null without a server. */
+    max: number | null;
   };
   notifications: { items: ShellNotification[]; unread: number };
   /** Server time of the snapshot (ISO), for relative times rendered on the client. */

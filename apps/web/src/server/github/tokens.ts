@@ -2,7 +2,7 @@ import 'server-only';
 import { createAppAuth } from '@octokit/auth-app';
 import { AppError } from '@/server/errors';
 import { createOctokit, githubErrorMessage, githubErrorStatus } from './client';
-import { getStoredGithubApp, readGithubSecrets } from './store';
+import { readGithubSecrets, type StoredGithubSource } from './store';
 import type { GithubTokenPermissions } from './types';
 
 /**
@@ -10,6 +10,8 @@ import type { GithubTokenPermissions } from './types';
  *  - app JWT (RS256, ≤ 10 min) for `/app/*` routes;
  *  - installation tokens DOWN-SCOPED per operation (repositories + permissions), cached in memory
  *    until 5 minutes before their expiry (research §2.4–2.5). Never written anywhere.
+ * Several GitHub sources (apps) coexist: credentials are always those of ONE source, and the cache
+ * key starts with the app id (`appId|installationId|repositories|permissions`).
  */
 
 const REFRESH_MARGIN_MS = 5 * 60_000;
@@ -31,16 +33,16 @@ const state: TokenState =
   (globalForTokens.__nueraGithubTokens = { tokens: new Map(), pending: new Map() });
 
 export interface AppCredentials {
+  /** Source the credentials belong to (null: built by a test). */
+  sourceId?: string | null;
   appId: number;
   privateKey: string;
 }
 
-/** App id + private key of the stored app (decrypted on demand, never cached on disk). */
-export async function getAppCredentials(): Promise<AppCredentials> {
-  const stored = await getStoredGithubApp();
-  if (!stored) throw new AppError('CONFLICT', "GitHub n'est pas connecté : créez l'application GitHub depuis Intégrations.");
-  const secrets = readGithubSecrets(stored.row);
-  return { appId: stored.config.appId, privateKey: secrets.privateKeyPem };
+/** App id + private key of one source (decrypted on demand, never cached on disk). */
+export function getAppCredentials(source: Pick<StoredGithubSource, 'id' | 'row' | 'config'>): AppCredentials {
+  const secrets = readGithubSecrets(source.row);
+  return { sourceId: source.id, appId: source.config.appId, privateKey: secrets.privateKeyPem };
 }
 
 function createAuth(credentials: AppCredentials) {
@@ -54,9 +56,9 @@ function createAuth(credentials: AppCredentials) {
   });
 }
 
-/** Fresh app JWT (Bearer) for `/app/*` endpoints. */
-export async function createAppJwt(credentials?: AppCredentials): Promise<string> {
-  const auth = createAuth(credentials ?? (await getAppCredentials()));
+/** Fresh app JWT (Bearer) for `/app/*` endpoints of this app. */
+export async function createAppJwt(credentials: AppCredentials): Promise<string> {
+  const auth = createAuth(credentials);
   try {
     const { token } = await auth({ type: 'app' });
     return token;
@@ -69,6 +71,7 @@ export async function createAppJwt(credentials?: AppCredentials): Promise<string
 }
 
 export function tokenCacheKey(input: {
+  appId: number;
   installationId: number;
   repositoryNames?: readonly string[] | undefined;
   permissions?: GithubTokenPermissions | undefined;
@@ -79,7 +82,7 @@ export function tokenCacheKey(input: {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, level]) => `${name}:${level}`)
     .join(',');
-  return `${input.installationId}|${repos}|${perms}`;
+  return `${input.appId}|${input.installationId}|${repos}|${perms}`;
 }
 
 export interface MintTokenInput {
@@ -88,7 +91,8 @@ export interface MintTokenInput {
   repositoryNames?: string[];
   /** Permission subset; omit for every permission of the installation (avoid). */
   permissions: GithubTokenPermissions;
-  credentials?: AppCredentials;
+  /** Credentials of the source (app) the installation belongs to. */
+  credentials: AppCredentials;
   /** Bypass the cache (e.g. after a 401 from GitHub). */
   refresh?: boolean;
 }
@@ -100,7 +104,7 @@ export interface MintedToken {
 
 /** Mints (or reuses) a down-scoped installation access token. */
 export async function mintInstallationToken(input: MintTokenInput): Promise<MintedToken> {
-  const key = tokenCacheKey(input);
+  const key = tokenCacheKey({ ...input, appId: input.credentials.appId });
   if (!input.refresh) {
     const cached = state.tokens.get(key);
     if (cached && cached.expiresAtMs - REFRESH_MARGIN_MS > Date.now()) {
@@ -114,8 +118,7 @@ export async function mintInstallationToken(input: MintTokenInput): Promise<Mint
   }
 
   const promise = (async (): Promise<CachedToken> => {
-    const credentials = input.credentials ?? (await getAppCredentials());
-    const auth = createAuth(credentials);
+    const auth = createAuth(input.credentials);
     try {
       const result = await auth({
         type: 'installation',
@@ -174,15 +177,20 @@ function tokenError(error: unknown): AppError {
   return new AppError('UPSTREAM', "GitHub n'a pas délivré de jeton d'installation.", raw ? { raw } : {});
 }
 
-/** Drops every cached token (disconnect, key rotation, tests). */
-export function clearGithubTokenCache(): void {
-  state.tokens.clear();
-  state.pending.clear();
+/** Drops the cached tokens: of one app (`{ appId }`: its source was disconnected), or all (tests). */
+export function clearGithubTokenCache(filter: { appId?: number } = {}): void {
+  if (filter.appId === undefined) {
+    state.tokens.clear();
+    state.pending.clear();
+    return;
+  }
+  const prefix = `${filter.appId}|`;
+  for (const key of state.tokens.keys()) if (key.startsWith(prefix)) state.tokens.delete(key);
+  for (const key of state.pending.keys()) if (key.startsWith(prefix)) state.pending.delete(key);
 }
 
-/** Drops the cached tokens of one installation (after a 401/403 on that installation). */
-export function invalidateInstallationTokens(installationId: number): void {
-  for (const key of state.tokens.keys()) {
-    if (key.startsWith(`${installationId}|`)) state.tokens.delete(key);
-  }
+/** Drops the cached tokens of one installation of one app (after a 401/403 on that installation). */
+export function invalidateInstallationTokens(appId: number, installationId: number): void {
+  const prefix = `${appId}|${installationId}|`;
+  for (const key of state.tokens.keys()) if (key.startsWith(prefix)) state.tokens.delete(key);
 }

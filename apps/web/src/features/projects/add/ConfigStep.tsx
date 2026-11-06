@@ -5,7 +5,7 @@ import { Icon } from '@/components/icons';
 import { Badge, Banner, CompactButton, ErrorPanel, Field, Input, Select, Skeleton, Switch } from '@/components/ui';
 import { joinParts } from '@/components/dev/lib/format';
 import { cn } from '@/lib/cn';
-import type { DestinationView, RepoPreview } from '@/server/projects/types';
+import type { AddRepoSource, DestinationView, RepoPreview } from '@/server/projects/types';
 import type { Failure } from '../FailureBanner';
 import { freeSpaceText, sizeText, updatedAgo } from '../format';
 
@@ -62,6 +62,11 @@ export interface ConfigStepProps {
   variant: 'desktop' | 'phone';
   now: number;
   serverName: string;
+  /** GitHub sources of the space reaching the repository (the selector shows from two). */
+  sources: AddRepoSource[];
+  /** Source used to read and clone it (null = resolved by the server). */
+  sourceId: string | null;
+  onSource: (sourceId: string) => void;
 }
 
 const fileCountText = (n: number) => `${n} ${n >= 2 ? 'fichiers' : 'fichier'}`;
@@ -72,9 +77,10 @@ const fileCountText = (n: number) => `${n} ${n >= 2 ? 'fichiers' : 'fichier'}`;
  * runner), options, detected commands (editable), GitHub access note.
  */
 export function ConfigStep(props: ConfigStepProps) {
-  const { fullName, preview, form, onChange, onCommand, destination, conflict, failure, variant, now, serverName } = props;
+  const { fullName, preview, form, onChange, onCommand, destination, conflict, failure, variant, now, serverName, sources, sourceId } = props;
   const phone = variant === 'phone';
-  const ids = { branch: useId(), name: useId(), destination: useId(), commands: useId() };
+  const ids = { branch: useId(), name: useId(), destination: useId(), commands: useId(), source: useId() };
+  const source = sources.find((item) => item.id === sourceId) ?? null;
 
   if (conflict) return <ConflictView {...props} conflict={conflict} />;
 
@@ -121,6 +127,18 @@ export function ConfigStep(props: ConfigStepProps) {
           Changer
         </CompactButton>
       </div>
+
+      {sources.length > 1 ? (
+        <Field id={ids.source} label="Source GitHub" hint="Ce dépôt est accessible par plusieurs sources GitHub de votre espace : le projet utilisera celle-ci.">
+          <Select
+            options={sources.map((item) => ({ value: item.id, label: item.label }))}
+            value={sourceId ?? sources[0]!.id}
+            onValueChange={props.onSource}
+            icon="github"
+            size={phone ? 'lg' : 'md'}
+          />
+        </Field>
+      ) : null}
 
       {preview.status === 'error' ? (
         <ErrorPanel
@@ -242,7 +260,9 @@ export function ConfigStep(props: ConfigStepProps) {
 
       <p className="m-0 flex items-start gap-2 font-sans text-app-12 leading-4 text-muted">
         <Icon name="shield" size={16} className="shrink-0 text-success" />
-        Accès GitHub : lecture et écriture du contenu, pull requests. Accordé à l'application GitHub de Nuera Dev, jamais par jeton collé à la main.
+        {sources.length > 1 && source
+          ? `Accès GitHub : lecture et écriture du contenu, pull requests. Accordé à la source GitHub « ${source.label} », jamais par jeton collé à la main.`
+          : "Accès GitHub : lecture et écriture du contenu, pull requests. Accordé à l'application GitHub de Nuera Dev, jamais par jeton collé à la main."}
       </p>
 
       {failure ? (

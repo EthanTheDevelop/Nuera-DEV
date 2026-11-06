@@ -13,5 +13,5 @@ export const GET = apiRoute({
   params: worktreeParamsSchema,
   query: fileQuerySchema,
   rateLimit: { limit: 600, windowMs: 10 * 60_000 },
-  handler: ({ params, query }) => withWorkspaceErrors(() => getFile(params.worktreeId, query.path)),
+  handler: ({ params, query, ctx }) => withWorkspaceErrors(() => getFile(ctx, params.worktreeId, query.path)),
 });

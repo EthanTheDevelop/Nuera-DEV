@@ -4,7 +4,8 @@ import type { Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
 import { projects } from '@nuera/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
-import { E2E_BASE_URL, E2E_DATABASE_URL, expect, test } from './fixtures';
+import { readState } from './harness/state';
+import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STATE_FILE, expect, test } from './fixtures';
 
 /**
  * Lot PROJETS — D02/M02 list, the add flow (A1 → D03 → A2/A3, A4), the project page D04/M04 and its
@@ -21,10 +22,20 @@ test.describe.configure({ mode: 'serial' });
 const isMobile = () => test.info().project.name === 'mobile';
 const origin = { origin: E2E_BASE_URL };
 
+/** Server of the owner's space (account A): its projects, its clones; another account may track the same repositories elsewhere. */
+function ownerRunner() {
+  const runner = readState(E2E_STATE_FILE)?.runners.find((item) => item.key === 'a');
+  if (!runner?.environmentId) throw new Error('Serveur du propriétaire inconnu (state.json) : relancez la pile.');
+  return runner;
+}
+
+/** Its name in the interface (the default server keeps « VPS-3 »). */
+const server = () => ownerRunner().name;
+
 async function forgetClone(fullName: string, projectsRoot: string) {
   const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'e2e-projets' });
   try {
-    const rows = await db.select().from(projects).where(eq(projects.githubFullName, fullName));
+    const rows = await db.select().from(projects).where(and(eq(projects.githubFullName, fullName), eq(projects.environmentId, ownerRunner().environmentId!)));
     for (const row of rows) {
       await db.delete(projects).where(eq(projects.id, row.id));
       const folder = path.resolve(row.path);
@@ -40,7 +51,7 @@ async function forgetClone(fullName: string, projectsRoot: string) {
 async function projectIdOf(fullName: string): Promise<string | null> {
   const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'e2e-projets' });
   try {
-    const [row] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.githubFullName, fullName), isNull(projects.archivedAt))).limit(1);
+    const [row] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.githubFullName, fullName), eq(projects.environmentId, ownerRunner().environmentId!), isNull(projects.archivedAt))).limit(1);
     return row?.id ?? null;
   } finally {
     await db.$client.end({ timeout: 5 });
@@ -58,7 +69,7 @@ test('liste des projets : compteurs, recherche, filtres et favoris (D02 / M02)',
   const list = page.getByRole(isMobile() ? 'list' : 'table', { name: 'Projets' });
   await expect(list.getByText('Devis Express', { exact: true })).toBeVisible();
   await expect(list.getByText('atelier-test/catalogue-produits')).toBeVisible();
-  await expect(page.getByText(isMobile() ? /dépôts sur VPS-3/ : /dépôts clonés sur VPS-3/)).toBeVisible();
+  await expect(page.getByText(new RegExp(isMobile() ? `dépôts sur ${server()}` : `dépôts clonés sur ${server()}`))).toBeVisible();
 
   // Search → URL state, then back to everything.
   const search = page.getByRole('searchbox', { name: 'Rechercher un projet' }).locator('visible=true');
@@ -109,9 +120,9 @@ test('ajout d\'un projet : dépôt, configuration, clonage réel puis projet pr�
   const name = flow.getByLabel('Nom dans Nuera Dev');
   await expect(name).not.toHaveValue('', { timeout: 60_000 });
   await name.fill(isMobile() ? 'Notes perso · e2e' : 'Site vitrine · e2e');
-  await expect(flow.getByLabel('Destination sur VPS-3')).toHaveValue(new RegExp(`${fullName.split('/')[1]}$`));
+  await expect(flow.getByLabel(`Destination sur ${server()}`)).toHaveValue(new RegExp(`${fullName.split('/')[1]}$`));
   await expect(flow.getByText(/Dossier vide requis/)).toBeVisible({ timeout: 30_000 });
-  await flow.getByRole('button', { name: 'Cloner sur VPS-3' }).click();
+  await flow.getByRole('button', { name: `Cloner sur ${server()}` }).click();
 
   // A2 → A3 (real git clone + install from the local remote).
   await expect(page).toHaveURL(/etape=clonage/);
@@ -146,16 +157,16 @@ test('A4 : un dossier non vide est refusé sans rien écraser, avec un dossier l
   // Same refusal in the UI (A4 state): banner, field in error, suggestion fills the field.
   await page.goto('/projets/nouveau?etape=configuration&depot=dev-test%2Fnotes-perso');
   const flow = page.getByRole('region', { name: 'Ajouter un projet' }).or(page.locator('section[aria-labelledby="ajout-projet-titre"]'));
-  const destination = flow.getByLabel('Destination sur VPS-3');
+  const destination = flow.getByLabel(`Destination sur ${server()}`);
   await expect(destination).not.toHaveValue('', { timeout: 60_000 });
   await destination.fill(devisPath);
   await expect(flow.getByText(/contient déjà/)).toBeVisible({ timeout: 30_000 });
-  await flow.getByRole('button', { name: 'Cloner sur VPS-3' }).click();
+  await flow.getByRole('button', { name: `Cloner sur ${server()}` }).click();
   await expect(flow.getByText("Le dossier de destination n'est pas vide")).toBeVisible();
   await expect(flow.getByText(/Rien n'a été écrasé\./)).toBeVisible();
   await flow.getByRole('button', { name: /^Utiliser / }).click();
   await expect(destination).not.toHaveValue(devisPath);
-  await expect(flow.getByRole('button', { name: 'Cloner sur VPS-3' })).toBeEnabled();
+  await expect(flow.getByRole('button', { name: `Cloner sur ${server()}` })).toBeEnabled();
 });
 
 test('page du projet : commandes réelles, variables, branche, synchronisation (D04 / M04)', async ({ page, stack }) => {

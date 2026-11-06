@@ -7,6 +7,7 @@ import type { SessionStatusEvent } from '@nuera/shared/events';
 import type {
   ClaudeState,
   HomeClaude,
+  HomeOnboarding,
   HomePendingPermission,
   HomeServerMetrics,
   HomeSession,
@@ -294,3 +295,85 @@ export function applySessionStatus(items: readonly HomeSession[], event: Session
   copy[index] = next;
   return copy;
 }
+
+// ---------------------------------------------------------------------------------------------
+// « Premiers pas » (no Figma): three steps driven by real states only
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `done` · `todo` (a real negative state, with its action) · `blocked` (needs a server first) ·
+ * `unknown` (the state could not be read: never presented as something to do).
+ */
+export type FirstStepState = 'done' | 'todo' | 'blocked' | 'unknown';
+
+export interface FirstStep {
+  id: 'claude' | 'github' | 'project';
+  title: string;
+  text: string;
+  state: FirstStepState;
+  action: { kind: 'link'; label: string; href: string; icon: string } | { kind: 'claude-login'; label: string; icon: string } | null;
+}
+
+const NEEDS_SERVER = "Disponible dès qu'un administrateur vous attribue un serveur.";
+
+export function firstSteps(input: {
+  /** Server of the space (null = none assigned). */
+  server: { name: string; availability: ServerAvailability } | null;
+  claudeState: ClaudeState;
+  onboarding: { github: boolean | null; project: boolean };
+}): FirstStep[] {
+  const { server, claudeState, onboarding } = input;
+  let claude: FirstStep;
+  if (!server) {
+    claude = { id: 'claude', title: 'Connecter Claude Code', text: NEEDS_SERVER, state: 'blocked', action: null };
+  } else if (claudeState === 'connected') {
+    claude = { id: 'claude', title: 'Connecter Claude Code', text: `Le CLI officiel de ${server.name} est connecté à votre compte Claude.`, state: 'done', action: null };
+  } else if (server.availability !== 'unavailable' && (claudeState === 'disconnected' || claudeState === 'wrong_method')) {
+    claude = {
+      id: 'claude',
+      title: 'Connecter Claude Code',
+      text: `Connectez le CLI officiel de ${server.name} à votre compte Claude, dans un terminal. Nuera Dev ne stocke aucun identifiant.`,
+      state: 'todo',
+      action: { kind: 'claude-login', label: 'Se connecter dans un terminal', icon: 'terminal' },
+    };
+  } else {
+    claude = { id: 'claude', title: 'Connecter Claude Code', text: `L'état du CLI de ${server.name} n'a pas pu être lu pour le moment.`, state: 'unknown', action: null };
+  }
+  const github: FirstStep =
+    onboarding.github === true
+      ? { id: 'github', title: 'Connecter GitHub', text: 'Une source GitHub de votre espace donne accès à vos dépôts.', state: 'done', action: null }
+      : onboarding.github === false
+        ? {
+            id: 'github',
+            title: 'Connecter GitHub',
+            text: 'Reliez une application GitHub à votre espace pour choisir les dépôts à cloner.',
+            state: 'todo',
+            action: { kind: 'link', label: 'Ouvrir Intégrations', href: '/integrations', icon: 'github' },
+          }
+        : { id: 'github', title: 'Connecter GitHub', text: "L'état de GitHub n'a pas pu être lu pour le moment.", state: 'unknown', action: null };
+  const project: FirstStep = onboarding.project
+    ? { id: 'project', title: 'Ajouter un premier projet', text: 'Votre espace a déjà un projet.', state: 'done', action: null }
+    : !server
+      ? { id: 'project', title: 'Ajouter un premier projet', text: NEEDS_SERVER, state: 'blocked', action: null }
+      : {
+          id: 'project',
+          title: 'Ajouter un premier projet',
+          text: `Clonez un dépôt GitHub sur ${server.name}, prêt pour Claude Code.`,
+          state: 'todo',
+          action: { kind: 'link', label: 'Ajouter un projet', href: '/projets/nouveau', icon: 'plus' },
+        };
+  return [claude, github, project];
+}
+
+/**
+ * Shown while a step is really left to do (or waits for a server); hidden once all are done, and for
+ * good once the space has run a Claude Code session in a project: a set-up account keeps the Figma
+ * Accueil whatever happens later (a disconnected CLI is T6, a revoked GitHub source a banner).
+ */
+export function firstStepsVisible(steps: readonly FirstStep[], onboarding?: Pick<HomeOnboarding, 'project' | 'session'>): boolean {
+  if (onboarding?.project && onboarding.session) return false;
+  return steps.some((step) => step.state === 'todo' || step.state === 'blocked');
+}
+
+/** Phone status pill when no server is assigned. */
+export const NO_SERVER_PILL = { label: 'Aucun serveur attribué', tone: 'neutral' as const };

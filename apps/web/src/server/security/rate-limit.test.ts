@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AppError } from '@/server/errors';
-import { assertRateLimit, effectiveRule, rateLimiter, SlidingWindowRateLimiter } from './rate-limit';
+import { accountRateLimitKey, assertRateLimit, AUTH_RATE_LIMITS, effectiveRule, rateLimiter, SlidingWindowRateLimiter } from './rate-limit';
 
 function clock(start = 1_000_000) {
   let now = start;
@@ -99,5 +99,30 @@ describe('effectiveRule', () => {
     expect(effectiveRule(rule, { NODE_ENV: 'production', NUERA_RATE_LIMIT_FACTOR: '20' }).limit).toBe(5);
     expect(effectiveRule(rule, { NODE_ENV: 'development' }).limit).toBe(5);
     expect(effectiveRule(rule, { NODE_ENV: 'test', NUERA_RATE_LIMIT_FACTOR: 'abc' }).limit).toBe(5);
+  });
+});
+
+describe('règles par adresse et par compte (MULTICOMPTE §6)', () => {
+  it('sépare deux comptes derrière une même adresse, et garde un filet par adresse', () => {
+    rateLimiter.reset();
+    const ip = '203.0.113.9';
+    expect(accountRateLimitKey(ip, ' Camille@Example.TEST ')).toBe('203.0.113.9:camille@example.test');
+    expect(accountRateLimitKey(null, null)).toBe('unknown:unknown');
+    for (let i = 0; i < AUTH_RATE_LIMITS.signIn.limit; i += 1) {
+      assertRateLimit('auth:sign-in', accountRateLimitKey(ip, 'camille@example.test'), AUTH_RATE_LIMITS.signIn);
+    }
+    expect(() => assertRateLimit('auth:sign-in', accountRateLimitKey(ip, 'camille@example.test'), AUTH_RATE_LIMITS.signIn)).toThrow(AppError);
+    // Another account behind the same address is not locked out…
+    expect(() => assertRateLimit('auth:sign-in', accountRateLimitKey(ip, 'ethan@example.test'), AUTH_RATE_LIMITS.signIn)).not.toThrow();
+    // …but the net per address caps every e-mail together.
+    for (let i = 0; i < AUTH_RATE_LIMITS.signInPerIp.limit; i += 1) assertRateLimit('auth:sign-in-ip', ip, AUTH_RATE_LIMITS.signInPerIp);
+    expect(() => assertRateLimit('auth:sign-in-ip', ip, AUTH_RATE_LIMITS.signInPerIp)).toThrow(AppError);
+  });
+
+  it('fixe les limites demandées', () => {
+    expect(AUTH_RATE_LIMITS.signIn).toEqual({ limit: 10, windowMs: 10 * 60_000 });
+    expect(AUTH_RATE_LIMITS.signInPerIp).toEqual({ limit: 50, windowMs: 10 * 60_000 });
+    expect(AUTH_RATE_LIMITS.linkToken).toEqual({ limit: 10, windowMs: 15 * 60_000 });
+    expect(AUTH_RATE_LIMITS.adminMutation).toEqual({ limit: 30, windowMs: 10 * 60_000 });
   });
 });

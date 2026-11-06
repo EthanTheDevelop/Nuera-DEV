@@ -12,5 +12,5 @@ export const runtime = 'nodejs';
 export const POST = apiRoute({
   params: sessionParamsSchema,
   rateLimit: { limit: 120, windowMs: 10 * 60_000 },
-  handler: ({ params }) => withWorkspaceErrors(() => interruptSession(params.sessionId)),
+  handler: ({ params, ctx }) => withWorkspaceErrors(() => interruptSession(ctx, params.sessionId)),
 });

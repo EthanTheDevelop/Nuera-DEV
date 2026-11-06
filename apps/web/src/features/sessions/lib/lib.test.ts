@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionInputSchema, historySearch, parseHistoryParams, type SessionListItem } from './contract';
 import { capacityLine, existingBranchOptions, newBranchError, permissionModeOptions, suggestBranchName, toCreateInput, worktreeHint, CLI_DEFAULT } from './form';
-import { applyStatusEvent, capacityShort, capacityTitle, cardActivity, historyAction, memoryCaption, memoryFreeShort, sessionHref, sortActive, worktreeNotes } from './view';
+import { applyStatusEvent, capacityShort, capacityTitle, cardActivity, historyAction, memoryCaption, memoryFreeShort, serverLabel, sessionHref, sortActive, worktreeNotes } from './view';
 
 const GB = 1024 ** 3;
 
@@ -159,5 +159,13 @@ describe('view', () => {
     expect(applyStatusEvent(items, { ...event, status: 'finished', live: false })).toEqual({ items: [], refresh: true });
     expect(applyStatusEvent(items, { ...event, sessionId: 'new-one' }).refresh).toBe(true);
     expect(applyStatusEvent(items, { ...event, sessionId: 'old', status: 'finished' }).refresh).toBe(false);
+  });
+});
+
+describe('server label', () => {
+  it('names the server of the data first, then the shell one, « le serveur » while neither is known', () => {
+    expect(serverLabel('VPS-4', 'VPS-3')).toBe('VPS-4');
+    expect(serverLabel(null, 'VPS-3')).toBe('VPS-3');
+    expect(serverLabel(undefined, '  ')).toBe('le serveur');
   });
 });

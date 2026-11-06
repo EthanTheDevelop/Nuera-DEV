@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildSessionEnv, isSessionEnvNameAllowed } from './env';
+import { canDriveSession } from './access';
+import { resolveGitIdentity } from './git-identity';
+import { projectUnavailableReason } from './options';
 import { capacityMessage, decodeCursor, encodeCursor, likePattern, summaryPoints } from './queries';
 
 describe('session env', () => {
@@ -37,5 +40,29 @@ describe('queries helpers', () => {
     const message = "C'est terminé : voici ce qui a changé.\n\n- Tableau du pipeline (PipelineBoard.tsx)\n* Total par étape\n1. 6 tests ajoutés · 10 / 10 réussis\nFin.";
     expect(summaryPoints(message)).toEqual(['Tableau du pipeline (PipelineBoard.tsx)', 'Total par étape', '6 tests ajoutés · 10 / 10 réussis']);
     expect(summaryPoints(null)).toEqual([]);
+  });
+});
+
+describe('multi-account helpers', () => {
+  it('builds the Git identity from Paramètres, else from the account, validated like the runner', () => {
+    const account = { name: 'Camille Laurent', email: 'camille@example.test' };
+    expect(resolveGitIdentity(account, null)).toEqual({ name: 'Camille Laurent', email: 'camille@example.test' });
+    expect(resolveGitIdentity(account, { gitAuthorName: '  Camille L. ', gitAuthorEmail: null })).toEqual({ name: 'Camille L.', email: 'camille@example.test' });
+    expect(resolveGitIdentity(account, { gitAuthorName: null, gitAuthorEmail: 'c@atelier.test' })).toEqual({ name: 'Camille Laurent', email: 'c@atelier.test' });
+    expect(resolveGitIdentity({ name: '', email: 'x@y.test' }, null)).toEqual({ name: 'x@y.test', email: 'x@y.test' });
+    expect(resolveGitIdentity({ name: 'X', email: 'pas une adresse' }, null)).toBeNull();
+  });
+
+  it('lets the members of the space drive its sessions, nobody else', () => {
+    const space = { id: 'space-a', name: 'Espace', kind: 'personal' as const, role: 'owner' as const };
+    expect(canDriveSession({ space }, { spaceId: 'space-a' })).toBe(true);
+    expect(canDriveSession({ space: { ...space, role: 'member' } }, { spaceId: 'space-a' })).toBe(true);
+    expect(canDriveSession({ space }, { spaceId: 'space-b' })).toBe(false);
+  });
+
+  it('names the server holding the project in the « not ready » reasons', () => {
+    expect(projectUnavailableReason('cloning', 'VPS-4')).toBe('Clonage en cours sur VPS-4.');
+    expect(projectUnavailableReason('error', 'VPS-4')).toBe('Le projet est en erreur : voir sa page.');
+    expect(projectUnavailableReason('other', 'VPS-4')).toBe("Le projet n'est pas prêt.");
   });
 });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   BranchNameSchema,
+  GitIdentitySchema,
   IsoDateSchema,
   PermissionModeSchema,
   PermissionRequestStatusSchema,
@@ -264,18 +265,35 @@ export type McpConfig = z.infer<typeof McpConfigSchema>;
 /** Environment additions for the session (non-secret). Protected names are refused by the runner. */
 export const SessionEnvSchema = z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/), z.string().max(8192));
 
-/** Launch options, given at creation and again (optionally) on resume. */
+/**
+ * Launch options, given at creation and again (optionally) on resume; the runner keeps them with the
+ * session (launch.json). Every field added later is OPTIONAL: a launch file written by an older
+ * version must still be read. The session policies come from here (computed by the web from the
+ * space and instance settings), never from the deprecated columns of `app_settings`.
+ */
 export const SessionLaunchOptionsSchema = z.object({
   mcpConfig: McpConfigSchema.nullish(),
   /** `permissions.deny` rules (e.g. `mcp__coolify__deploy`). */
   denyRules: z.array(z.string().min(1).max(500)).max(500).default([]),
   env: SessionEnvSchema.default({}),
-  /** How long the PermissionRequest hook waits for a decision taken in Nuera Dev (default: app_settings). */
+  /** How long the PermissionRequest hook waits for a decision taken in Nuera Dev (space setting; default 120 s). */
   permissionWaitSeconds: z.number().int().min(5).max(3600).optional(),
-  /** Concurrency cap (default: app_settings.max_concurrent_sessions). */
+  /**
+   * « Bloquer le mode sans autorisation », effective value (instance OR space). Absent (older web):
+   * the runner falls back to its space (`space_settings`, `app_settings.force_block_bypass_permissions`),
+   * blocked when unknown.
+   */
+  blockBypassPermissions: z.boolean().optional(),
+  /** Concurrency cap (default: the server's `environments.max_concurrent_sessions`). */
   maxConcurrentSessions: z.number().int().min(1).max(64).optional(),
-  /** Memory ceiling for the session process tree (MiB, default: app_settings.session_memory_limit_mb). */
+  /** Memory ceiling for the session process tree (MiB, default: `environments.session_memory_limit_mb`). */
   memoryLimitMb: z.number().int().min(128).max(262_144).nullish(),
+  /**
+   * Author and committer of the commits Claude makes in this session (the account that starts or
+   * resumes it): injected by the runner as GIT_AUTHOR_* / GIT_COMMITTER_* (the GIT_ prefix stays
+   * refused in `env`). Absent: the Git configuration of the server.
+   */
+  gitIdentity: GitIdentitySchema.nullish(),
 });
 export type SessionLaunchOptions = z.input<typeof SessionLaunchOptionsSchema>;
 

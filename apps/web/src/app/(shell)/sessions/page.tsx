@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { requireUser } from '@/server/auth/session';
+import { requireContext } from '@/server/tenancy/context';
 import { toAppError } from '@/server/errors';
 import { getCapacity, listSessionProjects, listSessions } from '@/server/sessions';
 import { parseHistoryParams, type SessionCapacity, type SessionListPage } from '@/features/sessions/lib/contract';
@@ -33,15 +33,15 @@ async function load<T>(fn: () => Promise<T>): Promise<SectionLoad<T>> {
  * (?filtre=&periode=&projet=&q=). Every section loads on its own: a failure stays inline (T4).
  */
 export default async function SessionsPage({ searchParams }: { searchParams: SearchParams }) {
-  await requireUser();
+  const ctx = await requireContext();
   const filters = parseHistoryParams(await searchParams);
   const [capacity, active, history, projects] = await Promise.all([
-    load<SessionCapacity>(() => getCapacity()),
-    load<SessionListPage>(() => listSessions({ status: 'active' })),
+    load<SessionCapacity>(() => getCapacity(ctx)),
+    load<SessionListPage>(() => listSessions(ctx, { status: 'active' })),
     load<SessionListPage>(() =>
-      listSessions({ status: 'history', filter: filters.filter, period: filters.period, projectId: filters.projectId, q: filters.q }),
+      listSessions(ctx, { status: 'history', filter: filters.filter, period: filters.period, projectId: filters.projectId, q: filters.q }),
     ),
-    load(() => listSessionProjects()),
+    load(() => listSessionProjects(ctx)),
   ]);
   return (
     <SessionsView

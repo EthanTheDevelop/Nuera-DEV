@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { requireUser } from '@/server/auth/session';
+import { getRequestContext, requireContext } from '@/server/tenancy/context';
 import { listShellWorktrees, type ShellWorktree } from '@/server/terminals';
 import { TerminalKit } from './TerminalKit';
 
@@ -16,18 +16,18 @@ export const dynamic = 'force-dynamic';
  * /kit/terminal — the shared browser terminal (`@/components/terminal`) on REAL runner terminals:
  * `claude-status` inline (W2 « Terminal brut » framing), the windows of Paramètres / T6 / Intégrations
  * and a shell on an active worktree when the database has one. Same rules as /kit: development
- * only, signed-in owner (the terminal routes always require the session, even with NUERA_KIT_PUBLIC=1).
+ * only, signed-in account, its own server only (the terminal routes always require the session, even with NUERA_KIT_PUBLIC=1).
  */
 export default async function TerminalKitPage() {
   if (process.env.NODE_ENV === 'production') notFound();
   const kitPublic = process.env.NODE_ENV === 'development' && process.env.NUERA_KIT_PUBLIC === '1';
-  if (!kitPublic) await requireUser();
+  const ctx = kitPublic ? await getRequestContext() : await requireContext();
   let worktrees: ShellWorktree[] = [];
   let worktreesError: string | null = null;
   try {
-    worktrees = await listShellWorktrees(4);
+    worktrees = ctx ? await listShellWorktrees(ctx, 4) : [];
   } catch {
     worktreesError = 'Base de données injoignable : les worktrees ne peuvent pas être listés.';
   }
-  return <TerminalKit worktrees={worktrees} worktreesError={worktreesError} />;
+  return <TerminalKit worktrees={worktrees} worktreesError={worktreesError} serverName={ctx?.environment?.name ?? null} />;
 }

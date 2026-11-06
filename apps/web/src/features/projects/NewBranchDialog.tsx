@@ -14,15 +14,17 @@ export interface NewBranchDialogProps {
   /** Start points offered (local branches); default: the default branch only. */
   branches?: readonly string[];
   onCreated?: (branch: string) => void;
+  /** Server holding the project (default: the server of the space). */
+  serverName?: string | null;
 }
 
 /**
  * « Nouvelle branche… » (D02 row menu, D04 tile — not drawn): name, start point, optional switch
  * of the primary clone. Same visual language as the add-project dialog.
  */
-export function NewBranchDialog({ open, onOpenChange, project, branches, onCreated }: NewBranchDialogProps) {
+export function NewBranchDialog({ open, onOpenChange, project, branches, onCreated, serverName: known }: NewBranchDialogProps) {
   const nameId = useId();
-  const serverName = useServerName();
+  const serverName = useServerName(known);
   const [name, setName] = useState('');
   const [from, setFrom] = useState(project.defaultBranch);
   const [checkout, setCheckout] = useState(false);

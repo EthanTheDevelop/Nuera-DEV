@@ -1,25 +1,44 @@
 import 'server-only';
-import { integrations as integrationsTable, mcpServers } from '@nuera/db/schema';
-import { max } from 'drizzle-orm';
+import { githubSources, integrations as integrationsTable, mcpServers, spaces } from '@nuera/db/schema';
+import { and, eq, isNull, max } from 'drizzle-orm';
 import { db } from '@/server/db';
 import { checkCoolify, getCoolifySettings, type CoolifySettingsView } from '@/server/coolify';
-import { checkGithub, getGithubStatus, GITHUB_IMPACT, type GithubStatus } from '@/server/github';
+import { checkGithubSources, getGithubOverview, GITHUB_IMPACT, type GithubOverview } from '@/server/github';
 import { checkActiveMcpServers, listMcpServers, type McpServerView } from '@/server/mcp';
-import { COOLIFY_MUTATING_TOOLS, FIGMA_WRITE_TOOLS } from '@/server/mcp/presets';
+import { COOLIFY_MUTATING_TOOLS, FIGMA_WRITE_TOOLS, type PresetServerContext } from '@/server/mcp/presets';
 import { getPushStatus, type PushStatus } from '@/server/push';
 import { CHECK_INTERVAL_MINUTES, STATUS_BADGES, type CheckTrigger } from './model';
 import { formatClock, formatDayMonth, paragraph } from './transitions';
 
 /**
- * Integration façade: everything D07 (Intégrations), M07 and the D01 « Intégrations » tile need,
- * read from the database (no network call). Live checks: `runAllIntegrationChecks()` (runner
- * scheduler every 15 min through POST /api/internal/integrations/check) or the per-integration
- * « Vérifier la connexion » / « Tester la connexion » routes.
+ * Integration façade of a space: everything D07 (Intégrations), M07 and the D01 « Intégrations »
+ * tile need, read from the database (no network call) and limited to that space (MULTICOMPTE §7).
+ * Live checks: `runIntegrationChecks({ spaceId })` (web scheduler every 15 min, instrumentation.ts;
+ * no runner triggers them) or the per-integration « Vérifier la connexion » / « Tester la
+ * connexion » routes.
  */
 
+/** What the overview needs to know about the request: the space and its server (copy of the presets). */
+export interface IntegrationsScope {
+  space: { id: string };
+  environment?: { name: string; isDefault: boolean } | null;
+}
+
+/** Server of the request context as the preset copy needs it (« … sur VPS-3 », « chiffré par Nuera Dev »). */
+export function presetServerOf(scope: Pick<IntegrationsScope, 'environment'>): PresetServerContext | null {
+  return scope.environment ? { name: scope.environment.name, isDefault: scope.environment.isDefault } : null;
+}
+
 export interface DiagnosticBanner {
-  /** 'github' | 'coolify' | `mcp:${name}` */
+  /**
+   * 'github' (the space's only GitHub source, or GITHUB_FALLBACK_TOKEN) | `github:<sourceId>` (one
+   * source among several) | 'coolify' | `mcp:${name}`
+   */
   target: string;
+  /** Service behind the banner. */
+  service: 'github' | 'coolify' | 'mcp';
+  /** GitHub source concerned (null for the fallback token and the other services). */
+  sourceId: string | null;
   /** `warn` = T7 « avant » (Alerte), `danger` = failing service (D07 diagnostic, T7 « après »). */
   tone: 'danger' | 'warn';
   /**
@@ -36,7 +55,7 @@ export interface DiagnosticBanner {
 }
 
 export interface IntegrationsOverview {
-  github: GithubStatus;
+  github: GithubOverview;
   coolify: CoolifySettingsView;
   mcp: {
     servers: McpServerView[];
@@ -62,6 +81,8 @@ const COOLIFY_TOKEN_EXPIRED = 'Le jeton du serveur MCP a expiré.';
 
 function bannerForService(input: {
   target: string;
+  service: DiagnosticBanner['service'];
+  sourceId?: string | null;
   label: string;
   status: string;
   since: string | null;
@@ -79,10 +100,11 @@ function bannerForService(input: {
     ...(input.reconnect ? [input.reconnect] : []),
   ];
   const coolify = input.target === 'coolify' || input.target === 'mcp:coolify';
+  const identity = { target: input.target, service: input.service, sourceId: input.sourceId ?? null };
   if (input.status === 'expiring') {
     const when = input.expiresAt ? ` avant le ${formatDayMonth(new Date(input.expiresAt))}` : '';
     return {
-      target: input.target,
+      ...identity,
       tone: 'warn',
       title: `Autorisation ${input.label} bientôt expirée`,
       body: `Renouvelez l'accès${when}.`,
@@ -92,7 +114,7 @@ function bannerForService(input: {
   }
   if (input.status === 'error' || input.status === 'expired') {
     return {
-      target: input.target,
+      ...identity,
       tone: 'danger',
       // Unreachable → « ne répond plus depuis » (D07). Refused credential → the D07 banner for
       // Coolify, T7 « après » for the other services.
@@ -107,24 +129,36 @@ function bannerForService(input: {
   return null;
 }
 
-export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
-  const [github, coolify] = await Promise.all([getGithubStatus(), getCoolifySettings()]);
-  const servers = await listMcpServers({ coolifyBaseUrl: coolify.baseUrl });
+export async function getIntegrationsOverview(scope: IntegrationsScope): Promise<IntegrationsOverview> {
+  const spaceId = scope.space.id;
+  const presetServer = presetServerOf(scope);
+  const [github, coolify] = await Promise.all([getGithubOverview(spaceId), getCoolifySettings(spaceId)]);
+  const servers = await listMcpServers({ spaceId, coolifyBaseUrl: coolify.baseUrl, server: presetServer });
 
   const diagnostics: DiagnosticBanner[] = [];
-  const githubBanner = bannerForService({
-    target: 'github',
-    label: 'GitHub',
-    status: github.status,
-    since: github.failingSince,
-    // Only the env-only fallback PAT can expire: it is renewed outside Nuera Dev (no button).
-    expiresAt: github.expiresAt,
-    reason: github.reason,
-    impact: GITHUB_IMPACT,
-    reconnect: github.action?.url ? { kind: 'external', label: github.action.label, href: github.action.url } : null,
-    journalHref: '/integrations?journal=github',
-  });
-  if (githubBanner) diagnostics.push(githubBanner);
+  // One banner per failing GitHub source; a single source (or the fallback token) keeps the
+  // historical target 'github' and label « GitHub ».
+  const several = github.sources.length > 1;
+  const githubTargets = github.sources.length
+    ? github.sources.map((source) => ({ status: source, sourceId: source.id, target: several ? `github:${source.id}` : 'github', label: several ? `GitHub · ${source.label}` : 'GitHub' }))
+    : [{ status: github, sourceId: null, target: 'github', label: 'GitHub' }];
+  for (const item of githubTargets) {
+    const banner = bannerForService({
+      target: item.target,
+      service: 'github',
+      sourceId: item.sourceId,
+      label: item.label,
+      status: item.status.status,
+      since: item.status.failingSince,
+      // Only the env-only fallback PAT can expire: it is renewed outside Nuera Dev (no button).
+      expiresAt: item.status.expiresAt,
+      reason: item.status.reason,
+      impact: GITHUB_IMPACT,
+      reconnect: item.status.action?.url ? { kind: 'external', label: item.status.action.label, href: item.status.action.url } : null,
+      journalHref: item.sourceId && several ? `/integrations?journal=github&source=${item.sourceId}` : '/integrations?journal=github',
+    });
+    if (banner) diagnostics.push(banner);
+  }
   const projectsUsing = (preset: string) => {
     const names = servers.find((server) => server.preset === preset)?.projects.filter((item) => item.enabled).map((item) => item.name) ?? [];
     if (names.length === 0) return 'Les sessions';
@@ -134,6 +168,7 @@ export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
   if (coolify.configured) {
     const banner = bannerForService({
       target: 'coolify',
+      service: 'coolify',
       label: 'Coolify',
       status: coolify.status,
       since: coolify.failingSince,
@@ -153,6 +188,7 @@ export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
     if (server.preset === 'coolify' && coolifyFailing) continue;
     const banner = bannerForService({
       target: `mcp:${server.name}`,
+      service: 'mcp',
       label: server.label,
       status: server.displayStatus,
       since: server.failingSince,
@@ -168,8 +204,10 @@ export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
   }
 
   const attentionItems: IntegrationsOverview['attention']['items'] = [];
-  if (['expired', 'error', 'expiring'].includes(github.status)) {
-    attentionItems.push({ target: 'github', label: 'GitHub', status: github.status, badge: STATUS_BADGES[github.status as 'expired'].label });
+  for (const item of githubTargets) {
+    if (['expired', 'error', 'expiring'].includes(item.status.status)) {
+      attentionItems.push({ target: item.target, label: item.label, status: item.status.status, badge: STATUS_BADGES[item.status.status as 'expired'].label });
+    }
   }
   if (coolify.configured && ['expired', 'error', 'expiring'].includes(coolify.status)) {
     attentionItems.push({ target: 'coolify', label: 'Coolify', status: coolify.status, badge: STATUS_BADGES[coolify.status as 'expired'].label });
@@ -181,9 +219,15 @@ export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
     }
   }
 
-  const [lastIntegrationRun] = await db.select({ at: max(integrationsTable.lastCheckedAt) }).from(integrationsTable);
-  const [lastMcpRun] = await db.select({ at: max(mcpServers.lastCheckedAt) }).from(mcpServers);
-  const lastRunTimes = [lastIntegrationRun?.at, lastMcpRun?.at].filter((value): value is Date => value instanceof Date);
+  // « Diagnostic automatique » of THIS space only.
+  const [[lastIntegrationRun], [lastSourceRun], [lastMcpRun]] = await Promise.all([
+    db.select({ at: max(integrationsTable.lastCheckedAt) }).from(integrationsTable).where(eq(integrationsTable.spaceId, spaceId)),
+    db.select({ at: max(githubSources.lastCheckedAt) }).from(githubSources).where(eq(githubSources.spaceId, spaceId)),
+    db.select({ at: max(mcpServers.lastCheckedAt) }).from(mcpServers).where(eq(mcpServers.spaceId, spaceId)),
+  ]);
+  const lastRunTimes = [lastIntegrationRun?.at, lastSourceRun?.at, lastMcpRun?.at, github.lastCheckedAt ? new Date(github.lastCheckedAt) : null].filter(
+    (value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()),
+  );
   const lastRunAt = lastRunTimes.length ? new Date(Math.max(...lastRunTimes.map((value) => value.getTime()))).toISOString() : null;
 
   return {
@@ -207,22 +251,38 @@ export async function getIntegrationsOverview(): Promise<IntegrationsOverview> {
 }
 
 export interface IntegrationChecksSummary {
+  spaceId: string;
   startedAt: string;
   durationMs: number;
+  /** Aggregate GitHub status of the space (null: nothing to check). */
   github: { status: string } | { error: string } | null;
+  /** One entry per GitHub source checked. */
+  githubSources: Array<{ sourceId: string; status: string } | { sourceId: string; error: string }>;
   coolify: { status: string } | { error: string } | null;
   mcp: Array<{ name: string; status: string; error?: string }>;
 }
 
-const inflight = globalThis as unknown as { __nueraIntegrationChecks?: Promise<IntegrationChecksSummary> };
+export interface RunIntegrationChecksOptions {
+  spaceId: string;
+  trigger?: CheckTrigger;
+  /** Scheduled run: skip the targets checked less than this long ago (10 min for the web scheduler). */
+  skipCheckedWithinMs?: number;
+}
+
+const inflight = globalThis as unknown as { __nueraIntegrationChecks?: Map<string, Promise<IntegrationChecksSummary>> };
+const running = (inflight.__nueraIntegrationChecks ??= new Map());
 
 /**
- * Runs every check (GitHub, Coolify, MCP servers used by a project) in parallel. Concurrent calls
- * share the same run. Transitions create the T7 notifications.
+ * Runs the checks of ONE space (its GitHub sources or the fallback token of the default server's
+ * space, its Coolify, its MCP servers used by a project) in parallel. Concurrent calls for the same
+ * space share the same run. Transitions notify the members of that space (T7).
  */
-export function runAllIntegrationChecks(options: { trigger?: CheckTrigger } = {}): Promise<IntegrationChecksSummary> {
-  if (inflight.__nueraIntegrationChecks) return inflight.__nueraIntegrationChecks;
+export function runIntegrationChecks(options: RunIntegrationChecksOptions): Promise<IntegrationChecksSummary> {
+  const { spaceId } = options;
+  const current = running.get(spaceId);
+  if (current) return current;
   const trigger = options.trigger ?? 'schedule';
+  const skip = options.skipCheckedWithinMs ? { skipCheckedWithinMs: options.skipCheckedWithinMs } : {};
   const run = (async (): Promise<IntegrationChecksSummary> => {
     const started = Date.now();
     const settle = async <T>(task: () => Promise<T>, pick: (value: T) => string) => {
@@ -234,23 +294,59 @@ export function runAllIntegrationChecks(options: { trigger?: CheckTrigger } = {}
     };
     const [github, coolify, mcp] = await Promise.all([
       (async () => {
-        const status = await getGithubStatus();
-        return status.mode === 'none' ? null : settle(() => checkGithub({ trigger }), (value) => value.status);
+        const overview = await getGithubOverview(spaceId);
+        if (overview.mode === 'none') return { aggregate: null, sources: [] };
+        try {
+          const result = await checkGithubSources({ spaceId, trigger, ...skip });
+          return { aggregate: { status: result.overview.status }, sources: result.sources };
+        } catch (error) {
+          return { aggregate: { error: error instanceof Error ? error.message : 'erreur' }, sources: [] };
+        }
       })(),
       (async () => {
-        const settings = await getCoolifySettings();
-        return settings.configured ? settle(() => checkCoolify({ trigger }), (value) => value.status) : null;
+        const settings = await getCoolifySettings(spaceId);
+        return settings.configured ? settle(() => checkCoolify({ spaceId, trigger, ...skip }), (value) => value.status) : null;
       })(),
-      checkActiveMcpServers({ trigger }).catch((error: unknown) => [
+      checkActiveMcpServers({ spaceId, trigger, ...skip }).catch((error: unknown) => [
         { name: '*', status: 'failed', error: error instanceof Error ? error.message : 'erreur' },
       ]),
     ]);
-    return { startedAt: new Date(started).toISOString(), durationMs: Date.now() - started, github, coolify, mcp };
+    return {
+      spaceId,
+      startedAt: new Date(started).toISOString(),
+      durationMs: Date.now() - started,
+      github: github.aggregate,
+      githubSources: github.sources,
+      coolify,
+      mcp,
+    };
   })();
-  inflight.__nueraIntegrationChecks = run;
+  running.set(spaceId, run);
   return run.finally(() => {
-    inflight.__nueraIntegrationChecks = undefined;
+    if (running.get(spaceId) === run) running.delete(spaceId);
   });
+}
+
+/** @deprecated name of {@link runIntegrationChecks} (a space is now required). */
+export const runAllIntegrationChecks = runIntegrationChecks;
+
+/** Spaces that have something to check: a GitHub source, a Coolify token or an MCP server in use (non-archived spaces). */
+export async function listSpacesToCheck(): Promise<string[]> {
+  const ids = new Set<string>();
+  const active = isNull(spaces.archivedAt);
+  const [sources, tokens, registries] = await Promise.all([
+    db.selectDistinct({ id: githubSources.spaceId }).from(githubSources).innerJoin(spaces, and(eq(spaces.id, githubSources.spaceId), active)),
+    db.selectDistinct({ id: integrationsTable.spaceId }).from(integrationsTable).innerJoin(spaces, and(eq(spaces.id, integrationsTable.spaceId), active)),
+    db.selectDistinct({ id: mcpServers.spaceId }).from(mcpServers).innerJoin(spaces, and(eq(spaces.id, mcpServers.spaceId), active)),
+  ]);
+  for (const row of [...sources, ...tokens, ...registries]) ids.add(row.id);
+  // The space of the default server may check GITHUB_FALLBACK_TOKEN without any row.
+  if (process.env.GITHUB_FALLBACK_TOKEN?.trim()) {
+    const { defaultServerSpaceId } = await import('@/server/github/config');
+    const fallback = await defaultServerSpaceId();
+    if (fallback) ids.add(fallback);
+  }
+  return [...ids].sort();
 }
 
 export type { CheckTrigger } from './model';

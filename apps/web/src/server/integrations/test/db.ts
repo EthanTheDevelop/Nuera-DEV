@@ -9,12 +9,16 @@
 import { randomBytes } from 'node:crypto';
 import { createDb } from '@nuera/db';
 import { runMigrations } from '@nuera/db/migrate';
-import { user } from '@nuera/db/schema';
 import { sql } from 'drizzle-orm';
+import type { RequestContext } from '@/server/tenancy/context';
+import { legacyOwnerContext, seedLegacyOwner, TEST_ENVIRONMENT_ID, TEST_SPACE_ID, type TestAccount } from '@/server/tenancy/test/fixtures';
 
 const ADMIN_URL = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
 
 export const TEST_USER_ID = 'test-owner';
+
+/** Space and default server (« VPS-3 », RUNNER_URL / RUNNER_TOKEN) of the owner seeded by the reset below. */
+export { TEST_ENVIRONMENT_ID, TEST_SPACE_ID };
 
 function databaseUrl(name: string): string {
   const url = new URL(ADMIN_URL);
@@ -39,10 +43,15 @@ async function recreate(name: string): Promise<void> {
   });
 }
 
-/** Creates/migrates the database of this test file and points DATABASE_URL (and the app db) at it. */
+/**
+ * Creates/migrates the database of this test file (`<NUERA_DB_TEST_PREFIX or nuera_integrations>_<suffix>`)
+ * and points DATABASE_URL (and the app db) at it.
+ */
 export async function prepareTestDatabase(suffix: string): Promise<string> {
   if (!/^[a-z0-9_]{1,30}$/.test(suffix)) throw new Error('suffixe de base invalide');
-  const name = `nuera_integrations_${suffix}`;
+  const prefix = process.env.NUERA_DB_TEST_PREFIX ?? 'nuera_integrations';
+  if (!/^nuera_[a-z0-9_]{1,30}$/.test(prefix)) throw new Error('préfixe de base invalide');
+  const name = `${prefix}_${suffix}`;
   const url = databaseUrl(name);
   const exists = await admin(async (db) => {
     const rows = await db.execute(sql`select 1 as found from pg_database where datname = ${name}`);
@@ -61,15 +70,51 @@ export async function prepareTestDatabase(suffix: string): Promise<string> {
   return url;
 }
 
-/** Empties every table touched by the integration lot and recreates the owner. */
-export async function resetTables(): Promise<void> {
+/** Request context of the seeded owner (space TEST_SPACE_ID, server TEST_ENVIRONMENT_ID). */
+export function testContext(): RequestContext {
+  return legacyOwnerContext({ id: TEST_USER_ID, name: 'Nezar', email: 'owner@example.test' });
+}
+
+/**
+ * Empties the tables and seeds the owner again with its personal space and the default server
+ * (fixed ids TEST_SPACE_ID / TEST_ENVIRONMENT_ID): set them on every inserted project
+ * (`spaceId`, `environmentId`) and `environmentId` on worktrees, sessions, runs and operations.
+ */
+export async function resetTables(): Promise<TestAccount> {
   const { db } = await import('@/server/db');
   await db.execute(
     sql.raw(
-      'truncate table notifications, push_subscriptions, project_mcp_servers, mcp_servers, integrations, audit_log, permission_requests, session_events, sessions, worktrees, projects, "user" restart identity cascade',
+      'truncate table notifications, push_subscriptions, project_mcp_servers, mcp_servers, integrations, github_sources, audit_log, permission_requests, session_events, sessions, worktrees, projects, "user" restart identity cascade',
     ),
   );
-  await db.insert(user).values({ id: TEST_USER_ID, name: 'Nezar', email: 'owner@example.test', twoFactorEnabled: true });
+  await resetIntegrationState();
+  return seedLegacyOwner({ id: TEST_USER_ID, name: 'Nezar', email: 'owner@example.test' });
+}
+
+/** In-memory state of the integration modules: token cache, manual-check throttles, SSRF hosts. */
+export async function resetIntegrationState(): Promise<void> {
+  const [tokens, status, coolify, diagnostics, ssrf] = await Promise.all([
+    import('@/server/github/tokens'),
+    import('@/server/github/status'),
+    import('@/server/coolify'),
+    import('@/server/mcp/diagnostics'),
+    import('@/server/security/ssrf'),
+  ]);
+  tokens.clearGithubTokenCache();
+  status.resetGithubCheckState();
+  coolify.resetCoolifyCheckState();
+  diagnostics.resetMcpCheckState();
+  ssrf.invalidateSsrfCache();
+  const holder = globalThis as { __nueraIntegrationChecks?: Map<string, unknown> };
+  holder.__nueraIntegrationChecks?.clear();
+}
+
+/**
+ * The fakes (GitHub, Coolify, MCP) listen on 127.0.0.1: the SSRF guard refuses loopback unless it is
+ * listed in NUERA_PRIVATE_HOSTS (as an administrator would for a private Coolify).
+ */
+export function allowLocalFakes(): void {
+  process.env.NUERA_PRIVATE_HOSTS = '127.0.0.1,localhost';
 }
 
 /** Random 32-byte key for AES-256-GCM (crypto.ts reads it at call time). */
@@ -84,6 +129,8 @@ export async function dumpIntegrationTables(): Promise<string> {
   const { db } = await import('@/server/db');
   const rows = await db.execute(
     sql`select row_to_json(t)::text as j from (select * from integrations) t
+        union all select row_to_json(t)::text from (select * from github_sources) t
+        union all select row_to_json(t)::text from (select * from environments) t
         union all select row_to_json(t)::text from (select * from mcp_servers) t
         union all select row_to_json(t)::text from (select * from audit_log) t
         union all select row_to_json(t)::text from (select * from notifications) t`,

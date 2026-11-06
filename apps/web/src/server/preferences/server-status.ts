@@ -1,15 +1,19 @@
 import 'server-only';
 import type { LiveSessionsView, MetricsView, RunnerHealthView, UptimeView, WebProcessView } from '@/features/settings/lib/types';
-import { runner } from '@/server/runner/client';
+import { requireEnvironment, type RequestContext } from '@/server/tenancy/context';
 
 /**
- * « Serveur VPS-3 »: only what the runner and the web process really report (health, live sessions,
- * metrics, availability per day). Nothing about system packages or restart policies is invented.
+ * « Serveur VPS-3 »: only what the runner of the account's server and the web process really report
+ * (health, live sessions, metrics, availability per day). Nothing about system packages or restart
+ * policies is invented. Without a server: AppError CONFLICT reason NO_ENVIRONMENT, no runner call.
  */
 
 const RUNNER_TIMEOUT_MS = 6_000;
 
-export async function getRunnerHealth(): Promise<RunnerHealthView> {
+type ServerContext = Pick<RequestContext, 'environment'>;
+
+export async function getRunnerHealth(ctx: ServerContext): Promise<RunnerHealthView> {
+  const { runner } = requireEnvironment(ctx);
   const health = await runner.health(undefined, { timeoutMs: RUNNER_TIMEOUT_MS });
   return {
     ok: health.ok,
@@ -25,14 +29,17 @@ export async function getRunnerHealth(): Promise<RunnerHealthView> {
   };
 }
 
-export async function getLiveSessions(): Promise<LiveSessionsView> {
+/** Live Claude processes of the server (the runner lists only its own sessions). */
+export async function getLiveSessions(ctx: ServerContext): Promise<LiveSessionsView> {
+  const { runner } = requireEnvironment(ctx);
   const result = await runner.listSessions(undefined, { timeoutMs: RUNNER_TIMEOUT_MS });
   const live = result.sessions.filter((session) => session.live);
   const names = [...new Set(live.map((session) => session.worktree?.name).filter((name): name is string => Boolean(name)))];
   return { count: live.length, names };
 }
 
-export async function getMetrics(): Promise<MetricsView> {
+export async function getMetrics(ctx: ServerContext): Promise<MetricsView> {
+  const { runner } = requireEnvironment(ctx);
   const m = await runner.systemMetrics(undefined, { timeoutMs: RUNNER_TIMEOUT_MS });
   return {
     sampledAt: m.sampledAt,
@@ -48,7 +55,12 @@ export async function getMetrics(): Promise<MetricsView> {
   };
 }
 
-export async function getUptime(days = 30): Promise<UptimeView> {
+/**
+ * Availability per day of the server: its runner answers for its own uptime key (`uptimeServiceKey()`
+ * — `runner` for the default server, `runner:<environmentId>` for the others).
+ */
+export async function getUptime(ctx: ServerContext, days = 30): Promise<UptimeView> {
+  const { runner } = requireEnvironment(ctx);
   const report = await runner.systemUptime({ query: { days, service: 'runner' } }, { timeoutMs: RUNNER_TIMEOUT_MS });
   return {
     days: report.days.map((day) => ({ day: day.day, availability: day.availability, incidents: day.incidents })),

@@ -15,7 +15,7 @@ type State = { kind: 'loading' } | { kind: 'ready'; data: AccessibleReposResult 
  * « Voir les N dépôts » (D07, not designed): the repositories the GitHub App can reach, grouped by
  * account with their count (`GET /api/integrations/github/repos`), « Déjà cloné » linking to the project.
  */
-export function ReposDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ReposDialog({ open, onOpenChange, sourceId = null }: { open: boolean; onOpenChange: (open: boolean) => void; sourceId?: string | null }) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
 
@@ -25,7 +25,7 @@ export function ReposDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     // eslint-disable-next-line react/set-state-in-effect -- synchronous « loading » state of the fetch this effect starts (external data)
     setState({ kind: 'loading' });
     integrationsApi
-      .githubRepos(controller.signal)
+      .githubRepos(controller.signal, sourceId)
       .then((data) => setState({ kind: 'ready', data }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -33,7 +33,7 @@ export function ReposDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       });
     return () => controller.abort();
   // eslint-disable-next-line react/exhaustive-effect-dependencies -- attempt reloads the list on « Réessayer »
-  }, [open, attempt]);
+  }, [open, attempt, sourceId]);
 
   const description =
     state.kind === 'ready'

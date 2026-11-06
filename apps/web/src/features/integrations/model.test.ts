@@ -5,32 +5,39 @@ import {
   effectiveMcpStatus,
   expiredWhen,
   expiryToIso,
+  encryptedPlace,
   githubNotice,
+  githubPhoneTitle,
   githubTile,
+  githubTileTitle,
   installedOnSentence,
   isGithubOutcome,
   lastCallValue,
   mcpCardAction,
   phoneAlertTitle,
   reconnectBanner,
+  serverLabel,
   serverNameProblem,
   slugifyServerName,
+  sourceInUseSentence,
   verificationValue,
   writeRightsShort,
   GITHUB_OUTCOMES,
 } from './model';
-import type { GithubStatus, IntegrationsOverview, McpDetailContext, McpServerView } from './types';
+import type { GithubOverview, GithubSourceStatus, GithubStatus, IntegrationsOverview, McpDetailContext, McpServerView } from './types';
 
 const NOW = new Date('2026-11-05T14:30:00Z'); // 15:30 à Paris
 
 function github(overrides: Partial<GithubStatus> = {}): GithubStatus {
   return {
     mode: 'app',
+    sourceId: 'src-1',
+    label: 'org-a',
     status: 'connected',
     app: { id: 1, slug: 'nuera-dev-test', name: 'Nuera Dev', htmlUrl: 'https://github.com/apps/nuera-dev-test', public: true, ownerLogin: 'org-a', createdAt: NOW.toISOString() },
     accounts: [
-      { login: 'org-a', type: 'Organization', installationId: 1, repositorySelection: 'selected', repoCount: 3, suspended: false, suspendedBy: null, manageUrl: null },
-      { login: 'user-b', type: 'User', installationId: 2, repositorySelection: 'selected', repoCount: 2, suspended: false, suspendedBy: null, manageUrl: null },
+      { sourceId: 'src-1', login: 'org-a', type: 'Organization', installationId: 1, repositorySelection: 'selected', repoCount: 3, suspended: false, suspendedBy: null, manageUrl: null },
+      { sourceId: 'src-1', login: 'user-b', type: 'User', installationId: 2, repositorySelection: 'selected', repoCount: 2, suspended: false, suspendedBy: null, manageUrl: null },
     ],
     ignoredInstallations: 0,
     repoCount: 5,
@@ -210,9 +217,50 @@ describe('MCP view helpers', () => {
   });
 
   it('titles the M07 alert cards', () => {
-    const overview = { github: github(), coolify: { status: 'expired' }, mcp: { servers: [] } } as unknown as IntegrationsOverview;
+    const overview = { github: overviewOf(github()), coolify: { status: 'expired' }, mcp: { servers: [] } } as unknown as IntegrationsOverview;
     expect(phoneAlertTitle({ target: 'coolify', tone: 'danger', title: 'Coolify ne répond plus depuis 09:12' }, overview)).toBe('Coolify : autorisation expirée');
-    expect(phoneAlertTitle({ target: 'github', tone: 'danger', title: "L'accès GitHub a été retiré" }, { ...overview, github: github({ status: 'error' }) })).toBe('GitHub : accès retiré');
+    expect(phoneAlertTitle({ target: 'github', tone: 'danger', title: "L'accès GitHub a été retiré" }, { ...overview, github: overviewOf(github({ status: 'error' })) })).toBe('GitHub : accès retiré');
+    // One source among several: named after the source, with its own status.
+    const several = overviewOf(github({ status: 'expired' }), [source('src-1', 'org-a', 'connected'), source('src-2', 'user-b', 'expired')]);
+    expect(phoneAlertTitle({ target: 'github:src-2', sourceId: 'src-2', tone: 'danger', title: "L'accès GitHub · user-b a été retiré" }, { ...overview, github: several })).toBe('GitHub · user-b : autorisation expirée');
+  });
+});
+
+function source(id: string, label: string, status: GithubStatus['status']): GithubSourceStatus {
+  return { ...github({ status, label }), id, sourceId: id, label, createdAt: NOW.toISOString(), projects: [] };
+}
+
+function overviewOf(aggregate: GithubStatus, sources: GithubSourceStatus[] = [source('src-1', 'org-a', aggregate.status)]): GithubOverview {
+  return { ...aggregate, sources, sourceCount: sources.length, failingSourceCount: 0, maxSources: 10, canAddSource: sources.length < 10 };
+}
+
+describe('GitHub sources', () => {
+  it('keeps the Figma title for a single source and names each source among several', () => {
+    expect(githubTileTitle('org-a', false)).toBe('GitHub · import et synchronisation des dépôts');
+    expect(githubTileTitle('org-a', true)).toBe('GitHub · org-a');
+    expect(githubPhoneTitle('org-a', false)).toBe('GitHub');
+    expect(githubPhoneTitle('user-b', true)).toBe('GitHub · user-b');
+  });
+
+  it('says which projects keep a source connected', () => {
+    expect(sourceInUseSentence([])).toBeNull();
+    expect(sourceInUseSentence([{ name: 'Nuera OS' }])).toBe("Le projet actif Nuera OS l'utilise.");
+    expect(sourceInUseSentence([{ name: 'Nuera OS' }, { name: 'Roux Conseil' }])).toBe("2 projets actifs l'utilisent : Nuera OS et Roux Conseil.");
+  });
+
+  it('names the server in the copy (« chiffré par Nuera Dev » outside the default server)', () => {
+    expect(serverLabel({ name: 'VPS-3' })).toBe('VPS-3');
+    expect(serverLabel(null)).toBe('votre serveur');
+    expect(encryptedPlace({ name: 'VPS-3', isDefault: true })).toBe('chiffré sur VPS-3');
+    expect(encryptedPlace({ name: 'VPS-3', isDefault: true }, true)).toBe('chiffrés sur VPS-3');
+    expect(encryptedPlace({ name: 'VPS-4', isDefault: false })).toBe('chiffré par Nuera Dev');
+    expect(encryptedPlace(null, true)).toBe('chiffrés par Nuera Dev');
+  });
+
+  it('explains the new return codes of the GitHub flows', () => {
+    expect(githubNotice('source_limit')).toMatchObject({ kind: 'banner', tone: 'warn', title: 'Nombre maximal de sources GitHub atteint' });
+    expect(githubNotice('wrong_account')).toMatchObject({ kind: 'banner', tone: 'danger', action: 'connect' });
+    expect(githubNotice('choose_source')).toMatchObject({ kind: 'banner', tone: 'info', title: 'Choisissez la source GitHub' });
   });
 });
 

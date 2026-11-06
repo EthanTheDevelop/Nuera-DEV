@@ -1,39 +1,22 @@
 import 'server-only';
-import { commandRuns, operations, permissionRequests, projects, sessions, worktrees } from '@nuera/db/schema';
+import { commandRuns, operations, permissionRequests, sessions, worktrees } from '@nuera/db/schema';
 import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '@/server/db';
-import { AppError } from '@/server/errors';
+import type { ProjectRow } from './access';
 import type { ProjectListItem, ProjectOperationView, ProjectSessionCounts, ProjectSessionView, RunView } from './types';
 
-export type ProjectRow = typeof projects.$inferSelect;
+/*
+ * Read helpers of the Projets domain. They take project ids that ALREADY come out of a query
+ * scoped to the space of the request (`requireProject`, `ofSpace` lists): never call them with an
+ * id read from a request. Nothing here is exported by the module's public surface.
+ */
+
+export type { ProjectRow };
 
 export const LIVE_STATUSES = ['running', 'waiting_permission', 'waiting_input'] as const;
 const SYNC_OPERATION_KINDS = ['fetch', 'pull'] as const;
 
 const iso = (value: Date | null | undefined): string | null => (value ? value.toISOString() : null);
-
-export async function getProjectRow(projectId: string): Promise<ProjectRow | null> {
-  const [row] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-  return row ?? null;
-}
-
-/** Project row or NOT_FOUND (French copy). */
-export async function requireProjectRow(projectId: string): Promise<ProjectRow> {
-  const row = await getProjectRow(projectId);
-  if (!row) throw new AppError('NOT_FOUND', 'Projet introuvable : il a peut-être été retiré.');
-  return row;
-}
-
-/** A project the owner can act on: not archived, clone finished. */
-export async function requireReadyProject(projectId: string): Promise<ProjectRow> {
-  const row = await requireProjectRow(projectId);
-  if (row.archivedAt) throw new AppError('CONFLICT', 'Ce projet est archivé : restaurez-le pour agir dessus.');
-  if (row.status === 'cloning') throw new AppError('CONFLICT', 'Le clonage de ce projet est encore en cours.');
-  if (row.status !== 'ready') {
-    throw new AppError('CONFLICT', "Ce projet n'est pas prêt : son clonage a échoué.", { detail: row.statusDetail ?? undefined });
-  }
-  return row;
-}
 
 export async function primaryWorktreeId(projectId: string): Promise<string | null> {
   const [row] = await db

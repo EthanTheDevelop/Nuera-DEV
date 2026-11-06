@@ -16,15 +16,15 @@ const params = z.object({ projectId: z.uuid(), worktreeId: z.uuid() });
 
 export const GET = apiRoute({
   params,
-  handler: ({ params: { projectId, worktreeId } }) => withProjectErrors(() => previewWorktreeRemoval(projectId, worktreeId)),
+  handler: ({ params: { projectId, worktreeId }, ctx }) => withProjectErrors(() => previewWorktreeRemoval(ctx, projectId, worktreeId)),
 });
 
 export const DELETE = apiRoute({
   params,
   query: z.object({ force: QueryBooleanSchema.optional(), deleteBranch: QueryBooleanSchema.optional() }),
   rateLimit: { limit: 30, windowMs: 10 * 60_000 },
-  handler: ({ params: { projectId, worktreeId }, query, user }) =>
+  handler: ({ params: { projectId, worktreeId }, query, ctx }) =>
     withProjectErrors(() =>
-      removeProjectWorktree(projectId, worktreeId, { force: query.force ?? false, deleteBranch: query.deleteBranch ?? false }, user),
+      removeProjectWorktree(ctx, projectId, worktreeId, { force: query.force ?? false, deleteBranch: query.deleteBranch ?? false }),
     ),
 });

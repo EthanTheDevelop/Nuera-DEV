@@ -44,7 +44,7 @@ import {
 import { SECTION_IDS } from '../lib/tabs';
 import type { OperationLogItem, SessionLogItem, StaleWorktreesView } from '../lib/types';
 import { NumberSetting, TextSetting } from './controls';
-import { InfoBox, SettingsRow, SettingsRows, UnavailableNote } from './parts';
+import { InfoBox, NO_SERVER_NOTE, NoServerNote, SettingsRow, SettingsRows, UnavailableNote } from './parts';
 import { useSettings } from './SettingsContext';
 
 const SESSION_STATUS_LABELS: Record<string, string> = {
@@ -56,15 +56,36 @@ const SESSION_STATUS_LABELS: Record<string, string> = {
 };
 
 function useRunnerUnavailable(): boolean {
-  const { data } = useSettings();
+  const { data, serverName } = useSettings();
   const live = useLiveEvents();
+  if (serverName === null) return false;
   return (!data.health.ok && Boolean(data.health.error.unavailable)) || live.runner === 'unavailable';
 }
 
-/** D08 `Tuile · Serveur VPS-3`: services (status dots), availability over 30 days. */
+/** Section text of a load error: no server, server down, or the error itself. */
+function loadErrorText(error: { message: string; unavailable?: boolean; noEnvironment?: boolean }, serverName: string | null, what: string): string {
+  if (error.noEnvironment) return NO_SERVER_NOTE;
+  if (error.unavailable) return `${serverName ?? 'Le serveur'} ne répond pas : ${what}`;
+  return error.message;
+}
+
+/**
+ * D08 `Tuile · Serveur VPS-3`: services (status dots), availability over 30 days — of the server of
+ * the account's space. Without a server: « Aucun serveur ne vous est encore attribué… ».
+ */
 export function ServerTile({ detailed = false }: { detailed?: boolean }) {
   const { data, now, serverName } = useSettings();
   const unavailable = useRunnerUnavailable();
+  const titleId = useId();
+  const uptimeId = useId();
+  if (serverName === null) {
+    return (
+      <Card as="section" id={detailed ? SECTION_IDS.services : undefined} aria-labelledby={titleId} className="scroll-mt-6 gap-3">
+        <TileHeader icon="server" title={<span id={titleId}>Serveur</span>} action={<Badge tone="neutral">Aucun serveur</Badge>} />
+        <NoServerNote />
+      </Card>
+    );
+  }
   const health = data.health.ok ? data.health.data : null;
   const badge = serverBadge(health, unavailable);
   const rows = serviceRows({
@@ -75,8 +96,6 @@ export function ServerTile({ detailed = false }: { detailed?: boolean }) {
     runnerUnavailable: unavailable,
     detailed,
   });
-  const uptimeId = useId();
-  const titleId = useId();
   return (
     <Card as="section" id={detailed ? SECTION_IDS.services : undefined} aria-labelledby={titleId} className="scroll-mt-6 gap-1">
       <TileHeader icon="server" title={<span id={titleId}>{`Serveur ${serverName}`}</span>} action={<Badge tone={badge.tone}>{badge.label}</Badge>} />
@@ -100,9 +119,7 @@ export function ServerTile({ detailed = false }: { detailed?: boolean }) {
             <p className="m-0 font-sans text-app-12 leading-4 text-muted">{uptimeCaption(data.uptime.data, now)}</p>
           </>
         ) : (
-          <UnavailableNote>
-            {data.uptime.error.unavailable ? `${serverName} ne répond pas : la disponibilité n'a pas pu être lue.` : data.uptime.error.message}
-          </UnavailableNote>
+          <UnavailableNote>{loadErrorText(data.uptime.error, serverName, "la disponibilité n'a pas pu être lue.")}</UnavailableNote>
         )}
       </InfoBox>
     </Card>
@@ -152,26 +169,22 @@ export function MaintenanceTile({ withSettings = false }: { withSettings?: boole
             </CompactButton>
           }
         />
-        <SettingsRow
-          icon="refresh"
-          title="Claude Code"
-          caption={claudeCaption}
-          control={
-            <CompactButton variant="secondaire" onClick={check} loading={refreshingClaude}>
-              Vérifier
-            </CompactButton>
-          }
-        />
+        {serverName !== null ? (
+          <SettingsRow
+            icon="refresh"
+            title="Claude Code"
+            caption={claudeCaption}
+            control={
+              <CompactButton variant="secondaire" onClick={check} loading={refreshingClaude}>
+                Vérifier
+              </CompactButton>
+            }
+          />
+        ) : null}
         <SettingsRow
           icon="trash"
           title="Worktrees inactifs"
-          caption={
-            worktrees.ok
-              ? staleWorktreesCaption(worktrees.data)
-              : worktrees.error.unavailable
-                ? `${serverName} ne répond pas : les worktrees n'ont pas pu être lus`
-                : worktrees.error.message
-          }
+          caption={worktrees.ok ? staleWorktreesCaption(worktrees.data) : loadErrorText(worktrees.error, serverName, "les worktrees n'ont pas pu être lus")}
           control={
             <CompactButton
               variant="secondaire"
@@ -232,7 +245,7 @@ export function StaleWorktreesDialog({ open, onOpenChange, initial }: { open: bo
 
   const chosen = view.items.filter((item) => item.eligible && selected.has(item.id));
   const count = chosen.length;
-  const freed = freedSpaceText(chosen, serverName);
+  const freed = serverName ? freedSpaceText(chosen, serverName) : null;
 
   return (
     <ConfirmDialog
@@ -441,9 +454,14 @@ function OperationRow({ item, now }: { item: OperationLogItem; now: number }) {
   );
 }
 
-/** Serveur tab: detailed services, live metrics, server settings, web access limits, maintenance. */
+/**
+ * Serveur tab: detailed services, live metrics and settings of the server of the account's space
+ * (sessions parallèles and memory up to the administrator's ceiling; name and location: owner and
+ * administrators), web access limits of the instance (read-only for members), maintenance.
+ */
 export function ServerTab() {
   const { data, settings, serverName } = useSettings();
+  const cap = settings.maxConcurrentSessionsCap ?? 16;
   const live = useLiveEvents();
   const unavailable = useRunnerUnavailable();
   const snapshot = data.metrics.ok ? data.metrics.data : null;
@@ -485,6 +503,8 @@ export function ServerTab() {
                 </p>
               ) : null}
             </div>
+          ) : serverName === null ? (
+            <NoServerNote />
           ) : (
             <UnavailableNote>{`${serverName} ne répond pas : les mesures reprendront à son retour.`}</UnavailableNote>
           )}
@@ -493,34 +513,40 @@ export function ServerTab() {
       <div className="flex min-w-0 flex-col gap-5">
         <Card as="section" aria-label="Réglages du serveur" className="gap-4">
           <TileHeader icon="server" title="Réglages du serveur" />
-          <TextSetting field="serverName" label="Nom du serveur" hint="Affiché dans la barre latérale et les messages (« VPS-3 ne répond pas »)." maxLength={40} successMessage={(value) => `Nom du serveur : ${value ?? ''}`} />
-          <TextSetting field="serverLocation" label="Emplacement" hint="Facultatif (hébergeur, région)." maxLength={80} nullable successMessage={(value) => (value ? `Emplacement : ${value}` : 'Emplacement retiré')} />
-          <NumberSetting
-            field="maxConcurrentSessions"
-            label="Sessions parallèles"
-            hint="Processus Claude Code vivants en même temps ; au-delà, une nouvelle session est refusée jusqu'à l'arrêt d'une autre."
-            unit="sessions"
-            min={1}
-            max={16}
-            successMessage={(value) => `Sessions parallèles : ${value ?? ''}`}
-          />
-          <NumberSetting
-            field="sessionMemoryLimitMb"
-            label="Mémoire par session"
-            hint="Plafond par arbre de processus d'une session ; vide = aucune limite."
-            unit="Mo"
-            min={256}
-            max={262144}
-            nullable
-            successMessage={(value) => (value ? `Mémoire par session : ${value} Mo` : 'Mémoire par session : aucune limite')}
-          />
-          <KeyValueList
-            items={[
-              { label: 'Racine des projets', value: health ? health.projectsRoot : 'inconnue (runner injoignable)' },
-              ...(health?.disk ? [{ label: 'Espace libre', value: formatBytes(health.disk.freeBytes), mono: false }] : []),
-            ]}
-          />
-          <p className="m-0 font-sans text-app-12 text-muted">La racine des projets est fixée sur le serveur par NUERA_PROJECTS_ROOT : le runner n'écrit jamais en dehors.</p>
+          {serverName === null ? (
+            <NoServerNote />
+          ) : (
+            <>
+              <TextSetting field="serverName" label="Nom du serveur" hint={`Affiché dans la barre latérale et les messages (« ${serverName} ne répond pas »).`} maxLength={40} successMessage={(value) => `Nom du serveur : ${value ?? ''}`} />
+              <TextSetting field="serverLocation" label="Emplacement" hint="Facultatif (hébergeur, région)." maxLength={80} nullable successMessage={(value) => (value ? `Emplacement : ${value}` : 'Emplacement retiré')} />
+              <NumberSetting
+                field="maxConcurrentSessions"
+                label="Sessions parallèles"
+                hint={`Processus Claude Code vivants en même temps ; au-delà, une nouvelle session est refusée jusqu'à l'arrêt d'une autre. ${cap} au plus (plafond fixé par un administrateur).`}
+                unit="sessions"
+                min={1}
+                max={cap}
+                successMessage={(value) => `Sessions parallèles : ${value ?? ''}`}
+              />
+              <NumberSetting
+                field="sessionMemoryLimitMb"
+                label="Mémoire par session"
+                hint="Plafond par arbre de processus d'une session ; vide = aucune limite."
+                unit="Mo"
+                min={256}
+                max={262144}
+                nullable
+                successMessage={(value) => (value ? `Mémoire par session : ${value} Mo` : 'Mémoire par session : aucune limite')}
+              />
+              <KeyValueList
+                items={[
+                  { label: 'Racine des projets', value: health ? health.projectsRoot : 'inconnue (runner injoignable)' },
+                  ...(health?.disk ? [{ label: 'Espace libre', value: formatBytes(health.disk.freeBytes), mono: false }] : []),
+                ]}
+              />
+              <p className="m-0 font-sans text-app-12 text-muted">La racine des projets est fixée sur le serveur par NUERA_PROJECTS_ROOT : le runner n'écrit jamais en dehors.</p>
+            </>
+          )}
         </Card>
         <Card as="section" aria-label="Accès web" className="gap-4">
           <TileHeader icon="lock" title="Accès web" />

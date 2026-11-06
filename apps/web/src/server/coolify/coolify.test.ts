@@ -1,7 +1,21 @@
-import { notifications, projects, sessions } from '@nuera/db/schema';
+import { auditLog, integrations, mcpServers, notifications, projects, sessions } from '@nuera/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { closeTestDb, dumpIntegrationTables, prepareTestDatabase, resetTables, TEST_USER_ID, useTestEncryptionKey } from '@/server/integrations/test/db';
+import {
+  allowLocalFakes,
+  closeTestDb,
+  dumpIntegrationTables,
+  prepareTestDatabase,
+  resetTables,
+  TEST_ENVIRONMENT_ID,
+  TEST_SPACE_ID,
+  TEST_USER_ID,
+  useTestEncryptionKey,
+} from '@/server/integrations/test/db';
+import { createTestAccount } from '@/server/tenancy/test/fixtures';
 import { startFakeCoolify, type FakeCoolify } from './test/fake-coolify';
+
+const S = TEST_SPACE_ID;
 
 let fake: FakeCoolify;
 const SCOPED = '67|abcdefghijklmnopqrstuvwxyz0123456789ABCD';
@@ -11,6 +25,7 @@ const WRITER = '69|writewritewritewritewritewritewritewrite';
 beforeAll(async () => {
   await prepareTestDatabase('coolify');
   useTestEncryptionKey();
+  allowLocalFakes();
   fake = await startFakeCoolify();
 });
 
@@ -31,13 +46,12 @@ beforeEach(async () => {
   ];
   fake.environments = [{ project: 'Nuera OS', uuid: 'p1', envs: ['development', 'preview'] }];
   fake.applications = [];
-  (globalThis as { __nueraCoolifyLastManualCheck?: number }).__nueraCoolifyLastManualCheck = 0;
 });
 
 describe('Coolify reconnect (D2)', () => {
   it('validates a scoped read token with GETs only, stores it encrypted and never returns it', async () => {
     const { reconnectCoolify } = await import('./index');
-    const result = await reconnectCoolify({ baseUrl: fake.url, token: SCOPED }, { actorUserId: TEST_USER_ID });
+    const result = await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED }, { actorUserId: TEST_USER_ID });
     expect(result.settings).toMatchObject({
       configured: true,
       status: 'connected',
@@ -62,47 +76,47 @@ describe('Coolify reconnect (D2)', () => {
 
   it('reports a whole-team token and refuses one that can see production', async () => {
     const { reconnectCoolify } = await import('./index');
-    const team = await reconnectCoolify({ baseUrl: fake.url, token: TEAM });
+    const team = await reconnectCoolify(S, { baseUrl: fake.url, token: TEAM });
     expect(team.settings.scope).toBe('team');
     expect(team.settings.teamName).toBe('Développement');
     fake.environments.push({ project: 'Nuera OS', uuid: 'p2', envs: ['production'] });
-    await expect(reconnectCoolify({ token: TEAM })).rejects.toMatchObject({ code: 'VALIDATION', untouched: 'Le jeton précédent est conservé.' });
-    const accepted = await reconnectCoolify({ token: TEAM, allowProductionVisible: true });
+    await expect(reconnectCoolify(S, { token: TEAM })).rejects.toMatchObject({ code: 'VALIDATION', untouched: 'Le jeton précédent est conservé.' });
+    const accepted = await reconnectCoolify(S, { token: TEAM, allowProductionVisible: true });
     expect(accepted.settings.productionVisible).toBe(true);
   });
 
   it('refuses a token with the write ability and an unknown token, storing nothing', async () => {
     const { getCoolifySettings, reconnectCoolify } = await import('./index');
-    await expect(reconnectCoolify({ baseUrl: fake.url, token: WRITER })).rejects.toThrow(/droit write/);
-    await expect(reconnectCoolify({ baseUrl: fake.url, token: '70|unknownunknownunknownunknown' })).rejects.toThrow(/refuse le jeton/);
-    expect((await getCoolifySettings()).configured).toBe(false);
+    await expect(reconnectCoolify(S, { baseUrl: fake.url, token: WRITER })).rejects.toThrow(/droit write/);
+    await expect(reconnectCoolify(S, { baseUrl: fake.url, token: '70|unknownunknownunknownunknown' })).rejects.toThrow(/refuse le jeton/);
+    expect((await getCoolifySettings(S)).configured).toBe(false);
   });
 
   it('reports « Coolify injoignable » when the instance is down', async () => {
     const { reconnectCoolify } = await import('./index');
     fake.down = true;
-    await expect(reconnectCoolify({ baseUrl: fake.url, token: SCOPED })).rejects.toMatchObject({ code: 'UPSTREAM' });
+    await expect(reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED })).rejects.toMatchObject({ code: 'UPSTREAM' });
   });
 });
 
 describe('Coolify checks', () => {
   it('maps a revoked token to « expiré » at once and notifies; unreachable needs two failures', async () => {
     const { checkCoolify, reconnectCoolify } = await import('./index');
-    await reconnectCoolify({ baseUrl: fake.url, token: SCOPED });
-    expect((await checkCoolify({ trigger: 'schedule' })).status).toBe('connected');
+    await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED });
+    expect((await checkCoolify({ spaceId: S, trigger: 'schedule' })).status).toBe('connected');
 
     fake.down = true;
-    const first = await checkCoolify({ trigger: 'schedule' });
+    const first = await checkCoolify({ spaceId: S, trigger: 'schedule' });
     expect(first.status).toBe('connected'); // hysteresis: one transient failure is not enough
     expect(first.failingSince).not.toBeNull();
-    const second = await checkCoolify({ trigger: 'schedule' });
+    const second = await checkCoolify({ spaceId: S, trigger: 'schedule' });
     expect(second.status).toBe('error');
 
     fake.down = false;
-    expect((await checkCoolify({ trigger: 'schedule' })).status).toBe('connected');
+    expect((await checkCoolify({ spaceId: S, trigger: 'schedule' })).status).toBe('connected');
 
     fake.tokens[0]!.revoked = true;
-    const expired = await checkCoolify({ trigger: 'schedule' });
+    const expired = await checkCoolify({ spaceId: S, trigger: 'schedule' });
     expect(expired.status).toBe('expired');
     expect(expired.reason).toBe('Coolify refuse le jeton.');
 
@@ -116,7 +130,7 @@ describe('Coolify checks', () => {
   it('warns before a declared expiry (T7 avant)', async () => {
     const { reconnectCoolify } = await import('./index');
     const soon = new Date(Date.now() + 3 * 86_400_000).toISOString();
-    const result = await reconnectCoolify({ baseUrl: fake.url, token: SCOPED, expiresAt: soon });
+    const result = await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED, expiresAt: soon });
     expect(result.settings.status).toBe('expiring');
     const { db } = await import('@/server/db');
     const [row] = await db.select().from(notifications);
@@ -132,15 +146,15 @@ describe('Coolify token refused → Coolify MCP server « expiré »', () => {
     const { getProjectMcpTools, getMcpServer, setProjectMcpServer } = await import('@/server/mcp/registry');
     const [project] = await db
       .insert(projects)
-      .values({ slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
+      .values({ spaceId: S, environmentId: TEST_ENVIRONMENT_ID, slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
       .returning();
     await setProjectMcpServer({ projectId: project!.id, serverIdOrName: 'coolify', enabled: true });
-    await reconnectCoolify({ baseUrl: fake.url, token: SCOPED });
-    expect((await getMcpServer('coolify')).status).not.toBe('expired');
+    await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED });
+    expect((await getMcpServer({ spaceId: S, idOrName: 'coolify' })).status).not.toBe('expired');
 
     fake.tokens[0]!.revoked = true;
-    expect((await checkCoolify({ trigger: 'schedule' })).status).toBe('expired');
-    const server = await getMcpServer('coolify');
+    expect((await checkCoolify({ spaceId: S, trigger: 'schedule' })).status).toBe('expired');
+    const server = await getMcpServer({ spaceId: S, idOrName: 'coolify' });
     expect(server).toMatchObject({ status: 'expired', displayStatus: 'expired', lastError: 'Coolify refuse le jeton.' });
     const tools = await getProjectMcpTools(project!.id);
     expect(tools.find((tool) => tool.name === 'coolify')).toMatchObject({ status: 'expired', needsReconnect: true });
@@ -149,8 +163,8 @@ describe('Coolify token refused → Coolify MCP server « expiré »', () => {
     expect(rows.filter((row) => row.title.includes('Coolify'))).toHaveLength(1);
 
     fake.tokens[0]!.revoked = false;
-    await reconnectCoolify({ token: SCOPED });
-    expect((await getMcpServer('coolify')).status).toBe('unknown');
+    await reconnectCoolify(S, { token: SCOPED });
+    expect((await getMcpServer({ spaceId: S, idOrName: 'coolify' })).status).toBe('unknown');
   });
 });
 
@@ -164,15 +178,15 @@ describe('Coolify token and Claude (P4)', () => {
     const { checkMcpServer } = await import('@/server/mcp/diagnostics');
     const [project] = await db
       .insert(projects)
-      .values({ slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
+      .values({ spaceId: S, environmentId: TEST_ENVIRONMENT_ID, slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
       .returning();
-    const [session] = await db.insert(sessions).values({ id: crypto.randomUUID(), projectId: project!.id, title: 'Module CRM', status: 'running' }).returning();
+    const [session] = await db.insert(sessions).values({ id: crypto.randomUUID(), projectId: project!.id, environmentId: TEST_ENVIRONMENT_ID, title: 'Module CRM', status: 'running' }).returning();
     await setProjectMcpServer({ projectId: project!.id, serverIdOrName: 'coolify', enabled: true });
-    const headers = () => resolveSessionMcpHeaders({ sessionId: session!.id, serverName: 'coolify' });
+    const headers = () => resolveSessionMcpHeaders({ sessionId: session!.id, serverName: 'coolify', environmentId: TEST_ENVIRONMENT_ID });
 
     // MCP disabled on the instance while reconnecting: the abilities cannot be read.
     fake.mcp.forceStatus = 404;
-    const unverified = await reconnectCoolify({ baseUrl: fake.url, token: WRITER });
+    const unverified = await reconnectCoolify(S, { baseUrl: fake.url, token: WRITER });
     expect(unverified.validation.abilitiesSource).toBe('rest');
     expect(unverified.settings.warnings.some((warning) => warning.startsWith('Droits du jeton non vérifiés'))).toBe(true);
     const config = await buildSessionMcpConfig(project!.id);
@@ -182,17 +196,17 @@ describe('Coolify token and Claude (P4)', () => {
 
     // MCP enabled afterwards: the test lists write tools → error, the token stays refused.
     fake.mcp.forceStatus = null;
-    const writer = await checkMcpServer('coolify', { trigger: 'schedule' });
+    const writer = await checkMcpServer({ spaceId: S, idOrName: 'coolify' }, { trigger: 'schedule' });
     expect(writer.status).toBe('error');
     expect(writer.lastError).toMatch(/droit write/);
     await expect(headers()).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringMatching(/droit write/) });
 
     // A read-only token, unverified at reconnection, is served once the MCP test has read its tools.
     fake.mcp.forceStatus = 404;
-    await reconnectCoolify({ token: SCOPED });
+    await reconnectCoolify(S, { token: SCOPED });
     await expect(headers()).rejects.toMatchObject({ code: 'FORBIDDEN' });
     fake.mcp.forceStatus = null;
-    expect((await checkMcpServer('coolify', { trigger: 'schedule' })).status).toBe('connected');
+    expect((await checkMcpServer({ spaceId: S, idOrName: 'coolify' }, { trigger: 'schedule' })).status).toBe('connected');
     expect(await headers()).toEqual({ headers: { Authorization: `Bearer ${SCOPED}` }, expiresAt: null });
     expect(Object.keys((await buildSessionMcpConfig(project!.id)).mcpConfig.mcpServers)).toEqual(['coolify']);
   });
@@ -215,10 +229,76 @@ describe('Coolify ↔ projects', () => {
 
   it('only exposes browser-safe deployment fields', async () => {
     const { reconnectCoolify, listCoolifyDeployments, toPublicDeployment } = await import('./index');
-    await reconnectCoolify({ baseUrl: fake.url, token: SCOPED });
-    const { deployments } = await listCoolifyDeployments('a');
+    await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED });
+    const { deployments } = await listCoolifyDeployments(S, 'a');
     const view = deployments.map(toPublicDeployment);
     expect(view[0]).toMatchObject({ uuid: 'dep-1', status: 'finished', commit: 'a3f9c12' });
     expect(JSON.stringify(view)).not.toContain('secret log');
+  });
+});
+
+describe('Coolify per space', () => {
+  it("keeps two spaces' tokens, statuses, MCP rows and notifications apart", async () => {
+    const { checkCoolify, getCoolifySettings, reconnectCoolify } = await import('./index');
+    const { db } = await import('@/server/db');
+    const { setProjectMcpServer } = await import('@/server/mcp/registry');
+    const b = await createTestAccount({ role: 'member', name: 'Camille Laurent', email: 'camille@example.test', environment: { configSource: 'db', name: 'VPS-4' } });
+    const [projectB] = await db
+      .insert(projects)
+      .values({ spaceId: b.space.id, environmentId: b.environment!.id, slug: 'nuera-os', name: 'Nuera OS (B)', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os-b', status: 'ready' })
+      .returning();
+    await setProjectMcpServer({ spaceId: b.space.id, projectId: projectB!.id, serverIdOrName: 'coolify', enabled: true });
+
+    await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED }, { actorUserId: TEST_USER_ID });
+    await reconnectCoolify(b.space.id, { baseUrl: fake.url, token: TEAM }, { actorUserId: b.user.id });
+    expect((await getCoolifySettings(S)).tokenFingerprint).toBe('jeton n°67');
+    expect((await getCoolifySettings(b.space.id)).tokenFingerprint).toBe('jeton n°68');
+    const rows = await db.select().from(integrations).where(eq(integrations.kind, 'coolify'));
+    expect(rows.map((row) => row.spaceId).sort()).toEqual([S, b.space.id].sort());
+
+    // A's token is revoked: A's check uses A's token only and marks A's rows only.
+    fake.tokens[0]!.revoked = true;
+    fake.requests.length = 0;
+    expect((await checkCoolify({ spaceId: S, trigger: 'schedule' })).status).toBe('expired');
+    expect(fake.requests.filter((request) => request.bearer).every((request) => request.bearer === SCOPED)).toBe(true);
+    expect((await getCoolifySettings(b.space.id)).status).toBe('connected');
+    const [mcpB] = await db.select().from(mcpServers).where(and(eq(mcpServers.spaceId, b.space.id), eq(mcpServers.name, 'coolify')));
+    expect(mcpB?.status).not.toBe('expired');
+    const sent = await db.select().from(notifications);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((row) => row.userId === TEST_USER_ID && row.spaceId === S)).toBe(true);
+    // The journal of each reconnection names its space.
+    const audits = await db.select().from(auditLog).where(eq(auditLog.action, 'integration.coolify.connected'));
+    expect(audits.map((row) => row.spaceId).sort()).toEqual([S, b.space.id].sort());
+  });
+
+  it("answers another space's project like an unknown one, before any call to Coolify", async () => {
+    const { getProjectCoolifyApplications, reconnectCoolify } = await import('./index');
+    const { db } = await import('@/server/db');
+    await reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED });
+    const [project] = await db
+      .insert(projects)
+      .values({ spaceId: S, environmentId: TEST_ENVIRONMENT_ID, slug: 'nuera-os', name: 'Nuera OS', githubFullName: 'nuera-studio/nuera-os', cloneUrl: 'https://github.com/nuera-studio/nuera-os.git', path: '/srv/dev/nuera-os', status: 'ready' })
+      .returning();
+    const b = await createTestAccount({ role: 'member', environment: { configSource: 'db', name: 'VPS-4' } });
+    fake.requests.length = 0;
+    const unknown = await getProjectCoolifyApplications({ spaceId: b.space.id, projectId: crypto.randomUUID() }).catch((error: unknown) => error);
+    const foreign = await getProjectCoolifyApplications({ spaceId: b.space.id, projectId: project!.id }).catch((error: unknown) => error);
+    expect(foreign).toMatchObject({ code: 'NOT_FOUND', message: 'Projet introuvable.' });
+    expect(foreign).toEqual(unknown);
+    expect(fake.requests).toHaveLength(0);
+    expect(await getProjectCoolifyApplications({ spaceId: S, projectId: project!.id })).toEqual([]);
+  });
+
+  it('refuses an internal address (SSRF guard) before any request', async () => {
+    const { reconnectCoolify } = await import('./index');
+    delete process.env.NUERA_PRIVATE_HOSTS;
+    try {
+      fake.requests.length = 0;
+      await expect(reconnectCoolify(S, { baseUrl: fake.url, token: SCOPED })).rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/^Adresse refusée/) });
+      expect(fake.requests).toHaveLength(0);
+    } finally {
+      allowLocalFakes();
+    }
   });
 });

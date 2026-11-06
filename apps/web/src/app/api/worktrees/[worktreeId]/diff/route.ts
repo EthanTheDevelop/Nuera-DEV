@@ -10,5 +10,5 @@ export const GET = apiRoute({
   params: worktreeParamsSchema,
   query: diffQuerySchema,
   rateLimit: { limit: 600, windowMs: 10 * 60_000 },
-  handler: ({ params, query }) => withWorkspaceErrors(() => getDiff(params.worktreeId, query.path, query.against)),
+  handler: ({ params, query, ctx }) => withWorkspaceErrors(() => getDiff(ctx, params.worktreeId, query.path, query.against)),
 });

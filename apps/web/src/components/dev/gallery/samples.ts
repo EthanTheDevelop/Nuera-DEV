@@ -4,6 +4,9 @@
  */
 import { parseUnifiedDiff, type DiffFile } from '../lib/diff';
 
+/** Server name of the gallery samples (the Figma copy of the default server). */
+export const SAMPLE_SERVER_NAME = 'VPS-3';
+
 export const MIN = 60_000;
 export const HOUR = 60 * MIN;
 export const DAY = 24 * HOUR;

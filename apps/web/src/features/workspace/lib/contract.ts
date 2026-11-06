@@ -139,8 +139,10 @@ export interface WorkspaceData {
   /** Commands allowed during the session (permission log, W3 meta). */
   allowedCommands: number;
   runner: 'available' | 'unavailable';
-  /** Owner identity used for commits (`Auteur`). */
+  /** Git identity of the account, used for commits (`Auteur`): Paramètres, else the account. */
   author: { name: string; email: string };
+  /** Server holding the session (« VPS-3 »): where its CLI lives. */
+  environment: { id: string; name: string };
   generatedAt: string;
 }
 

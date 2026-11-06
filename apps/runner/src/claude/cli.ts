@@ -8,6 +8,7 @@ import { execCommand, type ExecResult } from '../safety/exec';
 import { redactSecrets } from '../safety/redact';
 import { binCommand } from '../sessions/runtime-files';
 import { resolveClaudeCommand } from './bin';
+import { claudeEnv } from './env';
 
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -89,6 +90,8 @@ export class ClaudeCli {
     private readonly claudeBin: string | null,
     dataDir: string,
     private readonly logger: Logger,
+    /** NUERA_CLAUDE_CONFIG_DIR: the same CLAUDE_CONFIG_DIR as the sessions (login, MCP user scope). */
+    private readonly claudeConfigDir: string | null = null,
   ) {
     this.cwd = path.join(dataDir, 'scratch', 'cli');
     mkdirSync(this.cwd, { recursive: true });
@@ -99,7 +102,7 @@ export class ClaudeCli {
     if (!cmd) return null;
     return execCommand(cmd.file, [...cmd.prefix, ...args], {
       cwd: this.cwd,
-      env: withTrustedEnv(buildChildEnv(), { CI: '1', NO_COLOR: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
+      env: withTrustedEnv(buildChildEnv(), { ...claudeEnv(this.claudeConfigDir), CI: '1', NO_COLOR: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
       timeoutMs,
       maxOutputBytes: 1024 * 1024,
     });

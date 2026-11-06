@@ -1,4 +1,5 @@
 import 'server-only';
+import { randomUUID } from 'node:crypto';
 import { mcpServers, projectMcpServers, projects } from '@nuera/db/schema';
 import type { McpAuthKind, McpServerConfig, McpStatus, McpTransport } from '@nuera/db/schema';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
@@ -7,14 +8,39 @@ import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import { STATUS_BADGES, type CheckHistoryEntry, type IntegrationCheck } from '@/server/integrations/model';
 import { audit } from '@/server/security/audit';
-import { decryptJson, encryptJson } from '@/server/security/crypto';
-import { MCP_PRESETS, MCP_PRESET_IDS, isPresetName, presetOf, type McpCredentialSource, type McpPermissionLine, type McpPresetId } from './presets';
+import { decryptJson, encryptJson, needsReencryption, reencryptSecret, SecretScopes } from '@/server/security/crypto';
+import { assertAllowedDestination } from '@/server/security/ssrf';
+import {
+  MCP_PRESETS,
+  MCP_PRESET_IDS,
+  encryptedWhere,
+  isPresetName,
+  legacyPresetText,
+  presetOf,
+  presetText,
+  type McpCredentialSource,
+  type McpPermissionLine,
+  type McpPresetId,
+  type PresetServerContext,
+} from './presets';
 
 /**
  * Registry of the MCP servers offered to Claude Code sessions (table `mcp_servers`) and their
- * per-project activation (`project_mcp_servers`). Secret headers are stored ENCRYPTED and only
- * their names (`secret_keys`) are exposed; they reach Claude through the headers helper.
+ * per-project activation (`project_mcp_servers`). One registry per space (MULTICOMPTE §7): names
+ * are unique in a space, every read and write names the space, a server or project of another space
+ * answers like an unknown one. The built-in servers are ensured idempotently when a registry is
+ * read. Secret headers are stored ENCRYPTED (bound to the server row) and only their names
+ * (`secret_keys`) are exposed; they reach Claude through the headers helper.
  */
+
+/** A server of a space, by id or name. */
+export interface McpServerScope {
+  spaceId: string;
+  idOrName: string;
+}
+
+export const MCP_SERVER_NOT_FOUND = 'Serveur MCP introuvable.';
+const isUuid = (value: string) => z.uuid().safeParse(value).success;
 
 export type McpServerRow = typeof mcpServers.$inferSelect;
 
@@ -44,10 +70,10 @@ interface McpSecrets {
   headers?: Record<string, string>;
 }
 
-export function readServerSecrets(row: Pick<McpServerRow, 'secretsEncrypted'>): McpSecrets {
+export function readServerSecrets(row: Pick<McpServerRow, 'id' | 'secretsEncrypted'>): McpSecrets {
   if (!row.secretsEncrypted) return {};
   try {
-    return decryptJson<McpSecrets>(row.secretsEncrypted);
+    return decryptJson<McpSecrets>(row.secretsEncrypted, SecretScopes.mcpServer(row.id));
   } catch {
     throw new AppError('INTERNAL', 'Les en-têtes secrets de ce serveur MCP ne peuvent pas être déchiffrés.', {
       detail: 'Vérifiez APP_ENCRYPTION_KEY, puis enregistrez de nouveau les en-têtes.',
@@ -193,11 +219,16 @@ export type UpdateMcpServerInput = z.input<typeof updateMcpServerInputSchema>;
 // Presets (seeded once, idempotent)
 // ---------------------------------------------------------------------------------------------
 
-/** Inserts the built-in servers that do not exist yet (status `unknown`, enabled in no project). */
-export async function ensurePresetServers(): Promise<void> {
+/**
+ * Inserts the built-in servers the space does not have yet (status `unknown`, enabled in no
+ * project). Idempotent: called whenever a registry is read (a space created without them gets them).
+ */
+export async function ensurePresetServers(spaceId: string): Promise<void> {
+  if (!isUuid(spaceId)) return;
   const rows = MCP_PRESET_IDS.map((id) => {
     const preset = MCP_PRESETS[id];
     return {
+      spaceId,
       name: preset.id,
       label: preset.label,
       description: preset.description,
@@ -214,7 +245,7 @@ export async function ensurePresetServers(): Promise<void> {
       config: { presetId: preset.id } satisfies McpServerConfig,
     };
   });
-  await db.insert(mcpServers).values(rows).onConflictDoNothing({ target: mcpServers.name });
+  await db.insert(mcpServers).values(rows).onConflictDoNothing({ target: [mcpServers.spaceId, mcpServers.name] });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -300,11 +331,26 @@ function actionFor(row: McpServerRow, displayStatus: McpStatus, credential: McpC
   return { kind: 'configure', label: 'Configurer' };
 }
 
+export interface McpViewOptions {
+  coolifyBaseUrl?: string | null;
+  /** Server of the space (its name in the copy; « chiffré par Nuera Dev » outside the default server). */
+  server?: PresetServerContext | null;
+}
+
+/** Scope note of a built-in server: the preset's copy for this server, unless the owner changed it. */
+function scopeNoteOf(row: McpServerRow, server: PresetServerContext | null): string | null {
+  const preset = presetOf(row.name);
+  if (!preset || row.scopeNote === null) return row.scopeNote;
+  const known = [preset.scopeNote, legacyPresetText(preset.scopeNote)];
+  return known.includes(row.scopeNote) ? presetText(preset.scopeNote, server) : row.scopeNote;
+}
+
 export function toServerView(
   row: McpServerRow,
   activations: McpProjectActivation[],
-  options: { coolifyBaseUrl?: string | null; lastCall?: McpLastCall | null } = {},
+  options: McpViewOptions & { lastCall?: McpLastCall | null } = {},
 ): McpServerView {
+  const server = options.server ?? null;
   const preset = presetOf(row.name);
   const credential = credentialSourceOf(row);
   const projectCount = activations.filter((item) => item.enabled).length;
@@ -317,7 +363,7 @@ export function toServerView(
     name: row.name,
     label: row.label,
     description: row.description,
-    subtitle: preset?.subtitle ?? null,
+    subtitle: preset ? presetText(preset.subtitle, server) : null,
     projectLine: preset?.projectLine ?? row.description,
     icon: row.icon,
     preset: preset?.id ?? null,
@@ -334,14 +380,14 @@ export function toServerView(
     projectCount,
     projects: activations,
     secretKeys: row.secretKeys,
-    scopeNote: row.scopeNote,
+    scopeNote: scopeNoteOf(row, server),
     permissionsNote: row.permissionsNote,
     permissions: preset?.permissions ?? [],
     configurationLines: [
-      ...(preset?.configurationLines ?? [
+      ...(preset?.configurationLines.map((line) => presetText(line, server)) ?? [
         'configuration générée par Nuera Dev pour chaque session',
         `transport : ${row.transport === 'stdio' ? 'stdio' : 'HTTP distant'}`,
-        `authentification : ${row.authKind === 'oauth' ? 'autorisation OAuth dans Claude Code' : row.secretKeys.length ? 'en-têtes chiffrés sur VPS-3' : 'aucune'}`,
+        `authentification : ${row.authKind === 'oauth' ? 'autorisation OAuth dans Claude Code' : row.secretKeys.length ? `en-têtes ${encryptedWhere(server, true)}` : 'aucune'}`,
       ]),
       // From `mcp_servers.config` (non-secret): fixed headers by name, tools refused to Claude.
       ...(Object.keys(config.headers).length ? [`en-têtes fixes : ${Object.keys(config.headers).join(', ')}`] : []),
@@ -362,7 +408,8 @@ export function toServerView(
   };
 }
 
-async function activationsByServer(): Promise<Map<string, McpProjectActivation[]>> {
+/** « ACTIVÉ DANS »: the non-archived projects of the space, per server of the space. */
+async function activationsByServer(spaceId: string): Promise<Map<string, McpProjectActivation[]>> {
   const rows = await db
     .select({
       projectId: projects.id,
@@ -372,7 +419,7 @@ async function activationsByServer(): Promise<Map<string, McpProjectActivation[]
     })
     .from(projects)
     .leftJoin(projectMcpServers, eq(projectMcpServers.projectId, projects.id))
-    .where(isNull(projects.archivedAt))
+    .where(and(eq(projects.spaceId, spaceId), isNull(projects.archivedAt)))
     .orderBy(asc(projects.name));
   const allProjects = new Map<string, string>();
   const enabledBy = new Map<string, Map<string, boolean>>();
@@ -384,7 +431,7 @@ async function activationsByServer(): Promise<Map<string, McpProjectActivation[]
       enabledBy.set(row.serverId, map);
     }
   }
-  const servers = await db.select({ id: mcpServers.id }).from(mcpServers);
+  const servers = await db.select({ id: mcpServers.id }).from(mcpServers).where(eq(mcpServers.spaceId, spaceId));
   const result = new Map<string, McpProjectActivation[]>();
   for (const server of servers) {
     const map = enabledBy.get(server.id);
@@ -397,10 +444,11 @@ async function activationsByServer(): Promise<Map<string, McpProjectActivation[]
 }
 
 /**
- * Latest MCP tool call per server name, from the conversation events written by the runner's hook
- * bridge (`session_events.kind = 'tool'`, payload.tool = `mcp__<server>__<tool>`).
+ * Latest MCP tool call per server name in the projects of the space, from the conversation events
+ * written by the runner's hook bridge (`session_events.kind = 'tool'`, payload.tool =
+ * `mcp__<server>__<tool>`).
  */
-export async function lastCallsByServer(): Promise<Map<string, McpLastCall>> {
+export async function lastCallsByServer(spaceId: string): Promise<Map<string, McpLastCall>> {
   const rows = await db.execute(sql`
     select distinct on (split_part(e.payload->>'tool', '__', 2))
       split_part(e.payload->>'tool', '__', 2) as server,
@@ -412,7 +460,7 @@ export async function lastCallsByServer(): Promise<Map<string, McpLastCall>> {
     from session_events e
     join sessions s on s.id = e.session_id
     join projects p on p.id = s.project_id
-    where e.kind = 'tool' and e.payload->>'tool' like 'mcp\\_\\_%'
+    where p.space_id = ${spaceId} and e.kind = 'tool' and e.payload->>'tool' like 'mcp\\_\\_%'
     order by split_part(e.payload->>'tool', '__', 2), e.updated_at desc
   `);
   const result = new Map<string, McpLastCall>();
@@ -431,37 +479,46 @@ export async function lastCallsByServer(): Promise<Map<string, McpLastCall>> {
   return result;
 }
 
-export async function listMcpServers(options: { coolifyBaseUrl?: string | null; seedPresets?: boolean } = {}): Promise<McpServerView[]> {
-  if (options.seedPresets !== false) await ensurePresetServers();
-  const rows = await db.select().from(mcpServers).orderBy(asc(mcpServers.createdAt), asc(mcpServers.name));
-  const [activations, lastCalls] = await Promise.all([activationsByServer(), lastCallsByServer()]);
+/** The registry of a space (D07 grid), built-in servers first. */
+export async function listMcpServers(options: McpViewOptions & { spaceId: string; seedPresets?: boolean }): Promise<McpServerView[]> {
+  if (!isUuid(options.spaceId)) return [];
+  if (options.seedPresets !== false) await ensurePresetServers(options.spaceId);
+  const rows = await db
+    .select()
+    .from(mcpServers)
+    .where(eq(mcpServers.spaceId, options.spaceId))
+    .orderBy(asc(mcpServers.createdAt), asc(mcpServers.name));
+  const [activations, lastCalls] = await Promise.all([activationsByServer(options.spaceId), lastCallsByServer(options.spaceId)]);
   const presetOrder = (name: string) => (isPresetName(name) ? MCP_PRESET_IDS.indexOf(name) : MCP_PRESET_IDS.length);
   return rows
     .sort((a, b) => presetOrder(a.name) - presetOrder(b.name))
     .map((row) => toServerView(row, activations.get(row.id) ?? [], { ...options, lastCall: lastCalls.get(row.name) ?? null }));
 }
 
-export async function getMcpServerRow(idOrName: string): Promise<McpServerRow | null> {
-  const isUuid = z.uuid().safeParse(idOrName).success;
+/** A server of the space by id or name; null for an unknown one or another space's (same answer). */
+export async function getMcpServerRow(scope: McpServerScope): Promise<McpServerRow | null> {
+  const { spaceId, idOrName } = scope;
+  if (!isUuid(spaceId)) return null;
+  const byId = isUuid(idOrName);
   const find = async () => {
     const [row] = await db
       .select()
       .from(mcpServers)
-      .where(isUuid ? eq(mcpServers.id, idOrName) : eq(mcpServers.name, idOrName))
+      .where(and(eq(mcpServers.spaceId, spaceId), byId ? eq(mcpServers.id, idOrName) : eq(mcpServers.name, idOrName)))
       .limit(1);
     return row ?? null;
   };
   const row = await find();
-  if (row || isUuid || !isPresetName(idOrName)) return row;
+  if (row || byId || !isPresetName(idOrName)) return row;
   // Built-in servers exist as soon as someone asks for them (first toggle in D1 / D04).
-  await ensurePresetServers();
+  await ensurePresetServers(spaceId);
   return find();
 }
 
-export async function getMcpServer(idOrName: string, options: { coolifyBaseUrl?: string | null } = {}): Promise<McpServerView> {
-  const row = await getMcpServerRow(idOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
-  const [activations, lastCalls] = await Promise.all([activationsByServer(), lastCallsByServer()]);
+export async function getMcpServer(scope: McpServerScope, options: McpViewOptions = {}): Promise<McpServerView> {
+  const row = await getMcpServerRow(scope);
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
+  const [activations, lastCalls] = await Promise.all([activationsByServer(scope.spaceId), lastCallsByServer(scope.spaceId)]);
   return toServerView(row, activations.get(row.id) ?? [], { ...options, lastCall: lastCalls.get(row.name) ?? null });
 }
 
@@ -469,7 +526,10 @@ export async function getMcpServer(idOrName: string, options: { coolifyBaseUrl?:
 // Mutations (audited)
 // ---------------------------------------------------------------------------------------------
 
-function secretPayload(input: { bearerToken?: string | null | undefined; headers?: Record<string, string> | null | undefined }): {
+function secretPayload(
+  serverId: string,
+  input: { bearerToken?: string | null | undefined; headers?: Record<string, string> | null | undefined },
+): {
   secretsEncrypted: string | null;
   secretKeys: string[];
 } | null {
@@ -477,13 +537,25 @@ function secretPayload(input: { bearerToken?: string | null | undefined; headers
   const headers: Record<string, string> = { ...(input.headers ?? {}) };
   if (input.bearerToken) headers.Authorization = `Bearer ${input.bearerToken}`;
   const keys = Object.keys(headers);
-  return keys.length ? { secretsEncrypted: encryptJson({ headers }), secretKeys: keys } : { secretsEncrypted: null, secretKeys: [] };
+  return keys.length
+    ? { secretsEncrypted: encryptJson({ headers }, SecretScopes.mcpServer(serverId)), secretKeys: keys }
+    : { secretsEncrypted: null, secretKeys: [] };
 }
 
-export async function createMcpServer(input: CreateMcpServerInput, options: { actorUserId?: string | null } = {}): Promise<McpServerView> {
+export interface McpMutationOptions extends McpViewOptions {
+  actorUserId?: string | null;
+}
+
+export async function createMcpServer(spaceId: string, input: CreateMcpServerInput, options: McpMutationOptions = {}): Promise<McpServerView> {
   const data = createMcpServerInputSchema.parse(input);
-  if (await getMcpServerRow(data.name)) throw new AppError('CONFLICT', `Un serveur MCP « ${data.name} » existe déjà.`);
+  if (await getMcpServerRow({ spaceId, idOrName: data.name })) {
+    throw new AppError('CONFLICT', `Un serveur MCP « ${data.name} » existe déjà dans votre espace.`);
+  }
+  // Generated first: the secret headers are encrypted bound to this row.
+  const id = randomUUID();
   const values: typeof mcpServers.$inferInsert = {
+    id,
+    spaceId,
     name: data.name,
     label: data.label,
     description: data.description ?? null,
@@ -499,10 +571,12 @@ export async function createMcpServer(input: CreateMcpServerInput, options: { ac
     values.args = data.args;
     if (data.denyTools?.length) values.config = { denyTools: [...new Set(data.denyTools)] };
   } else {
+    // Internal addresses (loopback, link-local, a server, the database) are refused.
+    await assertAllowedDestination(data.url);
     values.url = data.url;
     if (data.authKind === 'bearer' && !data.bearerToken) throw new AppError('VALIDATION', 'Jeton requis pour une authentification Bearer.');
     if (data.authKind === 'header' && !Object.keys(data.headers ?? {}).length) throw new AppError('VALIDATION', 'Au moins un en-tête est requis.');
-    const secrets = secretPayload({
+    const secrets = secretPayload(id, {
       bearerToken: data.authKind === 'bearer' ? data.bearerToken : undefined,
       headers: data.authKind === 'header' ? data.headers : undefined,
     });
@@ -513,7 +587,15 @@ export async function createMcpServer(input: CreateMcpServerInput, options: { ac
     };
     if (Object.keys(config).length) values.config = config;
   }
-  const [row] = await db.insert(mcpServers).values(values).returning();
+  let row: McpServerRow | undefined;
+  try {
+    [row] = await db.insert(mcpServers).values(values).returning();
+  } catch (error) {
+    if ((error as { code?: string; cause?: { code?: string } }).code === '23505' || (error as { cause?: { code?: string } }).cause?.code === '23505') {
+      throw new AppError('CONFLICT', `Un serveur MCP « ${data.name} » existe déjà dans votre espace.`);
+    }
+    throw error;
+  }
   if (!row) throw new AppError('INTERNAL', 'Création du serveur MCP impossible.');
   await audit({
     action: 'integration.mcp.created',
@@ -521,19 +603,20 @@ export async function createMcpServer(input: CreateMcpServerInput, options: { ac
     targetType: 'mcp_server',
     targetId: row.id,
     actorUserId: options.actorUserId ?? null,
+    spaceId,
     metadata: { name: row.name, transport: row.transport, authKind: row.authKind, secretKeys: row.secretKeys },
   });
-  return getMcpServer(row.id);
+  return getMcpServer({ spaceId, idOrName: row.id }, options);
 }
 
 export async function updateMcpServer(
-  idOrName: string,
+  scope: McpServerScope,
   input: UpdateMcpServerInput,
-  options: { actorUserId?: string | null } = {},
+  options: McpMutationOptions = {},
 ): Promise<McpServerView> {
   const data = updateMcpServerInputSchema.parse(input);
-  const row = await getMcpServerRow(idOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
+  const row = await getMcpServerRow(scope);
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   const preset = presetOf(row.name);
   if (
     preset &&
@@ -567,58 +650,84 @@ export async function updateMcpServer(
     if (current.presetId && !next.presetId) next.presetId = current.presetId;
     patch.config = next;
   }
-  const secrets = secretPayload({ bearerToken: data.bearerToken, headers: data.headers });
+  if (data.url !== undefined) await assertAllowedDestination(data.url);
+  const secrets = secretPayload(row.id, { bearerToken: data.bearerToken, headers: data.headers });
   if (secrets) {
     Object.assign(patch, secrets);
     // Removing the headers of an OAuth server keeps its OAuth grant (held by Claude Code).
     patch.authKind = secrets.secretKeys.length ? (data.bearerToken ? 'bearer' : 'header') : row.authKind === 'oauth' ? 'oauth' : 'none';
   }
-  if (Object.keys(patch).length === 0) return getMcpServer(row.id);
+  if (Object.keys(patch).length === 0) return getMcpServer({ spaceId: scope.spaceId, idOrName: row.id }, options);
   // A changed endpoint or credential invalidates the last diagnostic.
   if (patch.url !== undefined || patch.command !== undefined || patch.args !== undefined || secrets || data.staticHeaders !== undefined) patch.status = 'unknown';
-  await db.update(mcpServers).set(patch).where(eq(mcpServers.id, row.id));
+  // A legacy (unbound) ciphertext kept as is is rewritten bound to this row.
+  if (!secrets && row.secretsEncrypted && needsReencryption(row.secretsEncrypted)) {
+    try {
+      patch.secretsEncrypted = reencryptSecret(row.secretsEncrypted, SecretScopes.mcpServer(row.id));
+    } catch {
+      // Unreadable: left as is (the diagnostic reports it).
+    }
+  }
+  await db.update(mcpServers).set(patch).where(and(eq(mcpServers.id, row.id), eq(mcpServers.spaceId, scope.spaceId)));
   await audit({
     action: secrets ? 'integration.mcp.credentials_updated' : 'integration.mcp.updated',
     summary: `serveur MCP « ${patch.label ?? row.label} » modifié${secrets ? ' (en-têtes secrets remplacés)' : ''}`,
     targetType: 'mcp_server',
     targetId: row.id,
     actorUserId: options.actorUserId ?? null,
+    spaceId: scope.spaceId,
     metadata: { fields: Object.keys(patch).filter((key) => key !== 'secretsEncrypted') },
   });
-  return getMcpServer(row.id);
+  return getMcpServer({ spaceId: scope.spaceId, idOrName: row.id }, options);
 }
 
-export async function deleteMcpServer(idOrName: string, options: { actorUserId?: string | null } = {}): Promise<{ name: string }> {
-  const row = await getMcpServerRow(idOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
+export async function deleteMcpServer(scope: McpServerScope, options: { actorUserId?: string | null } = {}): Promise<{ name: string }> {
+  const row = await getMcpServerRow(scope);
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   if (isPresetName(row.name)) {
     throw new AppError('VALIDATION', 'Un serveur intégré ne se supprime pas : désactivez-le partout.');
   }
-  await db.delete(mcpServers).where(eq(mcpServers.id, row.id));
+  await db.delete(mcpServers).where(and(eq(mcpServers.id, row.id), eq(mcpServers.spaceId, scope.spaceId)));
   await audit({
     action: 'integration.mcp.deleted',
     summary: `serveur MCP « ${row.label} » supprimé`,
     targetType: 'mcp_server',
     targetId: row.id,
     actorUserId: options.actorUserId ?? null,
+    spaceId: scope.spaceId,
     metadata: { name: row.name },
   });
   return { name: row.name };
 }
 
-/** D1 « ACTIVÉ DANS » toggle / D04 « Outils MCP du projet ». */
+/** Space of a project (null for an unknown or malformed id). */
+async function spaceOfProject(projectId: string): Promise<string | null> {
+  if (!isUuid(projectId)) return null;
+  const [row] = await db.select({ spaceId: projects.spaceId }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  return row?.spaceId ?? null;
+}
+
+/**
+ * D1 « ACTIVÉ DANS » toggle / D04 « Outils MCP du projet ». The project and the server must both
+ * belong to the space (`spaceId`; without it, the project's own space): otherwise NOT_FOUND, exactly
+ * as for an unknown id.
+ */
 export async function setProjectMcpServer(
-  input: { projectId: string; serverIdOrName: string; enabled: boolean },
-  options: { actorUserId?: string | null } = {},
+  input: { spaceId?: string; projectId: string; serverIdOrName: string; enabled: boolean },
+  options: McpMutationOptions = {},
 ): Promise<McpServerView> {
-  const row = await getMcpServerRow(input.serverIdOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
-  const [project] = await db
-    .select({ id: projects.id, name: projects.name, archivedAt: projects.archivedAt })
-    .from(projects)
-    .where(eq(projects.id, input.projectId))
-    .limit(1);
-  if (!project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
+  const spaceId = input.spaceId ?? (await spaceOfProject(input.projectId));
+  const [project] =
+    spaceId && isUuid(input.projectId)
+      ? await db
+          .select({ id: projects.id, name: projects.name, archivedAt: projects.archivedAt })
+          .from(projects)
+          .where(and(eq(projects.id, input.projectId), eq(projects.spaceId, spaceId)))
+          .limit(1)
+      : [];
+  if (!spaceId || !project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
+  const row = await getMcpServerRow({ spaceId, idOrName: input.serverIdOrName });
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   if (project.archivedAt) throw new AppError('CONFLICT', 'Ce projet est archivé.');
   await db
     .insert(projectMcpServers)
@@ -633,18 +742,19 @@ export async function setProjectMcpServer(
     targetType: 'mcp_server',
     targetId: row.id,
     actorUserId: options.actorUserId ?? null,
+    spaceId,
     metadata: { projectId: project.id },
   });
-  return getMcpServer(row.id);
+  return getMcpServer({ spaceId, idOrName: row.id }, options);
 }
 
-/** D1 « Désactiver partout » (sensitive bulk action, confirmed in the UI). */
+/** D1 « Désactiver partout » (sensitive bulk action, confirmed in the UI), in the projects of the space. */
 export async function disableMcpServerEverywhere(
-  serverIdOrName: string,
-  options: { actorUserId?: string | null } = {},
+  scope: McpServerScope,
+  options: McpMutationOptions = {},
 ): Promise<{ server: McpServerView; disabledProjects: number }> {
-  const row = await getMcpServerRow(serverIdOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
+  const row = await getMcpServerRow(scope);
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   const updated = await db
     .update(projectMcpServers)
     .set({ enabled: false })
@@ -656,8 +766,9 @@ export async function disableMcpServerEverywhere(
     targetType: 'mcp_server',
     targetId: row.id,
     actorUserId: options.actorUserId ?? null,
+    spaceId: scope.spaceId,
   });
-  return { server: await getMcpServer(row.id), disabledProjects: updated.length };
+  return { server: await getMcpServer({ spaceId: scope.spaceId, idOrName: row.id }, options), disabledProjects: updated.length };
 }
 
 export interface ProjectMcpTool {
@@ -674,9 +785,20 @@ export interface ProjectMcpTool {
   action: McpServerAction;
 }
 
-/** D04 « Outils MCP du projet »: every server with its switch state for this project. */
-export async function getProjectMcpTools(projectId: string, options: { coolifyBaseUrl?: string | null } = {}): Promise<ProjectMcpTool[]> {
-  const servers = await listMcpServers(options);
+/**
+ * D04 « Outils MCP du projet »: every server of the space with its switch state for this project.
+ * `{ spaceId, projectId }`: a project of another space → NOT_FOUND « Projet introuvable. »; a bare
+ * project id uses that project's own space (the caller has checked the project).
+ */
+export async function getProjectMcpTools(input: string | { spaceId: string; projectId: string }, options: McpViewOptions = {}): Promise<ProjectMcpTool[]> {
+  const projectId = typeof input === 'string' ? input : input.projectId;
+  const spaceId = typeof input === 'string' ? await spaceOfProject(projectId) : input.spaceId;
+  const [project] =
+    spaceId && isUuid(projectId)
+      ? await db.select({ id: projects.id }).from(projects).where(and(eq(projects.id, projectId), eq(projects.spaceId, spaceId))).limit(1)
+      : [];
+  if (!spaceId || !project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
+  const servers = await listMcpServers({ ...options, spaceId });
   return servers.map((server) => {
     const enabled = server.projects.find((item) => item.id === projectId)?.enabled ?? false;
     const needsReconnect = server.status === 'expired' || server.status === 'needs_auth';
@@ -694,23 +816,26 @@ export async function getProjectMcpTools(projectId: string, options: { coolifyBa
   });
 }
 
-/** MCP servers enabled for one project (D04), with the session-relevant fields. */
+/** MCP servers enabled for one project (D04), with the session-relevant fields (servers of its space only). */
 export async function listProjectMcpServers(projectId: string): Promise<Array<McpServerRow & { enabled: boolean }>> {
+  if (!isUuid(projectId)) return [];
   const rows = await db
     .select({ server: mcpServers, enabled: projectMcpServers.enabled })
     .from(projectMcpServers)
     .innerJoin(mcpServers, eq(mcpServers.id, projectMcpServers.mcpServerId))
+    .innerJoin(projects, and(eq(projects.id, projectMcpServers.projectId), eq(projects.spaceId, mcpServers.spaceId)))
     .where(eq(projectMcpServers.projectId, projectId));
   return rows.map((row) => ({ ...row.server, enabled: row.enabled }));
 }
 
-/** Number of projects where each server is enabled (D07 Neutre badge « 3 projets »). */
-export async function countActiveProjectsByServer(): Promise<Map<string, number>> {
+/** Number of projects of the space where each of its servers is enabled (D07 Neutre badge « 3 projets »). */
+export async function countActiveProjectsByServer(spaceId: string): Promise<Map<string, number>> {
   const rows = await db
     .select({ serverId: projectMcpServers.mcpServerId, n: sql<number>`count(*)::int` })
     .from(projectMcpServers)
     .innerJoin(projects, eq(projects.id, projectMcpServers.projectId))
-    .where(and(eq(projectMcpServers.enabled, true), isNull(projects.archivedAt)))
+    .innerJoin(mcpServers, eq(mcpServers.id, projectMcpServers.mcpServerId))
+    .where(and(eq(projectMcpServers.enabled, true), isNull(projects.archivedAt), eq(projects.spaceId, spaceId), eq(mcpServers.spaceId, spaceId)))
     .groupBy(projectMcpServers.mcpServerId);
   return new Map(rows.map((row) => [row.serverId, Number(row.n)]));
 }

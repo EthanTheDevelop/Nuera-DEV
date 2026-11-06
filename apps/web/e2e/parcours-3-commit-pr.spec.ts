@@ -37,7 +37,8 @@ const isMobile = () => test.info().project.name === 'mobile';
 const unique = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  // Same bytes as the runner (core.autocrlf=false): Git for Windows turns autocrlf on system-wide.
+  return execFileSync('git', ['-C', cwd, '-c', 'core.autocrlf=false', ...args], { encoding: 'utf8' }).trim();
 }
 
 /** Tip of a branch of the bare « GitHub » remote (null when the branch does not exist there). */
@@ -46,8 +47,8 @@ function remoteSha(bare: string, branch: string): string | null {
   return out.status === 0 ? out.stdout.trim() : null;
 }
 
-/** Pull requests the fake GitHub received (its persisted state, `github/fake-state.json`). */
-function fakeGithubPulls(): Array<{ repo: string; number: number; title?: string; head?: { ref?: string }; base?: { ref?: string }; state?: string }> {
+/** Pull requests the fake GitHub received (its persisted state, `github/fake-state.json`), with the app that opened each. */
+function fakeGithubPulls(): Array<{ owner?: string; repo: string; number: number; title?: string; head?: string; base?: string; app?: string; appId?: number }> {
   const file = path.join(E2E_STACK_DIR, 'github', 'fake-state.json');
   const raw = JSON.parse(readFileSync(file, 'utf8')) as { pulls?: unknown[] };
   return (raw.pulls ?? []) as ReturnType<typeof fakeGithubPulls>;
@@ -242,11 +243,16 @@ test('Parcours complet : diff, index, tests, commit, push et pull request ; push
 
   // Real effects: the commit (owner as author) on the branch of the bare remote, the PR on the fake GitHub, DB rows, audit.
   const head = git(worktree.path, 'rev-parse', 'HEAD');
-  expect(git(worktree.path, 'log', '-1', '--format=%s|%an')).toBe(`${message}|${stack.owner.name}`);
+  // Author: the owner's Git identity (Paramètres › Identité Git, the account by default).
+  const owner = stack.accounts.find((account) => account.key === 'a')!;
+  expect(git(worktree.path, 'log', '-1', '--format=%s|%an|%ae')).toBe(`${message}|${owner.gitIdentity.name}|${owner.gitIdentity.email}`);
   expect(git(worktree.path, 'show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(files);
   expect(git(worktree.path, 'status', '--porcelain')).toBe('');
   expect(remoteSha(bare, branch)).toBe(head);
-  expect(fakeGithubPulls().find((pull) => pull.repo === 'devis-express' && pull.number === prNumber)).toBeTruthy();
+  // Opened with an installation token of the owner's source (app `a` of the fake GitHub).
+  const pull = fakeGithubPulls().find((item) => item.repo === 'devis-express' && item.number === prNumber && item.head === branch);
+  expect(pull).toBeTruthy();
+  expect(pull!.app).toBe(owner.github.app);
   const [row] = await database.select().from(pullRequests).where(and(eq(pullRequests.projectId, devis.id), eq(pullRequests.number, prNumber)));
   expect(row).toMatchObject({ headBranch: branch, baseBranch: 'main', state: 'open', sessionId: session.id, title: message });
   await expect(page.locator(`a[href="${row!.url}"]`).filter({ visible: true }).first()).toHaveText(mobile ? 'Voir sur GitHub' : `Pull request #${prNumber}`);

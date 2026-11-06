@@ -41,7 +41,7 @@ function failure(error: unknown, values?: Record<string, string>): SetupFormStat
 
 const text = (formData: FormData, name: string) => String(formData.get(name) ?? '');
 
-/** Étape 1 — création du compte propriétaire (jeton de configuration). */
+/** Étape 1 — création du compte propriétaire, le premier (jeton de configuration). */
 export async function createOwnerAction(_previous: SetupFormState, formData: FormData): Promise<SetupFormState> {
   const input = {
     token: text(formData, 'token'),
@@ -89,8 +89,8 @@ export async function confirmEnrolmentAction(_previous: SetupFormState, formData
     const requestHeaders = await headers();
     assertSameOriginHeaders(requestHeaders);
     const user = await getCurrentUser();
-    if (!user) return { status: 'error', message: 'Votre accès a expiré : reprenez la configuration.' };
-    if (!user.twoFactorEnabled) await confirmEnrolment(text(formData, 'code'), requestHeaders);
+    if (!user) return { status: 'error', message: 'Votre accès a expiré : reprenez la configuration depuis votre lien.' };
+    if (!user.twoFactorEnabled) await confirmEnrolment(text(formData, 'code'), requestHeaders, user);
   } catch (error) {
     return failure(error);
   }
@@ -104,7 +104,7 @@ export async function restartEnrolmentAction(_previous: SetupFormState, formData
     assertSameOriginHeaders(requestHeaders);
     const user = await getCurrentUser();
     if (!user) return { status: 'error', message: 'Votre accès a expiré : reprenez la configuration.' };
-    if (!user.twoFactorEnabled) await restartEnrolment(text(formData, 'password'), requestHeaders);
+    if (!user.twoFactorEnabled) await restartEnrolment(text(formData, 'password'), requestHeaders, user);
   } catch (error) {
     return failure(error);
   }
@@ -122,7 +122,7 @@ export async function acknowledgeCodesAction(): Promise<void> {
   redirect('/configuration/cle-d-acces');
 }
 
-/** Étape 4 — fin de la configuration (clé d'accès ajoutée ou non). */
+/** Étape 4 — fin de la configuration ou de l'activation (clé d'accès ajoutée ou non). */
 export async function completeSetupAction(): Promise<void> {
   const requestHeaders = await headers();
   assertSameOriginHeaders(requestHeaders);

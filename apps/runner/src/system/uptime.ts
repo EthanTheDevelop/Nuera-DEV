@@ -27,17 +27,27 @@ function incidentMinutes(incidents: Incident[], day: string): number {
 }
 
 /**
- * Availability per day (service `runner`), one heartbeat per minute. On start-up, a gap since the
- * last heartbeat (> 3 min) is recorded as an incident of the day it started.
+ * Availability per day of this runner's server, one heartbeat per minute. Key in `uptime_daily`:
+ * `uptimeServiceKey()` of @nuera/shared/runner (`runner` for the default server, its history kept;
+ * `runner:<id>` for the others). On start-up, a gap since the last heartbeat (> 3 min) is recorded
+ * as an incident of the day it started.
  */
 export class UptimeTracker {
   private readonly startedAt = Date.now();
+  private readonly serviceKey: () => string;
 
   constructor(
     private readonly db: Database,
     private readonly logger: Logger,
-    private readonly service = 'runner',
-  ) {}
+    /** Key of the server (resolved lazily: the runner finds its server after it is built). */
+    service: string | (() => string) = 'runner',
+  ) {
+    this.serviceKey = typeof service === 'function' ? service : () => service;
+  }
+
+  private get service(): string {
+    return this.serviceKey();
+  }
 
   private async firstDay(): Promise<string | null> {
     const [row] = await this.db

@@ -5,7 +5,7 @@ import type { Locator, Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
 import { auditLog, permissionRequests } from '@nuera/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import { E2E_DATABASE_URL, expect, hideNextDevIndicator, stackRunnerApi, test, type FakeCliScript } from './fixtures';
+import { E2E_DATABASE_URL, expect, hideNextDevIndicator, samePath, stackRunnerApi, test, type FakeCliScript } from './fixtures';
 
 /**
  * PARCOURS 2 — « Projet → branche / worktree → session → instruction → suivi en direct →
@@ -36,7 +36,8 @@ const isMobile = () => test.info().project.name === 'mobile';
 const unique = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  // Same bytes as the runner (core.autocrlf=false): Git for Windows turns autocrlf on system-wide.
+  return execFileSync('git', ['-C', cwd, '-c', 'core.autocrlf=false', ...args], { encoding: 'utf8' }).trim();
 }
 
 /** Whether the bare « GitHub » remote has this branch (nothing is pushed by this flow). */
@@ -110,8 +111,15 @@ test('Parcours complet : nouvelle branche et worktree, session, suivi en direct,
   const worktree = fresh.worktree!;
   expect(worktree).toMatchObject({ branch, name: `parcours-2-${u}`, baseBranch: devis.defaultBranch, isPrimary: false });
   expect(git(worktree.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(branch);
-  expect(git(worktree.path, 'rev-parse', 'HEAD')).toBe(git(devis.path, 'rev-parse', devis.defaultBranch));
-  expect(git(devis.path, 'worktree', 'list', '--porcelain')).toContain(`worktree ${worktree.path}`);
+  // The runner starts a new worktree from origin/<base> when it exists (local commits of the clone
+  // — e.g. a CLAUDE.md committed from the project page by an earlier test — stay out of it).
+  expect(git(worktree.path, 'rev-parse', 'HEAD')).toBe(git(devis.path, 'rev-parse', `refs/remotes/origin/${devis.defaultBranch}`));
+  // `git worktree list` prints `P:/…` where the DTO holds `P:\…` on Windows.
+  const listed = git(devis.path, 'worktree', 'list', '--porcelain')
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length));
+  expect(listed.some((item) => samePath(item, worktree.path))).toBe(true);
   expect(remoteHasBranch(bare, branch)).toBe(false);
 
   await expect(page.getByRole('heading', { name: 'Claude Code est prêt dans devis-express' })).toBeVisible({ timeout: 60_000 });
@@ -172,7 +180,9 @@ test('Parcours complet : nouvelle branche et worktree, session, suivi en direct,
   await page.goto('/');
   await hideNextDevIndicator(page);
   await page.getByRole('button', { name: /^Notifications · \d+ non lues?$/ }).filter({ visible: true }).first().click();
-  const notice = page.getByRole('link', { name: new RegExp(`Claude demande à exécuter une commande.*${command.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}`) });
+  // S5: « <titre de la session> attend votre accord » (same wording as the Web Push title).
+  // Both requests of the session carry that title: the Bash one is the link to its request.
+  const notice = page.getByRole('link', { name: `${title} attend votre accord` }).and(page.locator(`[href$="#demande-${secondId}"]`));
   await expect(notice).toHaveAttribute('href', `/workspace/${sessionId}#demande-${secondId}`);
   await notice.click();
   await page.waitForURL(new RegExp(`/workspace/${sessionId}#demande-${secondId}$`), { timeout: 60_000 });

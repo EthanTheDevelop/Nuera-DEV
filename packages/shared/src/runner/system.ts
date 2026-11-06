@@ -1,5 +1,34 @@
 import { z } from 'zod';
-import { IsoDateSchema, SessionBackendSchema } from './common';
+import { IsoDateSchema, SessionBackendSchema, UuidSchema } from './common';
+
+/**
+ * Version of the runner ⇄ web contract, exposed by `/v1/health` (`contractVersion`). The web politely
+ * refuses a route newer than the contract of the runner it talks to (a runner without the field is
+ * version 1). Every field added for version 2 is optional, so older runners and webs keep working.
+ */
+export const RUNNER_CONTRACT_VERSION = 2;
+
+/**
+ * Availability key of a server in `uptime_daily`: `runner` for the default server (its history is
+ * kept), `runner:<environmentId>` for the others.
+ */
+export function uptimeServiceKey(environment: { id: string; isDefault: boolean }): string {
+  return environment.isDefault ? 'runner' : `runner:${environment.id}`;
+}
+
+/** Server (environment) a runner serves, as shown by `/v1/health`. */
+export const RunnerEnvironmentRefSchema = z.object({ id: UuidSchema, name: z.string() });
+export type RunnerEnvironmentRef = z.infer<typeof RunnerEnvironmentRefSchema>;
+
+/**
+ * - `ready`: registered, holds the lease of its server, serves every route;
+ * - `starting`: registered, start-up tasks still running;
+ * - `unregistered`: its token matches no server (or a retired one): health only, 503 `ENVIRONMENT_UNREGISTERED` elsewhere;
+ * - `disabled`: its server is suspended: reading and stopping only (`ENVIRONMENT_DISABLED`).
+ */
+export const RUNNER_STATES = ['ready', 'starting', 'unregistered', 'disabled'] as const;
+export const RunnerStateSchema = z.enum(RUNNER_STATES);
+export type RunnerState = z.infer<typeof RunnerStateSchema>;
 
 export const SystemMetricsSchema = z.object({
   sampledAt: IsoDateSchema,
@@ -72,5 +101,11 @@ export const HealthResponseSchema = z.object({
   disk: z.object({ path: z.string(), freeBytes: z.number(), totalBytes: z.number() }).nullable(),
   projectsRoot: z.string(),
   dataDir: z.string(),
+  /** Server served by this runner; null while unregistered. Absent from runners older than contract 2. */
+  environment: RunnerEnvironmentRefSchema.nullable().optional(),
+  /** Absent from runners older than contract 2 (= `ready`). */
+  state: RunnerStateSchema.optional(),
+  /** {@link RUNNER_CONTRACT_VERSION} of the runner; absent = 1. */
+  contractVersion: z.number().int().positive().optional(),
 });
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;

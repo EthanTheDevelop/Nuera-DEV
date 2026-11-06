@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { activeNavKey, hidesTabBar, NAV_ITEMS } from './nav-items';
+import { administrationGroup, navigationGroup } from './CommandPalette';
+import { activeNavKey, hidesTabBar, isRunnerIndependentPage, NAV_ITEMS, navItemsFor, tabBarActiveKey } from './nav-items';
 import { availabilitySentence } from './ShellAvailability';
-import { claudeLine, formatServerMetrics, lastContactText, serverLabel, serverTone } from './status-text';
+import { claudeLine, formatServerMetrics, lastContactText, roleLine, serverLabel, serverTone } from './status-text';
 
 const GB = 1024 ** 3;
 
@@ -68,5 +69,65 @@ describe('availability sentence', () => {
   it('states what is down otherwise', () => {
     expect(availabilitySentence('VPS-3', 'unavailable', 'connected', false)).toBe('VPS-3 ne répond pas');
     expect(availabilitySentence('VPS-3', 'available', 'disconnected', false)).toContain("Claude Code n'est plus connecté");
+  });
+});
+
+describe('multi-account shell', () => {
+  it('adds « Administration » (group INSTANCE) for the owner and administrators only', () => {
+    expect(navItemsFor('member').map((i) => i.label)).toEqual(['Accueil', 'Projets', 'Sessions', 'Intégrations', 'Paramètres']);
+    for (const role of ['owner', 'admin'] as const) {
+      const items = navItemsFor(role);
+      expect(items.map((i) => i.label)).toEqual(['Accueil', 'Projets', 'Sessions', 'Intégrations', 'Paramètres', 'Administration']);
+      expect(items.at(-1)).toMatchObject({ href: '/administration', group: 'INSTANCE' });
+    }
+  });
+
+  it('builds the ⌘K groups from the role', () => {
+    expect(navigationGroup('member').items.map((i) => i.href)).not.toContain('/administration');
+    expect(navigationGroup('admin').items.map((i) => i.href)).toContain('/administration');
+    expect(administrationGroup('member')).toBeNull();
+    expect(administrationGroup('owner')?.items.map((i) => i.href)).toEqual([
+      '/administration?onglet=comptes',
+      '/administration?onglet=serveurs',
+      '/administration?onglet=instance',
+      '/administration?onglet=journal',
+      '/administration?onglet=comptes&inviter=1',
+      '/administration?onglet=serveurs&ajout=1',
+    ]);
+  });
+
+  it('highlights Administration on desktop and Paramètres in the phone tab bar (5 tabs kept)', () => {
+    expect(activeNavKey('/administration')).toBe('administration');
+    expect(activeNavKey('/administration/x')).toBe('administration');
+    expect(tabBarActiveKey('/administration')).toBe('parametres');
+    expect(tabBarActiveKey('/sessions')).toBe('sessions');
+    expect(activeNavKey('/administrationx')).toBeNull();
+  });
+
+  it('never lets T5 replace Administration, Compte et sécurité or Préférences', () => {
+    expect(isRunnerIndependentPage('/administration', null)).toBe(true);
+    expect(isRunnerIndependentPage('/administration', 'serveurs')).toBe(true);
+    expect(isRunnerIndependentPage('/parametres', 'compte-et-securite')).toBe(true);
+    expect(isRunnerIndependentPage('/parametres', 'preferences')).toBe(true);
+    expect(isRunnerIndependentPage('/parametres/notification', null)).toBe(true);
+    // The default tab is the way to both (desktop tab strip, phone overview): never replaced either.
+    expect(isRunnerIndependentPage('/parametres', null)).toBe(true);
+    expect(isRunnerIndependentPage('/parametres', 'vue-d-ensemble')).toBe(true);
+    expect(isRunnerIndependentPage('/parametres', 'serveur')).toBe(false);
+    expect(isRunnerIndependentPage('/parametres', 'claude-code')).toBe(false);
+    expect(isRunnerIndependentPage('/', null)).toBe(false);
+    expect(isRunnerIndependentPage('/sessions', 'preferences')).toBe(false);
+  });
+
+  it('labels the account by its role (Figma copy kept for the owner)', () => {
+    expect(roleLine('owner', true)).toBe('Propriétaire · double facteur actif');
+    expect(roleLine('admin', true)).toBe('Administrateur · double facteur actif');
+    expect(roleLine('member', true)).toBe('Membre · double facteur actif');
+    expect(roleLine('member', false)).toBe('Membre · double facteur inactif');
+  });
+
+  it('says « aucun serveur » instead of a server state when none is assigned', () => {
+    expect(availabilitySentence(null, 'unknown', 'unknown', false)).toBe('aucun serveur attribué');
+    expect(availabilitySentence(null, 'unavailable', 'unknown', true)).toBe('aucun serveur');
   });
 });

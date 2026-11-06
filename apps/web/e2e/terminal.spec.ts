@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
 import { auditLog, projects, worktrees } from '@nuera/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { E2E_BASE_URL, E2E_DATABASE_URL, expect, test } from './fixtures';
 
 /**
@@ -183,7 +183,8 @@ test("le terminal intégré se reconnecte après une coupure et repart d'un inst
   await expect(page.getByRole('button', { name: 'Ouvrir /status ici' })).toBeVisible();
 });
 
-test('runner injoignable : état sobre, nouvel essai, puis reprise du terminal', async ({ page }) => {
+test('runner injoignable : état sobre, nouvel essai, puis reprise du terminal', async ({ page, stack }) => {
+  const server = stack.runners.find((runner) => runner.key === 'a')!.name;
   await openKit(page);
   const unavailable = `data: ${JSON.stringify({ seq: 0, at: new Date().toISOString(), type: 'stream.error', data: { code: 'RUNNER_UNAVAILABLE', message: 'Runner injoignable.' } })}\n\n`;
   await page.route('**/api/stream/terminals/**', (route) =>
@@ -192,7 +193,7 @@ test('runner injoignable : état sobre, nouvel essai, puis reprise du terminal',
   await page.getByRole('button', { name: 'Ouvrir /status ici' }).click();
   const terminal = page.getByRole('group', { name: 'Terminal Claude Code' });
   await expectState(terminal, 'reconnecting', 60_000);
-  await expect(terminal).toContainText('VPS-3 ne répond pas');
+  await expect(terminal).toContainText(`${server} ne répond pas`);
   await expect(terminal).toContainText(/nouvel essai dans \d+ s/);
   await expect(page.getByText('Connexion au terminal impossible : nouvel essai automatique.')).toBeAttached();
 
@@ -257,13 +258,21 @@ test("un shell s'ouvre dans un worktree actif et exécute ce qu'on y tape", asyn
   const worktreeName = 'terminal-e2e';
   const folder = path.resolve(stack.paths.projects, worktreeName);
   mkdirSync(folder, { recursive: true });
+  // The owner's space and server (account A, « VPS-3 »): the row the web would write for a project there.
+  const owner = stack.accounts.find((account) => account.key === 'a')!;
+  const server = stack.runners.find((runner) => runner.key === 'a')!;
+  expect(owner.spaceId, "espace du propriétaire inconnu (state.json)").toBeTruthy();
+  expect(server.environmentId, 'serveur par défaut inconnu (state.json)').toBeTruthy();
   const db = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'nuera-e2e-terminal' });
   try {
-    const existing = await db.select().from(worktrees).where(eq(worktrees.name, worktreeName)).limit(1);
+    const existing = await db.select().from(worktrees).where(and(eq(worktrees.name, worktreeName), eq(worktrees.environmentId, server.environmentId!))).limit(1);
     if (existing.length === 0) {
       const [project] = await db
         .insert(projects)
         .values({
+          spaceId: owner.spaceId!,
+          environmentId: server.environmentId!,
+          createdByUserId: owner.userId,
           slug: 'terminal-e2e',
           name: 'Terminal E2E',
           githubFullName: 'nuera-e2e/terminal-e2e',
@@ -272,8 +281,10 @@ test("un shell s'ouvre dans un worktree actif et exécute ce qu'on y tape", asyn
           status: 'ready',
         })
         .returning();
-      await db.insert(worktrees).values({ projectId: project!.id, name: worktreeName, branch: 'main', path: folder, isPrimary: true, status: 'active' });
+      await db.insert(worktrees).values({ projectId: project!.id, environmentId: server.environmentId!, name: worktreeName, branch: 'main', path: folder, isPrimary: true, status: 'active', lastUsedAt: new Date() });
     }
+    // The kit lists the 4 most recently used worktrees of the signed-in account's server: put this one first.
+    await db.update(worktrees).set({ lastUsedAt: new Date() }).where(and(eq(worktrees.name, worktreeName), eq(worktrees.environmentId, server.environmentId!)));
   } finally {
     await db.$client.end({ timeout: 5 });
   }
@@ -292,7 +303,7 @@ test("un shell s'ouvre dans un worktree actif et exécute ce qu'on y tape", asyn
 
   const audit = createDb(E2E_DATABASE_URL, { max: 1, applicationName: 'nuera-e2e-terminal' });
   try {
-    const rows = await audit.select().from(auditLog).where(eq(auditLog.action, 'terminal.open'));
+    const rows = await audit.select().from(auditLog).where(and(eq(auditLog.action, 'terminal.open'), eq(auditLog.actorUserId, owner.userId!))).orderBy(desc(auditLog.id)).limit(50);
     expect(rows.map((row) => row.summary)).toContain(`terminal ouvert dans le worktree « ${worktreeName} » · Terminal E2E`);
   } finally {
     await audit.$client.end({ timeout: 5 });

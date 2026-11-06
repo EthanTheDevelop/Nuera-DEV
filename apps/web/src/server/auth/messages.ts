@@ -25,11 +25,15 @@ const MESSAGES: Record<string, string> = {
   SESSION_EXPIRED: 'Votre accès a expiré : reconnectez-vous.',
   UNAUTHORIZED: 'Connexion requise.',
   SETUP_INCOMPLETE: 'Configuration inachevée : terminez-la depuis la page de configuration, avec le jeton.',
+  ACTIVATION_INCOMPLETE:
+    "Activation inachevée : la double authentification de ce compte n'est pas encore activée. Rouvrez votre lien d'invitation ou de récupération pour la terminer.",
+  ACCOUNT_DISABLED: 'Ce compte est désactivé. Contactez un administrateur.',
+  SIGN_UP_CLOSED: 'Les inscriptions sont fermées : demandez une invitation à un administrateur.',
   TWO_FACTOR_REQUIRED: 'La double authentification est obligatoire sur Nuera Dev.',
   PASSKEY_NOT_FOUND: "Cette clé d'accès n'est pas enregistrée sur Nuera Dev.",
   FAILED_TO_CREATE_SESSION: "Impossible d'ouvrir la session. Réessayez.",
-  USER_ALREADY_EXISTS: 'Nuera Dev a déjà un propriétaire.',
-  OWNER_ALREADY_EXISTS: 'Nuera Dev a déjà un propriétaire.',
+  USER_ALREADY_EXISTS: 'Un compte existe déjà avec cette adresse e-mail.',
+  OWNER_ALREADY_EXISTS: 'Nuera Dev est déjà configuré : connectez-vous.',
 };
 
 export function authErrorCode(error: unknown): string | null {

@@ -13,11 +13,13 @@ export interface ArchiveProjectDialogProps {
   onOpenChange: (open: boolean) => void;
   project: { id: string; name: string } | null;
   onArchived?: () => void;
+  /** Server holding the project (default: the server of the space). */
+  serverName?: string | null;
 }
 
 /** T8 « Archiver … ? »: what is kept (list « Archivés », GitHub repository) and what changes (sessions). */
-export function ArchiveProjectDialog({ open, onOpenChange, project, onArchived }: ArchiveProjectDialogProps) {
-  const serverName = useServerName();
+export function ArchiveProjectDialog({ open, onOpenChange, project, onArchived, serverName: known }: ArchiveProjectDialogProps) {
+  const serverName = useServerName(known);
   const [preview, setPreview] = useState<ArchivePreviewView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [removeClone, setRemoveClone] = useState(false);

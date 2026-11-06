@@ -8,7 +8,7 @@ import { completeSetupAction } from '../actions';
 
 type Status = { kind: 'idle' } | { kind: 'pending' } | { kind: 'added' } | { kind: 'error'; message: string };
 
-export function PasskeyStep({ suggestedName }: { suggestedName: string }) {
+export function PasskeyStep({ suggestedName, activation = false }: { suggestedName: string; activation?: boolean }) {
   const [supported, setSupported] = useState<boolean | null>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
 
@@ -48,7 +48,9 @@ export function PasskeyStep({ suggestedName }: { suggestedName: string }) {
         <SubmitButton pendingLabel="Ouverture…" variant={status.kind === 'added' || supported === false ? 'accent' : 'default'}>
           {status.kind === 'added' || supported === false ? 'Terminer' : 'Plus tard'}
         </SubmitButton>
-        <p className="text-app-12 text-muted">Configuration terminée : Nuera Dev s'ouvre sur l'Accueil.</p>
+        <p className="text-app-12 text-muted">
+          {activation ? "Activation terminée : Nuera Dev s'ouvre sur l'Accueil." : "Configuration terminée : Nuera Dev s'ouvre sur l'Accueil."}
+        </p>
       </form>
     </div>
   );

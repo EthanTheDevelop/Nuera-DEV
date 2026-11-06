@@ -3,8 +3,9 @@ import { listRuns, listRunsQuerySchema, startRun, startRunInputSchema, withProje
 
 /**
  * POST /api/runs — { projectId, worktreeId?, kind: install|dev|build|test|lint|custom, command? }
- * → 201 { runId, run }: starts a project command in a worktree (default: the primary clone) with
- * the project's variables. Live output: /api/stream/runs/<runId> (`run.status`, `run.output`).
+ * → 201 { runId, run }: starts a project command in a worktree (default: the primary clone) on the
+ * project's server, with the project's variables, the acting account and its Git identity. Live
+ * output: /api/stream/runs/<runId> (`run.status`, `run.output`).
  * GET /api/runs?projectId=&worktreeId=&limit= — recent runs (Workspace « Tests », project tabs).
  */
 export const dynamic = 'force-dynamic';
@@ -14,11 +15,11 @@ export const POST = apiRoute({
   body: startRunInputSchema,
   maxBodyBytes: 16 * 1024,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: ({ body, user }) =>
-    withProjectErrors(async () => Response.json(await startRun(body, user), { status: 201, headers: { 'cache-control': 'no-store' } })),
+  handler: ({ body, ctx }) =>
+    withProjectErrors(async () => Response.json(await startRun(ctx, body), { status: 201, headers: { 'cache-control': 'no-store' } })),
 });
 
 export const GET = apiRoute({
   query: listRunsQuerySchema,
-  handler: ({ query }) => withProjectErrors(async () => ({ runs: await listRuns(query) })),
+  handler: ({ query, ctx }) => withProjectErrors(async () => ({ runs: await listRuns(ctx, query) })),
 });

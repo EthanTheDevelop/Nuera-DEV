@@ -150,14 +150,18 @@ export function FormAlert({ tone, title, children }: { tone: keyof typeof ALERT_
 
 export const SETUP_STEPS = ['Compte', 'Double authentification', 'Codes de secours', "Clé d'accès"] as const;
 
-/** « Progression » bar of M03 (4 px segments) with the step label. */
-export function SetupProgress({ current }: { current: 1 | 2 | 3 | 4 }) {
+/**
+ * « Progression » bar of M03 (4 px segments) with the step label. `activation`: the same steps for an
+ * invited or recovered account (« Activation de votre compte »), the owner's being the configuration.
+ */
+export function SetupProgress({ current, activation = false }: { current: 1 | 2 | 3 | 4; activation?: boolean }) {
   return (
     <div className="flex w-full flex-col gap-2">
+      {activation ? <p className="text-app-13 font-semibold text-text">Activation de votre compte</p> : null}
       <p className="font-mono text-app-11 tracking-(--tracking-label) text-muted uppercase">
         Étape {current} sur {SETUP_STEPS.length} · {SETUP_STEPS[current - 1]}
       </p>
-      <ol className="grid grid-cols-4 gap-1" aria-label="Étapes de la configuration">
+      <ol className="grid grid-cols-4 gap-1" aria-label={activation ? "Étapes de l'activation" : 'Étapes de la configuration'}>
         {SETUP_STEPS.map((label, index) => (
           <li
             key={label}

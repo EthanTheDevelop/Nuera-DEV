@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { encodeHeartbeat, encodeSseEvent, formatShortDuration, formatTestCounts, formatToolSummary, parseRunnerEvent } from './index';
+import {
+  encodeHeartbeat,
+  encodeSseEvent,
+  encodeStreamHello,
+  formatShortDuration,
+  formatTestCounts,
+  formatToolSummary,
+  NotificationCreatedSchema,
+  parseRunnerEvent,
+  PublishEventRequestSchema,
+} from './index';
 
 describe('SSE wire format', () => {
   it('round-trips an event through encode/parse', () => {
@@ -23,6 +33,50 @@ describe('SSE wire format', () => {
   it('rejects malformed events', () => {
     expect(parseRunnerEvent('{"type":"nope"}')).toBeNull();
     expect(parseRunnerEvent('not json')).toBeNull();
+  });
+});
+
+describe('multi-account events', () => {
+  const ENV_ID = '6f1c0b39-9f4c-4c1f-9c2e-8a8a2b0c1d2e';
+  const data = (frame: string) => frame.split('\n').find((l) => l.startsWith('data: '))!.slice(6);
+
+  it('stream.hello announces the account (and its server) without moving Last-Event-ID', () => {
+    const frame = encodeStreamHello({ userId: 'user_123', environmentId: ENV_ID }, new Date('2026-11-05T10:00:00.000Z'));
+    expect(frame).not.toContain('id:');
+    expect(parseRunnerEvent(data(frame))).toEqual({
+      seq: 0,
+      type: 'stream.hello',
+      at: '2026-11-05T10:00:00.000Z',
+      data: { userId: 'user_123', environmentId: ENV_ID },
+    });
+    expect(parseRunnerEvent(data(encodeStreamHello({ userId: 'user_123', environmentId: null })))?.data).toEqual({
+      userId: 'user_123',
+      environmentId: null,
+    });
+    expect(parseRunnerEvent(JSON.stringify({ seq: 0, type: 'stream.hello', at: 'x', data: { userId: '', environmentId: null } }))).toBeNull();
+    expect(parseRunnerEvent(JSON.stringify({ seq: 0, type: 'stream.hello', at: 'x', data: { userId: 'u' } }))).toBeNull();
+  });
+
+  it('notification.created may name its server; older payloads stay valid', () => {
+    const base = {
+      id: null,
+      kind: 'claude_disconnected',
+      severity: 'danger',
+      title: 'Claude Code est déconnecté',
+      body: null,
+      href: null,
+      projectId: null,
+      sessionId: null,
+    } as const;
+    expect(NotificationCreatedSchema.parse(base).environmentId).toBeUndefined();
+    expect(NotificationCreatedSchema.parse({ ...base, environmentId: ENV_ID }).environmentId).toBe(ENV_ID);
+    expect(NotificationCreatedSchema.parse({ ...base, environmentId: null }).environmentId).toBeNull();
+    expect(NotificationCreatedSchema.safeParse({ ...base, environmentId: 'vps-3' }).success).toBe(false);
+    expect(PublishEventRequestSchema.parse({ type: 'notification.created', data: { ...base, environmentId: ENV_ID } }).data.environmentId).toBe(
+      ENV_ID,
+    );
+    const event = { seq: 7, type: 'notification.created' as const, at: '2026-11-05T10:00:00.000Z', data: { ...base, environmentId: ENV_ID } };
+    expect(parseRunnerEvent(data(encodeSseEvent(event)))).toEqual(event);
   });
 });
 

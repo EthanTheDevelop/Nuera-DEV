@@ -15,6 +15,6 @@ export const POST = apiRoute({
   body: pullRequestInputSchema,
   maxBodyBytes: 128 * 1024,
   rateLimit: { limit: 30, windowMs: 10 * 60_000 },
-  handler: ({ params, body, user }) =>
-    withWorkspaceErrors(async () => Response.json(await openPullRequest(params.worktreeId, body, user), { status: 201 })),
+  handler: ({ params, body, ctx }) =>
+    withWorkspaceErrors(async () => Response.json(await openPullRequest(ctx, params.worktreeId, body), { status: 201 })),
 });

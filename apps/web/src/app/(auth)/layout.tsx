@@ -12,13 +12,16 @@ export const viewport: Viewport = {
   themeColor: '#141830',
 };
 
-/** Copy of the cover « Couverture · Nuera Dev » (241:5880), verbatim. */
+/**
+ * Copy of the cover « Couverture · Nuera Dev » (241:5880). These pages are public and do not know the
+ * visitor's server: « VPS-3 » becomes « votre serveur » (docs/MULTICOMPTE.md §10, recorded deviation).
+ */
 const JOBS: Array<{ icon: AuthIconName; number: string; title: string; body: string }> = [
   {
     icon: 'projets',
     number: '01',
     title: 'Ouvrir un projet',
-    body: 'Un dépôt GitHub cloné sur VPS-3, sa branche, son environnement, son CLAUDE.md.',
+    body: 'Un dépôt GitHub cloné sur votre serveur, sa branche, son environnement, son CLAUDE.md.',
   },
   {
     icon: 'terminal',
@@ -35,7 +38,7 @@ const JOBS: Array<{ icon: AuthIconName; number: string; title: string; body: str
 ];
 
 /**
- * Auth pages (connexion, configuration, déconnexion): no Figma frame exists for them, so they
+ * Auth pages (connexion, configuration, invitation, récupération, déconnexion): no Figma frame exists for them, so they
  * reuse the cover language — near-black page, Nuera Dev logo, mono eyebrow, Outfit display title,
  * accent-on-dark lead — with the white form card of Nuera OS « Connexion de l’équipe ».
  * Phone: logo + title on top, the card full width below (16 px gutter).
@@ -60,7 +63,7 @@ export default function AuthLayout({ children }: { children: ReactNode }) {
               Nuera Dev
             </p>
             <p className="max-w-narrow text-app-14 leading-5 text-accent-on-dark sm:text-lg">
-              Retrouver, depuis n&apos;importe quel appareil, les projets du VPS-3 et les sessions Claude Code qui y
+              Retrouver, depuis n&apos;importe quel appareil, les projets de votre serveur et les sessions Claude Code qui y
               travaillent.
             </p>
           </div>

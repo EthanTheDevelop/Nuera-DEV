@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
-import { expect, hideNextDevIndicator, test } from './fixtures';
+import { E2E_BASE_URL, expect, hideNextDevIndicator, requireAccounts, test } from './fixtures';
 
 /**
  * Accessibility check of every page, desktop and phone (axe-core is not installed: the accessibility
@@ -110,6 +110,11 @@ const pages = (stack: { seeded: { projects?: Record<string, { id: string }>; ses
     { name: 'Sessions', url: '/sessions' },
     { name: 'Intégrations', url: '/integrations' },
     { name: 'Paramètres', url: '/parametres' },
+    // Instance administration (owner / admin): every tab.
+    { name: 'Administration · comptes', url: '/administration' },
+    { name: 'Administration · serveurs', url: '/administration?onglet=serveurs' },
+    { name: 'Administration · instance', url: '/administration?onglet=instance' },
+    { name: 'Administration · journal', url: '/administration?onglet=journal' },
     ...(session ? [{ name: 'Espace de travail', url: `/workspace/${session}`, navigation: false }] : []),
   ];
 };
@@ -277,4 +282,42 @@ test('contraste des jetons de texte (tokens.css, AA 4,5:1)', () => {
   // Known Figma value below AA for small text: the « Accent » badge (accent-on-light on accent-pale,
   // Outfit 500 12) reaches 4.31:1. Figma is the authority on colours: tracked in the review followups.
   expect(contrast(token('accent-on-light'), token('accent-pale'))).toBeGreaterThan(4.2);
+});
+
+test('@comptes pages du second compte : mêmes exigences, sans entrée « Administration »', async ({ as }) => {
+  requireAccounts(2);
+  test.setTimeout(240_000);
+  const b = await as('b');
+  const report: string[] = [];
+  for (const entry of [
+    { name: 'Accueil', url: '/' },
+    { name: 'Projets', url: '/projets' },
+    { name: 'Sessions', url: '/sessions' },
+    { name: 'Intégrations', url: '/integrations' },
+    { name: 'Paramètres', url: '/parametres' },
+  ]) {
+    await b.page.goto(entry.url);
+    await settle(b.page);
+    const issues = await structuralIssues(b.page, { navigation: true });
+    report.push(...issues.map((issue) => `B · ${entry.name} (${entry.url}) : ${issue}`));
+    // A member never sees the instance administration in the navigation.
+    await expect(b.page.getByRole('link', { name: /^Administration/ })).toHaveCount(0);
+  }
+  expect(report).toEqual([]);
+});
+
+test("pages publiques d'invitation et de récupération : landmarks et un h1", async ({ browser }) => {
+  const visitor = await browser.newContext({ baseURL: E2E_BASE_URL, storageState: { cookies: [], origins: [] } });
+  try {
+    const page = await visitor.newPage();
+    const report: string[] = [];
+    for (const url of ['/invitation/jeton-de-test-inconnu-0123456789abcdef0123456', '/recuperation/jeton-de-test-inconnu-0123456789abcdef0123456']) {
+      await page.goto(url);
+      await settle(page);
+      report.push(...(await structuralIssues(page, { navigation: false })).map((issue) => `${url} : ${issue}`));
+    }
+    expect(report).toEqual([]);
+  } finally {
+    await visitor.close();
+  }
 });
