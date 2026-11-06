@@ -1,5 +1,8 @@
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Frame, Page } from '@playwright/test';
-import { E2E_BASE_URL, expect, hideNextDevIndicator, test } from './fixtures';
+import { E2E_BASE_URL, E2E_STACK_DIR, expect, hideNextDevIndicator, test } from './fixtures';
 
 /**
  * « Aperçu » — the worktree's dev server, live, beside the Claude Code session (desktop panel and
@@ -7,6 +10,10 @@ import { E2E_BASE_URL, expect, hideNextDevIndicator, test } from './fixtures';
  * the preview on http://127.0.0.1:<same port> (PREVIEW_HOST of the stack), two distinct origins.
  * The project is the seeded devis-express, whose `npm run dev` is a tiny node:http server that
  * prints its port.
+ *
+ * A second case runs a REAL `next dev` (Next 16, app router, Turbopack) as the dev server of
+ * catalogue-produits: the shapes of a framework (streamed HTML, `/_next/static/…`, RSC requests with
+ * `_rsc`) through the whole chain (preview host → external rewrite → runner → dev server).
  *
  *   node apps/web/e2e/harness/stack.mjs e2e --name apercu --web-port 3610 -- apercu.spec.ts
  */
@@ -135,4 +142,81 @@ test('Aperçu · deux hôtes étanches : rien de l\'application sur l\'hôte d\'
   const unknown = await api.post(`${E2E_BASE_URL}/api/previews`, { data: { runId: '00000000-0000-4000-8000-000000000000' }, headers: { origin: E2E_BASE_URL } });
   expect(unknown.status()).toBe(404);
   expect((await unknown.json()).error.message).toBe('Lancement introuvable.');
+});
+
+/** Minimal app router site (generated in the stack folder: never versioned), with the repo's own Next. */
+function realNextApp(): string {
+  const dir = nodePath.join(E2E_STACK_DIR, 'apercu-next');
+  const webModules = fileURLToPath(new URL('../node_modules/', import.meta.url));
+  mkdirSync(nodePath.join(dir, 'app', 'devis'), { recursive: true });
+  mkdirSync(nodePath.join(dir, 'node_modules'), { recursive: true });
+  for (const name of ['next', 'react', 'react-dom']) {
+    const link = nodePath.join(dir, 'node_modules', name);
+    if (!existsSync(link)) symlinkSync(realpathSync(nodePath.join(webModules, name)), link, 'junction');
+  }
+  const files: Record<string, string> = {
+    'package.json': JSON.stringify({ name: 'apercu-next', private: true, scripts: { dev: 'next dev' } }),
+    // Turbopack resolves only inside its root: the repository (where `node_modules/.pnpm` lives).
+    'next.config.mjs': `export default { agentRules: false, turbopack: { root: ${JSON.stringify(realpathSync(fileURLToPath(new URL('../../../', import.meta.url))))} } };\n`,
+    'app/layout.jsx': 'export default function Layout({ children }) { return <html lang="fr"><body>{children}</body></html>; }\n',
+    'app/page.jsx': "import Link from 'next/link';\nexport default function Page() { return <main><h1>Site Next réel</h1><Link href=\"/devis\">Devis</Link></main>; }\n",
+    'app/devis/page.jsx': 'export default function Devis() { return <main><h1>Page devis</h1></main>; }\n',
+  };
+  for (const [file, content] of Object.entries(files)) writeFileSync(nodePath.join(dir, file), content);
+  return dir;
+}
+
+test('Aperçu · un vrai next dev : page HTML servie telle quelle, requêtes RSC transmises sans boucle', async ({ page, cli, stack }) => {
+  test.skip(isMobile(), 'même chaîne que sur ordinateur');
+  test.setTimeout(240_000);
+  const project = stack.seeded?.projects?.catalogue;
+  test.skip(!project, 'projet catalogue absent (seed projects)');
+  const dir = realNextApp();
+  const next = nodePath.join(dir, 'node_modules', 'next', 'dist', 'bin', 'next');
+  const port = 3000 + (Number(new URL(E2E_BASE_URL).port) % 1000) + 50;
+  const patch = (dev: string | null) => page.request.patch(`${E2E_BASE_URL}/api/projects/${project!.id}`, { data: { commands: { dev } }, headers: { origin: E2E_BASE_URL } });
+  const before = await (await page.request.get(`${E2E_BASE_URL}/api/projects/${project!.id}`)).json().catch(() => null);
+  expect((await patch(`cd "${dir}" && node "${next}" dev --port ${port}`)).status()).toBe(200);
+  const session = await cli.createSession({ project: 'catalogue', title: `Aperçu Next ${unique()}`, branch: `test/apercu-next-${unique()}`, permissionMode: 'acceptEdits' });
+  created.push(session.id);
+  try {
+    await page.goto(`/workspace/${session.id}?panneau=apercu`);
+    await expect(page.getByRole('log', { name: 'Fil de la session' })).toBeVisible({ timeout: 120_000 });
+    await hideNextDevIndicator(page);
+    const region = page.getByRole('region', { name: 'Aperçu du site' });
+    const documentResponse = page.waitForResponse((r) => r.url() === `${PREVIEW_ORIGIN}/` && r.request().resourceType() === 'document', { timeout: 180_000 });
+    await region.getByRole('button', { name: 'Démarrer le serveur' }).first().click();
+    await expect(region.getByText(new RegExp(`^En ligne · port ${port}$`))).toBeVisible({ timeout: 120_000 });
+    const frame = page.frameLocator('iframe[title^="Aperçu du site"]');
+    await expect(frame.getByRole('heading', { name: 'Site Next réel' })).toBeVisible({ timeout: 120_000 });
+
+    // The page reaches the browser as the dev server wrote it: an HTML document, never a download,
+    // and nothing of the hop (runner address, run id, relay marker).
+    const response = await documentResponse;
+    const headers = await response.allHeaders();
+    expect(response.status()).toBe(200);
+    expect(headers['content-type']).toBe('text/html; charset=utf-8');
+    expect(headers['content-disposition']).toBeUndefined();
+    expect(headers['x-nuera-preview']).toBeUndefined();
+    expect(headers['x-middleware-rewrite']).toBe('/');
+    expect(headers['content-security-policy']).toBe(`frame-ancestors ${E2E_BASE_URL}`);
+    expect(Object.values(headers).join(' ')).not.toContain('/v1/runs/');
+    // Position script added by the runner: the path field follows the page.
+    await expect(region.getByRole('textbox', { name: 'Chemin de la page' })).toHaveValue('/');
+
+    // An RSC request of the previewed site goes to ITS dev server (Nuera Dev's Next once answered it
+    // itself, redirecting on `?_rsc=` forever and naming its own relay route).
+    const preview = page.frames().find((f) => f.parentFrame() !== null && f.url().startsWith(`${PREVIEW_ORIGIN}/`))!;
+    const rsc = await preview.evaluate(async () => {
+      const r = await fetch('/devis', { headers: { RSC: '1' } });
+      return { status: r.status, type: r.headers.get('content-type'), url: r.url, rewritten: r.headers.get('x-nextjs-rewritten-path'), body: (await r.text()).includes('Page devis') };
+    });
+    expect(rsc).toMatchObject({ status: 200, type: 'text/x-component', rewritten: null, body: true });
+    expect(rsc.url).toMatch(new RegExp(`^${PREVIEW_ORIGIN}/devis\\?_rsc`));
+
+    await region.getByRole('button', { name: 'Arrêter' }).click();
+    await expect(region.getByText('Serveur arrêté')).toBeVisible({ timeout: 60_000 });
+  } finally {
+    await patch(before?.project?.commands?.dev ?? null).catch(() => undefined);
+  }
 });
