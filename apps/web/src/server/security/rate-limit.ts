@@ -161,6 +161,10 @@ export const AUTH_RATE_LIMITS = {
   enrolment: { limit: 10, windowMs: 10 * 60_000 },
   /** Invitation and recovery links (acceptance, resumption), per IP. */
   linkToken: { limit: 10, windowMs: 15 * 60_000 },
+  /** « Mot de passe oublié » requests, per IP + e-mail. */
+  passwordReset: { limit: 3, windowMs: 15 * 60_000 },
+  /** « Mot de passe oublié » requests, net per IP. */
+  passwordResetPerIp: { limit: 10, windowMs: 15 * 60_000 },
   /** Mutations of the administration, per administrator. */
   adminMutation: { limit: 30, windowMs: 10 * 60_000 },
   /** Password re-entry for sensitive settings (change password, regenerate codes, admin re-confirmation). */

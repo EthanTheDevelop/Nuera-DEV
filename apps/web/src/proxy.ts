@@ -10,7 +10,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  *    when the password step succeeded: cookie `nuera.two_factor`);
  *  - no session cookie, /api/* request → 401 JSON;
  *  - otherwise: passes the requested path to the server (x-nuera-path) for the post-login return.
- * Public: /connexion, /configuration, /invitation/<jeton> and /recuperation/<jeton> (single-use links,
+ * Public: /connexion, /configuration, /mot-de-passe-oublie(/<jeton>), /invitation/<jeton> and /recuperation/<jeton> (single-use links,
  * checked by their pages), /api/auth/*, /api/health, /api/internal/* (Bearer runner
  * token), /api/push/subscription/renew (the service worker reads the public VAPID key and renews a
  * push subscription, possibly once the access has ended: the route itself only renews the row of the
@@ -18,7 +18,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  * and static assets (matcher below).
  */
 
-const PUBLIC_PAGES = /^\/(connexion|configuration|invitation|recuperation)(\/|$)/;
+const PUBLIC_PAGES = /^\/(connexion|configuration|invitation|recuperation|mot-de-passe-oublie)(\/|$)/;
 /** Same list as BROWSER_API_ROUTES (server/auth/policy.ts): API routes GitHub sends the browser to. */
 const BROWSER_API_ROUTES = /^\/api\/integrations\/github\/(callback|setup|install)$/;
 /** API routes without a session cookie by design (they check their own capability). */

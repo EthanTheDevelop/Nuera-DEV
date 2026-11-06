@@ -32,7 +32,15 @@ export default async function ConnexionPage({ searchParams }: { searchParams: Se
           </Link>
         </FormAlert>
       ) : null}
+      {params['mot-de-passe'] === 'reinitialise' ? (
+        <FormAlert tone="info" title="Mot de passe modifié">
+          Connectez-vous avec votre nouveau mot de passe, puis le code de votre application d'authentification.
+        </FormAlert>
+      ) : null}
       <SignInForm next={next} />
+      <Link href="/mot-de-passe-oublie" className="self-start text-app-13 font-medium text-accent underline underline-offset-4">
+        Mot de passe oublié ?
+      </Link>
       <div className="flex flex-col gap-1.5 border-t border-border pt-4 text-app-12 leading-4 text-muted">
         <p>Pas de compte ? Demandez une invitation à un administrateur de Nuera Dev.</p>
         <p>
