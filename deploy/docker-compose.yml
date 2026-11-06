@@ -7,6 +7,10 @@
 # - Ne jamais renommer ces services ni ces volumes : la mise à jour multi-comptes reprend tels quels le service
 #   `runner` et ses volumes comme serveur par défaut. Chaque serveur supplémentaire est une ressource Coolify séparée
 #   (deploy/docker-compose.runner.yml).
+# - Web et runner se joignent par des alias propres au réseau `nuera-internal` de CETTE pile (`nuera-dev-web`,
+#   `nuera-dev-runner`), jamais par les noms de service : avec « Connect to predefined network », tous les services
+#   rejoignent aussi le réseau `coolify` partagé, où `web` et `runner` désignent aussi les conteneurs des autres
+#   piles du serveur (staging et production) — résolution au hasard, jeton refusé, « VPS-3 ne répond pas ».
 # Voir docs/DEPLOY.md pour la procédure complète.
 
 name: nuera-dev
@@ -46,7 +50,7 @@ services:
       <<: *common-env
       APP_URL: ${APP_URL:-https://dev.nuera.studio}
       # Default server; the other servers' addresses and tokens live in the database (Administration › Serveurs).
-      RUNNER_URL: http://runner:4100
+      RUNNER_URL: http://nuera-dev-runner:4100
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET requis}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY requis}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
@@ -89,7 +93,9 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
     networks:
-      - nuera-internal
+      nuera-internal:
+        aliases:
+          - nuera-dev-web
 
   runner:
     build:
@@ -107,7 +113,7 @@ services:
       NUERA_DB_POOL_MAX: ${NUERA_DB_POOL_MAX:-5}
       # Public URL (links, notifications) and internal URL for runner → web callbacks (/api/internal/*).
       APP_URL: ${APP_URL:-https://dev.nuera.studio}
-      NUERA_WEB_INTERNAL_URL: http://web:3000
+      NUERA_WEB_INTERNAL_URL: http://nuera-dev-web:3000
       NUERA_SESSION_BACKEND: tmux
     volumes:
       - nuera-projects:/srv/dev
@@ -124,7 +130,9 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
     networks:
-      - nuera-internal
+      nuera-internal:
+        aliases:
+          - nuera-dev-runner
 
 # Default server's data (clones and worktrees, session runtime, Claude Code CLI and its login): never renamed.
 volumes:
