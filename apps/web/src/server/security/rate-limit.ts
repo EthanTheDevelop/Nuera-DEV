@@ -3,8 +3,10 @@ import { AppError } from '@/server/errors';
 
 /**
  * In-memory sliding-window rate limiter (exact sliding log), keyed by `scope:identifier`
- * (identifier = client IP, user id, or both). One web instance serves a single owner, so memory
- * is enough; Better Auth has its own limiter for /api/auth/* HTTP calls (not for auth.api calls,
+ * (identifier = client IP, user id, e-mail, or a combination). The store is in memory: correct for
+ * ONE web process (the deployment runs a single web container; the enrolment grants of
+ * server/auth/enrolment-grant.ts make the same assumption). Several replicas would need a shared
+ * store. Better Auth has its own limiter for /api/auth/* HTTP calls (not for auth.api calls,
  * which is why server actions use this one).
  *
  *   assertRateLimit('setup-token', ip ?? 'unknown', { limit: 5, windowMs: 15 * 60_000 });
@@ -139,14 +141,37 @@ function formatWait(seconds: number): string {
   return `${minutes} min`;
 }
 
-/** Shared rules for authentication-related server actions. */
+/**
+ * Shared rules for authentication-related server actions (docs/MULTICOMPTE.md §6). The strict rules
+ * are keyed per IP AND per account (`${ip}:${email}` for the password step), so that several people
+ * behind one address never lock each other out; the per-IP nets cap what one address may try in all.
+ */
 export const AUTH_RATE_LIMITS = {
   /** /configuration: setup token attempts per IP. */
   setupToken: { limit: 5, windowMs: 15 * 60_000 },
-  /** Password step of /connexion per IP. */
+  /** Password step of /connexion, per IP + e-mail. */
   signIn: { limit: 10, windowMs: 10 * 60_000 },
-  /** TOTP / backup code attempts per IP. */
+  /** Password step of /connexion, net per IP (every e-mail together). */
+  signInPerIp: { limit: 50, windowMs: 10 * 60_000 },
+  /** TOTP / backup code attempts, per IP + pending sign-in (or account). */
   secondFactor: { limit: 10, windowMs: 10 * 60_000 },
-  /** Password re-entry for sensitive settings (change password, regenerate codes). */
+  /** TOTP / backup code attempts, net per IP. */
+  secondFactorPerIp: { limit: 50, windowMs: 10 * 60_000 },
+  /** Enrolment of the second factor (first code, new key), per IP + account. */
+  enrolment: { limit: 10, windowMs: 10 * 60_000 },
+  /** Invitation and recovery links (acceptance, resumption), per IP. */
+  linkToken: { limit: 10, windowMs: 15 * 60_000 },
+  /** Mutations of the administration, per administrator. */
+  adminMutation: { limit: 30, windowMs: 10 * 60_000 },
+  /** Password re-entry for sensitive settings (change password, regenerate codes, admin re-confirmation). */
   sensitive: { limit: 10, windowMs: 15 * 60_000 },
 } as const satisfies Record<string, RateLimitRule>;
+
+/**
+ * Identifier of a per-IP-and-account rule: `<ip>:<account>` (the account is an e-mail, lower-cased,
+ * an account id or the hash of a pending sign-in). `assertRateLimit('auth:sign-in', accountRateLimitKey(ip, email), …)`.
+ */
+export function accountRateLimitKey(ip: string | null | undefined, account: string | null | undefined): string {
+  const who = (account ?? '').trim().toLowerCase().slice(0, 320);
+  return `${ip || 'unknown'}:${who || 'unknown'}`;
+}

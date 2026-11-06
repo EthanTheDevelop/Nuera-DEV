@@ -46,3 +46,21 @@ describe('toErrorBody', () => {
     expect(await response.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
   });
 });
+
+describe('AppError across module copies', () => {
+  it('keeps instanceof and the HTTP status when another copy of the module threw the error', async () => {
+    const { vi } = await import('vitest');
+    vi.resetModules();
+    const other = await import('./runner/errors');
+    const foreign = new other.RunnerError('CONFLICT', 'Session occupée.', { reason: 'SESSION_BUSY_PERMISSION' });
+    expect(foreign).toBeInstanceOf(AppError);
+    expect(toAppError(foreign)).toBe(foreign);
+    expect(toErrorResponse(foreign).status).toBe(409);
+    expect(toErrorBody(foreign).error).toMatchObject({ code: 'CONFLICT', reason: 'SESSION_BUSY_PERMISSION' });
+    const { RunnerError } = await import('./runner/errors');
+    expect(foreign).toBeInstanceOf(RunnerError);
+    const { ProjectError } = await import('./projects/errors');
+    expect(foreign instanceof ProjectError).toBe(false);
+    expect({ code: 'CONFLICT' } instanceof AppError).toBe(false);
+  });
+});

@@ -6,7 +6,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * apiRoute: order of the guards (Origin before the session), JSON body limits, and the rate-limit
  * scope (one window per method + route pattern, default rule on every mutation).
  */
-const state = vi.hoisted(() => ({ signedIn: true, sessionChecks: 0 }));
+const state = vi.hoisted(() => ({ signedIn: true, sessionChecks: 0, contextChecks: 0, role: 'owner' as 'owner' | 'admin' | 'member' }));
+
+const currentUser = () => ({
+  id: 'owner',
+  name: 'Owner',
+  email: 'owner@example.test',
+  image: null,
+  twoFactorEnabled: true,
+  authSessionId: 's1',
+  role: state.role,
+  disabledAt: null,
+});
 
 vi.mock('@/server/auth/session', async () => {
   const { AppError } = await import('@/server/errors');
@@ -14,7 +25,24 @@ vi.mock('@/server/auth/session', async () => {
     requireUserForApi: async () => {
       state.sessionChecks += 1;
       if (!state.signedIn) throw new AppError('UNAUTHORIZED');
-      return { id: 'owner', name: 'Owner', email: 'owner@example.test', image: null, twoFactorEnabled: true, authSessionId: 's1' };
+      return currentUser();
+    },
+    isInstanceAdmin: (user: { role: string }) => user.role === 'owner' || user.role === 'admin',
+  };
+});
+
+vi.mock('@/server/tenancy/context', async () => {
+  const { AppError } = await import('@/server/errors');
+  return {
+    requireContextForApi: async () => {
+      state.sessionChecks += 1;
+      state.contextChecks += 1;
+      if (!state.signedIn) throw new AppError('UNAUTHORIZED');
+      return {
+        user: currentUser(),
+        space: { id: '33333333-3333-4333-8333-333333333333', name: 'Espace de test', kind: 'personal', role: 'owner' },
+        environment: null,
+      };
     },
   };
 });
@@ -44,6 +72,8 @@ beforeEach(() => {
   vi.stubEnv('NUERA_RATE_LIMIT_FACTOR', '1');
   state.signedIn = true;
   state.sessionChecks = 0;
+  state.contextChecks = 0;
+  state.role = 'owner';
   rateLimiter.reset();
 });
 
@@ -77,12 +107,56 @@ describe('apiRoute', () => {
     expect(noOrigin.status).toBe(403);
   });
 
-  it('requires the owner session unless auth: false', async () => {
+  it('requires a session unless auth: false', async () => {
     state.signedIn = false;
     const route = apiRoute({ handler: () => ({ ok: true }) });
     expect((await route(request('GET', '/api/x'), ctx())).status).toBe(401);
+    for (const auth of ['user', 'admin'] as const) {
+      const guarded = apiRoute({ auth, handler: () => ({ ok: true }) });
+      expect((await guarded(request('GET', '/api/x'), ctx())).status).toBe(401);
+    }
     const open = apiRoute({ auth: false, handler: () => ({ ok: true }) });
     expect((await open(request('GET', '/api/x'), ctx())).status).toBe(200);
+  });
+
+  it("gives the handler the request context by default ('space')", async () => {
+    const seen: unknown[] = [];
+    const route = apiRoute({ handler: ({ user, ctx: context }) => void seen.push({ user: user.id, space: context.space.id, environment: context.environment }) });
+    expect((await route(request('GET', '/api/x'), ctx())).status).toBe(204);
+    expect(seen).toEqual([{ user: 'owner', space: '33333333-3333-4333-8333-333333333333', environment: null }]);
+    expect(state.contextChecks).toBe(1);
+  });
+
+  it("'user' and 'admin' resolve the account only; 'admin' refuses a member with 403", async () => {
+    const seen: unknown[] = [];
+    const userRoute = apiRoute({ auth: 'user', handler: ({ user, ctx: context }) => void seen.push({ user: user.id, ctx: context }) });
+    expect((await userRoute(request('GET', '/api/x'), ctx())).status).toBe(204);
+    expect(seen).toEqual([{ user: 'owner', ctx: null }]);
+    expect(state.contextChecks).toBe(0);
+
+    const handler = vi.fn<() => { ok: boolean }>(() => ({ ok: true }));
+    const adminRoute = apiRoute({ auth: 'admin', handler });
+    for (const role of ['owner', 'admin'] as const) {
+      state.role = role;
+      expect((await adminRoute(request('GET', '/api/admin/x'), ctx())).status).toBe(200);
+    }
+    state.role = 'member';
+    const refused = await adminRoute(request('POST', '/api/admin/x'), ctx());
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: { code: 'FORBIDDEN', message: 'Action réservée aux administrateurs.' } });
+    expect(handler).toHaveBeenCalledTimes(2);
+
+    // A member keeps the 'user' and 'space' levels.
+    expect((await userRoute(request('GET', '/api/x'), ctx())).status).toBe(204);
+    expect((await apiRoute({ handler: () => undefined })(request('GET', '/api/x'), ctx())).status).toBe(204);
+  });
+
+  it('checks the Origin before resolving the context or the account', async () => {
+    for (const auth of ['space', 'user', 'admin'] as const) {
+      const route = apiRoute({ auth, handler: () => undefined });
+      expect((await route(request('POST', '/api/x', { origin: 'https://evil.example' }), ctx())).status).toBe(403);
+    }
+    expect(state.sessionChecks).toBe(0);
   });
 
   it('validates params and refuses oversized or non-JSON bodies', async () => {

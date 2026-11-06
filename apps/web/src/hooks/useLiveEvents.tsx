@@ -12,6 +12,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { z } from 'zod';
 import {
   HEARTBEAT_INTERVAL_MS,
   parseRunnerEvent,
@@ -30,18 +31,32 @@ import {
 } from '@/components/shell/types';
 
 /* =================================================================================================
-   Live events of the shell — ONE EventSource per tab on /api/stream/events (global runner stream,
-   relayed by the web). Event types relied on (from @nuera/shared/events):
+   Live events of the shell — ONE EventSource per tab on /api/stream/events: the stream of the server
+   of the account's space (relayed by the web, ids `<environmentId>.<seq>`) merged with the account's
+   own web channel (seq 0, no id). Event types relied on (from @nuera/shared/events):
+     stream.hello         web, first: the account the stream was opened for → multi-tab identity guard
+                          (another account than this page's → reload; never a proof of life)
      heartbeat            every 15 s on a healthy stream → proof of life (W7 « Dernier signe du serveur »)
      stream.error         RUNNER_UNAVAILABLE emitted by the web relay → T5 « VPS-3 ne répond pas »
      stream.reset         runner restarted / replay impossible → subscribers reload what they show
      system.metrics       ServerCard CPU · RAM
      claude.status        « Claude Code connecté » line, T6 banner
      session.status       Sessions bubble / tab-bar counter (active = new, running, waiting_*)
-     notification.created bell panel + unread count
+     notification.created bell panel + unread count — from the web channel only (one per recipient;
+                          the copy a runner may still broadcast on its server stream is ignored)
+     notification.read    web channel: read in another tab or device → bell updated
+     runner.unavailable   web, after stream.error: the stream STAYS OPEN (web channel, web heartbeats —
+                          never a proof of life of the runner); the relay tries the runner again in
+                          `retryInMs` (T5 countdown), and repeats this event after each failed attempt
+     runner.available     web: the relay reached the runner again, its events follow → T5 over
+   Without a server (`initial.environment === null`) the runner state stays `unknown`: no T5, no T6.
+   Tabs of one browser share its cookie, hence its account: a tab that learns the account changed
+   (stream.hello, or a message on the BroadcastChannel « nuera-compte ») reloads.
    Reconnection: the hook owns it (exponential back-off 1 → 30 s with jitter while the browser cannot
-   reach the web app — W7; a fixed 10 s while the web app reports the runner unreachable — T5
-   « Nuera Dev réessaie toutes les 10 s »). A connection silent for 2.5 heartbeats is treated as lost.
+   reach the web app — W7; a fixed 10 s when a stream reporting the runner unreachable ends — T5
+   « Nuera Dev réessaie toutes les 10 s »; the global relay keeps the stream open and retries the
+   runner itself, announcing runner.unavailable / runner.available). A connection silent for 2.5
+   heartbeats is treated as lost.
    Each new EventSource resumes from the last event id (`?lastEventId=`, replay by the runner); a
    `stream.reset` (replay impossible) or the runner coming back re-reads the server snapshot
    (router.refresh), and every new snapshot of the layout resynchronises the live state.
@@ -57,10 +72,129 @@ export function safeNotificationHref(href: string | null): string | null {
   return href && href.startsWith('/') && !href.startsWith('//') && !href.includes('\\') ? href : null;
 }
 
+/** Ids of the global stream: `<environmentId>.<seq>` (namespaced by server), or the former bare `<seq>`. */
+const LAST_EVENT_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.)?\d{1,20}$/i;
+
 /** Stream URL resuming after `lastEventId` (the relay forwards it to the runner as Last-Event-ID). */
 export function liveStreamUrl(base: string, lastEventId: string | null): string {
-  if (!lastEventId || !/^\d{1,20}$/.test(lastEventId)) return base;
-  return `${base}${base.includes('?') ? '&' : '?'}lastEventId=${lastEventId}`;
+  if (!lastEventId || !LAST_EVENT_ID.test(lastEventId)) return base;
+  return `${base}${base.includes('?') ? '&' : '?'}lastEventId=${encodeURIComponent(lastEventId)}`;
+}
+
+/** Account of a page (ShellData) and of a stream (`stream.hello`). */
+export interface LiveIdentity {
+  userId: string;
+  environmentId: string | null;
+}
+
+/**
+ * Multi-tab identity guard (docs/MULTICOMPTE.md §5): what a page does when its stream announces an
+ * account. `reload` — the browser's cookie now designates another account: this page shows the
+ * previous account's data, it must be rebuilt from scratch; `refresh` — same account, but its server
+ * changed (assigned, replaced): re-read the server snapshot; `ok` otherwise.
+ */
+export function identityVerdict(page: LiveIdentity, stream: LiveIdentity): 'reload' | 'refresh' | 'ok' {
+  if (page.userId !== stream.userId) return 'reload';
+  if ((page.environmentId ?? null) !== (stream.environmentId ?? null)) return 'refresh';
+  return 'ok';
+}
+
+/** BroadcastChannel shared by the tabs of this browser (one cookie, hence one account at a time). */
+export const ACCOUNT_CHANNEL = 'nuera-compte';
+
+export type AccountMessage = { type: 'account'; userId: string } | { type: 'signed-out'; userId: string };
+
+const AccountMessageSchema = z.union([
+  z.object({ type: z.literal('account'), userId: z.string().min(1).max(200) }),
+  z.object({ type: z.literal('signed-out'), userId: z.string().min(1).max(200) }),
+]);
+
+/** What a tab of account `userId` does with a message of another tab. */
+export function accountMessageVerdict(userId: string, raw: unknown): 'reload' | 'refresh' | 'ok' {
+  const parsed = AccountMessageSchema.safeParse(raw);
+  if (!parsed.success) return 'ok';
+  if (parsed.data.type === 'account') return parsed.data.userId === userId ? 'ok' : 'reload';
+  // Signed out in another tab: this page's session is gone too (the refresh lands on /connexion).
+  return parsed.data.userId === userId ? 'refresh' : 'ok';
+}
+
+/** Tells the other tabs of this browser which account it now serves (or that it signed out). */
+export function announceAccount(message: AccountMessage): void {
+  if (typeof BroadcastChannel === 'undefined') return;
+  try {
+    const channel = new BroadcastChannel(ACCOUNT_CHANNEL);
+    // eslint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel (same origin by design) takes no target origin
+    channel.postMessage(message);
+    channel.close();
+  } catch {
+    // unsupported (old browser, sandboxed frame): each tab still checks its stream.hello
+  }
+}
+
+/** Web-only event of the account channel (not part of the runner contract). */
+const NotificationReadSchema = z.object({
+  seq: z.literal(0),
+  type: z.literal('notification.read'),
+  at: z.string(),
+  data: z.union([
+    z.object({ all: z.literal(true) }),
+    z.object({ all: z.literal(false), ids: z.array(z.string().min(1).max(64)).max(500) }),
+  ]),
+});
+
+/** `notification.read` of the web channel → ids now read ('all' for every one), null for anything else. */
+export function parseNotificationRead(raw: string): readonly string[] | 'all' | null {
+  try {
+    const parsed = NotificationReadSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return null;
+    return parsed.data.data.all ? 'all' : parsed.data.data.ids;
+  } catch {
+    return null;
+  }
+}
+
+/** Web-only events of the global relay about its runner (stream kept open while it is out of reach). */
+const RunnerAvailabilitySchema = z.discriminatedUnion('type', [
+  z.object({
+    seq: z.literal(0),
+    type: z.literal('runner.unavailable'),
+    at: z.string(),
+    data: z.object({ retryInMs: z.number().int().min(10).max(300_000) }),
+  }),
+  z.object({ seq: z.literal(0), type: z.literal('runner.available'), at: z.string(), data: z.object({}) }),
+]);
+
+export type RunnerAvailabilityEvent = { available: false; retryInMs: number } | { available: true; at: string };
+
+/** `runner.unavailable` / `runner.available` of the global relay, null for anything else. */
+export function parseRunnerAvailability(raw: string): RunnerAvailabilityEvent | null {
+  try {
+    const parsed = RunnerAvailabilitySchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return null;
+    return parsed.data.type === 'runner.available' ? { available: true, at: parsed.data.at } : { available: false, retryInMs: parsed.data.data.retryInMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a `runner.*` event of a stream that stays open does to the connection bookkeeping (pure,
+ * exported for tests): `errored` — web heartbeats are no proof of the runner; `attempt` — failed
+ * attempts of the relay; `action` — for the reducer (T5 countdown, or a healthy signal).
+ */
+export function runnerAvailabilityStep(
+  event: RunnerAvailabilityEvent,
+  attempt: number,
+  now: number,
+): { errored: boolean; attempt: number; availability: ServerAvailability; action: LiveAction } {
+  if (event.available) return { errored: false, attempt: 0, availability: 'available', action: { type: 'signal', at: now } };
+  const next = attempt + 1;
+  return {
+    errored: true,
+    attempt: next,
+    availability: 'unavailable',
+    action: { type: 'lost', nextRetryAt: now + event.retryInMs, attempt: next, runnerDown: true },
+  };
 }
 
 const latestIso = (a: string | null, b: string | null): string | null => {
@@ -74,7 +208,7 @@ export type LiveConnection = 'connecting' | 'open' | 'reconnecting';
 export interface LiveState {
   /** Browser ↔ web app stream. `reconnecting` drives W7 « Connexion au serveur perdue ». */
   connection: LiveConnection;
-  /** Web app ↔ runner (VPS-3). `unavailable` drives T5. */
+  /** Web app ↔ runner of the account's server. `unavailable` drives T5; stays `unknown` without a server. */
   runner: ServerAvailability;
   /** Last message of any kind on a healthy connection (ms epoch). */
   lastSignalAt: number | null;
@@ -214,7 +348,7 @@ export function liveEventsReducer(state: LiveState, action: LiveAction): LiveSta
       return { ...state, notifications: { items, unread } };
     }
     case 'sync': {
-      const { server, claude, sessions, notifications, generatedAt } = action.snapshot;
+      const { server, claude, sessions, notifications, generatedAt, environment } = action.snapshot;
       const since = Date.parse(generatedAt);
       // Events received after the snapshot was read win over it (the request took some time).
       const newer = Object.entries(state.sessionUpdates).filter(([, update]) => Date.parse(update.at) > since);
@@ -224,7 +358,8 @@ export function liveEventsReducer(state: LiveState, action: LiveAction): LiveSta
       return {
         ...state,
         // A successful runner answer is proof of life; only the stream (retried every 10 s) declares T5.
-        runner: server.availability === 'available' ? 'available' : state.runner,
+        // Without a server there is no runner to watch.
+        runner: !environment ? 'unknown' : server.availability === 'available' ? 'available' : state.runner,
         lastRunnerContactAt: latestIso(state.lastRunnerContactAt, server.lastContactAt),
         metrics:
           server.metrics && (!state.metrics || Date.parse(server.metrics.sampledAt) >= Date.parse(state.metrics.sampledAt))
@@ -251,7 +386,7 @@ function withSession(ids: readonly string[], id: string, active: boolean): reado
 export function initialLiveState(initial: ShellData): LiveState {
   return {
     connection: 'connecting',
-    runner: initial.server.availability,
+    runner: initial.environment ? initial.server.availability : 'unknown',
     lastSignalAt: null,
     lastRunnerContactAt: initial.server.lastContactAt,
     nextRetryAt: null,
@@ -285,7 +420,10 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
   const erroredRef = useRef(false); // current connection carried a stream.error (T5 error stream)
   const lastMessageRef = useRef(0);
   const lastEventIdRef = useRef<string | null>(null);
-  const runnerRef = useRef<ServerAvailability>(initial.server.availability);
+  const runnerRef = useRef<ServerAvailability>(initial.environment ? initial.server.availability : 'unknown');
+  // The page's account and server (identity guard), updated by every new snapshot.
+  const identityRef = useRef<LiveIdentity>({ userId: initial.user.id, environmentId: initial.environment?.id ?? null });
+  const reloadingRef = useRef(false);
   const connectRef = useRef<() => void>(() => undefined);
   const snapshotAt = useRef(initial.generatedAt);
   const routerRef = useRef(router);
@@ -301,9 +439,46 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
   useEffect(() => {
     if (initial.generatedAt === snapshotAt.current) return;
     snapshotAt.current = initial.generatedAt;
-    if (initial.server.availability === 'available') runnerRef.current = 'available';
+    identityRef.current = { userId: initial.user.id, environmentId: initial.environment?.id ?? null };
+    if (!initial.environment) runnerRef.current = 'unknown';
+    else if (initial.server.availability === 'available') runnerRef.current = 'available';
     dispatch({ type: 'sync', snapshot: initial });
   }, [initial]);
+
+  /** The browser now serves another account: rebuild the page (and tell the other tabs once). */
+  const reloadForAccount = useCallback((userId: string | null) => {
+    if (reloadingRef.current) return;
+    reloadingRef.current = true;
+    source.current?.close();
+    source.current = null;
+    if (userId) announceAccount({ type: 'account', userId });
+    window.location.reload();
+  }, []);
+
+  // Tabs of this browser: announce this page's account; another tab announcing another account means
+  // the cookie changed (sign-in as someone else) → this page reloads.
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    let channel: BroadcastChannel;
+    try {
+      channel = new BroadcastChannel(ACCOUNT_CHANNEL);
+    } catch {
+      return;
+    }
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    channel.addEventListener('message', (message: MessageEvent<unknown>) => {
+      const verdict = accountMessageVerdict(identityRef.current.userId, message.data);
+      if (verdict === 'reload') reloadForAccount(null);
+      // Signed out in another tab: the sign-out is still in flight there, re-read once it is done.
+      else if (verdict === 'refresh' && !refreshTimer) refreshTimer = setTimeout(() => gate.request(true), 1_500);
+    });
+    // eslint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel (same origin by design) takes no target origin
+    channel.postMessage({ type: 'account', userId: identityRef.current.userId } satisfies AccountMessage);
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      channel.close();
+    };
+  }, [gate, reloadForAccount]);
 
   /**
    * After repeated failures while the browser is online: is the web session over (401/403 on the
@@ -336,6 +511,8 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
 
   const setRunner = useCallback(
     (availability: ServerAvailability, contactAt?: string) => {
+      // No server assigned: there is no runner to declare up or down (no T5, no T6).
+      if (identityRef.current.environmentId === null) return;
       const previous = runnerRef.current;
       runnerRef.current = availability;
       dispatch({ type: 'runner', availability, ...(contactAt ? { contactAt } : {}) });
@@ -348,6 +525,16 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
   const handle = useCallback(
     (event: RunnerEvent) => {
       switch (event.type) {
+        case 'stream.hello': {
+          // Identity guard — never a proof of life of the runner (emitted by the web).
+          const verdict = identityVerdict(identityRef.current, { userId: event.data.userId, environmentId: event.data.environmentId });
+          if (verdict === 'reload') {
+            reloadForAccount(event.data.userId);
+            return;
+          }
+          if (verdict === 'refresh') refreshSnapshot();
+          break;
+        }
         case 'heartbeat':
           if (!erroredRef.current) setRunner('available');
           break;
@@ -391,7 +578,8 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
           setRunner('available', event.at);
           break;
         case 'notification.created':
-          if (event.data.id) {
+          // One per recipient on the account's web channel (seq 0); a runner's broadcast is ignored.
+          if (event.seq === 0 && event.data.id) {
             dispatch({
               type: 'notification',
               item: {
@@ -412,7 +600,25 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
       }
       emit(event);
     },
-    [emit, refreshSnapshot, setRunner],
+    [emit, refreshSnapshot, reloadForAccount, setRunner],
+  );
+
+  /**
+   * The global relay keeps the stream open while the runner is out of reach: T5 and its countdown
+   * come from `runner.unavailable` (no reconnection of ours), its end from `runner.available` (the
+   * runner's events follow on the same stream; setRunner re-reads the snapshot).
+   */
+  const handleAvailability = useCallback(
+    (event: RunnerAvailabilityEvent) => {
+      // No server assigned: there is no runner to declare up or down (the relay never sends these then).
+      if (identityRef.current.environmentId === null) return;
+      const step = runnerAvailabilityStep(event, attemptRef.current, Date.now());
+      erroredRef.current = step.errored;
+      attemptRef.current = step.attempt;
+      dispatch(step.action);
+      setRunner(step.availability, event.available ? event.at : undefined);
+    },
+    [setRunner],
   );
 
   const scheduleReconnect = useCallback((runnerDown: boolean) => {
@@ -455,7 +661,17 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
         attemptRef.current = 0;
         dispatch({ type: 'signal', at: lastMessageRef.current });
       }
-      if (event) handle(event);
+      if (event) {
+        handle(event);
+        return;
+      }
+      const availability = parseRunnerAvailability(message.data);
+      if (availability) {
+        handleAvailability(availability);
+        return;
+      }
+      const read = parseNotificationRead(message.data);
+      if (read) dispatch({ type: 'read', ids: read });
     });
     es.addEventListener('error', () => {
       // We drive reconnection ourselves (to know « nouvel essai dans N s » and offer « Réessayer »).
@@ -467,7 +683,7 @@ export function LiveEventsProvider({ initial, children, url = LIVE_EVENTS_URL }:
       // every failure from the 3rd on — at most once per back-off step, ≤ 1 per 30 s in the long run).
       if (!erroredRef.current && attemptRef.current >= 3 && navigator.onLine !== false) void probeSession();
     });
-  }, [handle, probeSession, scheduleReconnect, url]);
+  }, [handle, handleAvailability, probeSession, scheduleReconnect, url]);
 
   useEffect(() => {
     connectRef.current = connect;

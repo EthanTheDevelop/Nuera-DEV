@@ -1,9 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import type { ShellData } from '@/components/shell/types';
-import { createRefreshGate, initialLiveState, liveEventsReducer, liveStreamUrl, safeNotificationHref, type LiveState } from './useLiveEvents';
+import {
+  accountMessageVerdict,
+  createRefreshGate,
+  identityVerdict,
+  initialLiveState,
+  liveEventsReducer,
+  liveStreamUrl,
+  parseNotificationRead,
+  parseRunnerAvailability,
+  runnerAvailabilityStep,
+  safeNotificationHref,
+  type LiveState,
+} from './useLiveEvents';
+
+const ENV_A = 'e0e0e0e0-0000-4000-8000-00000000000a';
+const ENV_B = 'e0e0e0e0-0000-4000-8000-00000000000b';
 
 const shell: ShellData = {
-  user: { name: 'Owner Test', firstName: 'Owner', twoFactorEnabled: true },
+  user: { id: 'user-a', name: 'Owner Test', firstName: 'Owner', role: 'owner', twoFactorEnabled: true },
+  space: { id: '5a1e5a1e-0000-4000-8000-00000000000a', name: "Espace d'Owner" },
+  environment: { id: ENV_A, name: 'srv-test', location: null, status: 'active', isDefault: true },
   server: {
     name: 'srv-test',
     location: null,
@@ -151,11 +168,14 @@ describe('liveEventsReducer · sync with a newer server snapshot (router.refresh
 });
 
 describe('live stream helpers', () => {
-  it('resumes the stream after the last event id (digits only)', () => {
+  it('resumes the stream after the last event id (namespaced by server, or bare digits)', () => {
     expect(liveStreamUrl('/api/stream/events', null)).toBe('/api/stream/events');
     expect(liveStreamUrl('/api/stream/events', '1793840430037001')).toBe('/api/stream/events?lastEventId=1793840430037001');
     expect(liveStreamUrl('/api/stream/events?x=1', '42')).toBe('/api/stream/events?x=1&lastEventId=42');
+    expect(liveStreamUrl('/api/stream/events', `${ENV_A}.42`)).toBe(`/api/stream/events?lastEventId=${ENV_A}.42`);
     expect(liveStreamUrl('/api/stream/events', '42&evil=1')).toBe('/api/stream/events');
+    expect(liveStreamUrl('/api/stream/events', `${ENV_A}.42&evil=1`)).toBe('/api/stream/events');
+    expect(liveStreamUrl('/api/stream/events', 'not-a-uuid.42')).toBe('/api/stream/events');
   });
 
   it('only follows in-app paths from a live notification', () => {
@@ -211,5 +231,82 @@ describe('createRefreshGate (layout refresh under an intercepted route)', () => 
     gate.request(true);
     flush();
     expect(runs()).toBe(1);
+  });
+});
+
+describe('multi-account guards', () => {
+  const page = { userId: 'user-a', environmentId: ENV_A };
+
+  it('reloads a page whose stream announces another account, refreshes on a server change', () => {
+    expect(identityVerdict(page, { userId: 'user-a', environmentId: ENV_A })).toBe('ok');
+    expect(identityVerdict(page, { userId: 'user-b', environmentId: ENV_A })).toBe('reload');
+    expect(identityVerdict(page, { userId: 'user-b', environmentId: ENV_B })).toBe('reload');
+    expect(identityVerdict(page, { userId: 'user-a', environmentId: ENV_B })).toBe('refresh');
+    expect(identityVerdict(page, { userId: 'user-a', environmentId: null })).toBe('refresh');
+    expect(identityVerdict({ userId: 'user-a', environmentId: null }, { userId: 'user-a', environmentId: null })).toBe('ok');
+    expect(identityVerdict({ userId: 'user-a', environmentId: null }, { userId: 'user-a', environmentId: ENV_A })).toBe('refresh');
+  });
+
+  it('follows the other tabs of the browser: another account reloads, a sign-out of this one refreshes', () => {
+    expect(accountMessageVerdict('user-a', { type: 'account', userId: 'user-a' })).toBe('ok');
+    expect(accountMessageVerdict('user-a', { type: 'account', userId: 'user-b' })).toBe('reload');
+    expect(accountMessageVerdict('user-a', { type: 'signed-out', userId: 'user-a' })).toBe('refresh');
+    expect(accountMessageVerdict('user-a', { type: 'signed-out', userId: 'user-b' })).toBe('ok');
+    for (const junk of [null, 'user-b', { type: 'account' }, { type: 'other', userId: 'user-b' }, { type: 'account', userId: '' }]) {
+      expect(accountMessageVerdict('user-a', junk)).toBe('ok');
+    }
+  });
+
+  it('reads notification.read of the web channel only (seq 0)', () => {
+    const frame = (data: unknown, seq = 0) => JSON.stringify({ seq, type: 'notification.read', at: '2026-11-05T10:00:00.000Z', data });
+    expect(parseNotificationRead(frame({ all: true }))).toBe('all');
+    expect(parseNotificationRead(frame({ all: false, ids: ['n1', 'n2'] }))).toEqual(['n1', 'n2']);
+    expect(parseNotificationRead(frame({ all: true }, 12))).toBeNull();
+    expect(parseNotificationRead(frame({ all: false }))).toBeNull();
+    expect(parseNotificationRead('not json')).toBeNull();
+    expect(parseNotificationRead(JSON.stringify({ seq: 0, type: 'heartbeat', at: 'x', data: {} }))).toBeNull();
+  });
+
+  it('never watches a runner without a server (no T5, no T6)', () => {
+    const none: ShellData = { ...shell, environment: null, server: { ...shell.server, name: '', availability: 'unknown' } };
+    expect(initialLiveState(none).runner).toBe('unknown');
+    const s = liveEventsReducer(base(), { type: 'sync', snapshot: { ...none, generatedAt: '2026-11-04T10:10:00.000Z' } });
+    expect(s.runner).toBe('unknown');
+  });
+});
+
+describe('runner out of reach on a stream that stays open (runner.unavailable / runner.available)', () => {
+  const frame = (type: string, data: unknown, seq = 0) => JSON.stringify({ seq, type, at: '2026-11-06T10:00:00.000Z', data });
+
+  it('reads the web events of the relay only (seq 0, bounded delay)', () => {
+    expect(parseRunnerAvailability(frame('runner.unavailable', { retryInMs: 10_000 }))).toEqual({ available: false, retryInMs: 10_000 });
+    expect(parseRunnerAvailability(frame('runner.available', {}))).toEqual({ available: true, at: '2026-11-06T10:00:00.000Z' });
+    expect(parseRunnerAvailability(frame('runner.unavailable', { retryInMs: 10_000 }, 4))).toBeNull();
+    expect(parseRunnerAvailability(frame('runner.unavailable', { retryInMs: 10_000_000 }))).toBeNull();
+    expect(parseRunnerAvailability(frame('runner.unavailable', {}))).toBeNull();
+    expect(parseRunnerAvailability(frame('notification.read', { all: true }))).toBeNull();
+    expect(parseRunnerAvailability('not json')).toBeNull();
+  });
+
+  it('shows T5 with the relay countdown without losing the browser link, then ends it on runner.available', () => {
+    const down = runnerAvailabilityStep({ available: false, retryInMs: 10_000 }, 0, 1_000);
+    expect(down).toMatchObject({ errored: true, attempt: 1, availability: 'unavailable' });
+    let s = liveEventsReducer(base(), { type: 'runner', availability: down.availability });
+    s = liveEventsReducer(s, down.action);
+    // T5, not W7: the stream is open (notifications keep arriving), the next attempt is the relay's.
+    expect(s).toMatchObject({ connection: 'open', runner: 'unavailable', nextRetryAt: 11_000, attempt: 1 });
+
+    const again = runnerAvailabilityStep({ available: false, retryInMs: 10_000 }, down.attempt, 11_000);
+    s = liveEventsReducer(s, again.action);
+    expect(s).toMatchObject({ connection: 'open', nextRetryAt: 21_000, attempt: 2 });
+    // A web notification delivered meanwhile still lands in the bell.
+    s = liveEventsReducer(s, { type: 'notification', item: { id: 'n9', kind: 'server', severity: 'info', title: 'Pendant la panne', body: null, href: null, read: false, createdAt: '2026-11-06T10:00:05.000Z' } });
+    expect(s.notifications.unread).toBe(2);
+
+    const back = runnerAvailabilityStep({ available: true, at: '2026-11-06T10:00:20.000Z' }, again.attempt, 21_500);
+    expect(back).toMatchObject({ errored: false, attempt: 0, availability: 'available' });
+    s = liveEventsReducer(s, back.action);
+    s = liveEventsReducer(s, { type: 'runner', availability: back.availability, contactAt: '2026-11-06T10:00:20.000Z' });
+    expect(s).toMatchObject({ connection: 'open', runner: 'available', nextRetryAt: null, attempt: 0, lastSignalAt: 21_500, lastRunnerContactAt: '2026-11-06T10:00:20.000Z' });
   });
 });
