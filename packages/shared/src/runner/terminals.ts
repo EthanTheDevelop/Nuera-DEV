@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IsoDateSchema, UuidSchema } from './common';
+import { GitIdentitySchema, IsoDateSchema, UuidSchema } from './common';
 
 /**
  * Terminal kinds:
@@ -18,16 +18,38 @@ export const TerminalSizeSchema = z.object({
   rows: z.number().int().min(4).max(300),
 });
 
+/** Account opening the terminal (kept by the runner as `TerminalDto.ownerUserId`). Optional for older webs. */
+const actorUserId = z.string().trim().min(1).max(128).nullish();
+
 export const CreateTerminalRequestSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('shell'), worktreeId: UuidSchema, cols: z.number().int().min(10).max(500).default(120), rows: z.number().int().min(4).max(300).default(32) }),
-  z.object({ kind: z.literal('claude-login'), cols: z.number().int().min(10).max(500).default(120), rows: z.number().int().min(4).max(300).default(32) }),
+  z.object({
+    kind: z.literal('shell'),
+    worktreeId: UuidSchema,
+    cols: z.number().int().min(10).max(500).default(120),
+    rows: z.number().int().min(4).max(300).default(32),
+    actorUserId,
+    /** Author and committer of the commits made in this shell (GIT_AUTHOR_* / GIT_COMMITTER_*, injected by the runner). */
+    gitIdentity: GitIdentitySchema.nullish(),
+  }),
+  z.object({
+    kind: z.literal('claude-login'),
+    cols: z.number().int().min(10).max(500).default(120),
+    rows: z.number().int().min(4).max(300).default(32),
+    actorUserId,
+  }),
   z.object({
     kind: z.literal('mcp-login'),
     serverName: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
     cols: z.number().int().min(10).max(500).default(120),
     rows: z.number().int().min(4).max(300).default(32),
+    actorUserId,
   }),
-  z.object({ kind: z.literal('claude-status'), cols: z.number().int().min(10).max(500).default(120), rows: z.number().int().min(4).max(300).default(32) }),
+  z.object({
+    kind: z.literal('claude-status'),
+    cols: z.number().int().min(10).max(500).default(120),
+    rows: z.number().int().min(4).max(300).default(32),
+    actorUserId,
+  }),
 ]);
 export type CreateTerminalRequest = z.input<typeof CreateTerminalRequestSchema>;
 
@@ -47,6 +69,8 @@ export const TerminalDtoSchema = z.object({
   subscribers: z.number().int(),
   createdAt: IsoDateSchema,
   lastActivityAt: IsoDateSchema,
+  /** Account that opened the terminal (null: unknown or opened by the runner). Absent from older runners. */
+  ownerUserId: z.string().nullable().optional(),
 });
 export type TerminalDto = z.infer<typeof TerminalDtoSchema>;
 

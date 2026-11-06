@@ -9,7 +9,8 @@
     "./format": "./src/format/index.ts",
     "./paths": "./src/paths/index.ts",
     "./events": "./src/events/index.ts",
-    "./env": "./src/env/index.ts"
+    "./env": "./src/env/index.ts",
+    "./tokens": "./src/tokens/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

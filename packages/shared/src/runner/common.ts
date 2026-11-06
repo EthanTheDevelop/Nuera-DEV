@@ -156,6 +156,12 @@ export const RUNNER_ERROR_REASONS = [
   'BINARY_FILE',
   'TERMINAL_CLOSED',
   'RUN_LIMIT',
+  /** 503: the runner's token matches no registered server (or a retired one); it waits, health only. */
+  'ENVIRONMENT_UNREGISTERED',
+  /** 503: the runner found its server but does not serve yet (another runner still holds its lease, or start-up tasks run). */
+  'ENVIRONMENT_STARTING',
+  /** The server is suspended or retired: no new session, clone, run nor shell terminal (reading and stopping stay possible). */
+  'ENVIRONMENT_DISABLED',
 ] as const;
 export type RunnerErrorReason = (typeof RUNNER_ERROR_REASONS)[number];
 

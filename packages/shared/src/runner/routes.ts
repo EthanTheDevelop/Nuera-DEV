@@ -34,6 +34,7 @@ import {
   PullResultSchema,
   PushRequestSchema,
   PushResultSchema,
+  RemoveCloneQuerySchema,
   RemoveCloneResultSchema,
   RemoveWorktreeQuerySchema,
   RemoveWorktreeResultSchema,
@@ -108,7 +109,8 @@ const GIT_NETWORK_TIMEOUT = 150_000;
 
 /**
  * Every runner route (prefix /v1), shared by the server (validation) and the web client (types).
- * All of them require `Authorization: Bearer ${RUNNER_TOKEN}`.
+ * All of them require `Authorization: Bearer <token of the target server>` (RUNNER_TOKEN for the
+ * default server). Fields added after contract 1 are optional (see RUNNER_CONTRACT_VERSION).
  */
 export const RUNNER_ROUTES = {
   // --- Health & system --------------------------------------------------------------------
@@ -181,7 +183,14 @@ export const RUNNER_ROUTES = {
     timeoutMs: 30_000,
   },
   /** Deletes the primary clone and the project's worktrees from the disk (the project row stays). */
-  removeClone: { method: 'DELETE', path: '/v1/repos/:projectId/clone', params: ProjectRefSchema, response: RemoveCloneResultSchema, timeoutMs: 120_000 },
+  removeClone: {
+    method: 'DELETE',
+    path: '/v1/repos/:projectId/clone',
+    params: ProjectRefSchema,
+    query: RemoveCloneQuerySchema,
+    response: RemoveCloneResultSchema,
+    timeoutMs: 120_000,
+  },
   createWorktree: {
     method: 'POST',
     path: '/v1/repos/:projectId/worktrees',
