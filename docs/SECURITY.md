@@ -159,7 +159,8 @@ compte. Chaque fonction de `server/admin` revérifie le rôle de l'acteur qu'ell
 - **En-têtes HTTP** (`next.config.ts`, `src/lib/security-headers.ts` ; `frame-src` de l'aperçu ajouté par `src/proxy.ts`, §8 bis) : CSP (`default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`,
   `base-uri 'self'`, `form-action 'self'` + github.com pour le flux manifest ; `'unsafe-eval'` hors production
   seulement), `X-Frame-Options: DENY`, HSTS 2 ans en production, `Referrer-Policy: strict-origin-when-cross-origin`,
-  `Permissions-Policy`, `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy: same-origin`, pas de
+  `Permissions-Policy` (`microphone=(self)` pour la dictée des instructions, reconnaissance vocale du navigateur ;
+  `microphone=()` sur l'hôte d'aperçu, posé par `src/proxy.ts` ; caméra, géolocalisation, paiement coupés), `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy: same-origin`, pas de
   `X-Powered-By`.
 
 ## 5. Secrets et rotation de `APP_ENCRYPTION_KEY`
