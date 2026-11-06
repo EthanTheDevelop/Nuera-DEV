@@ -3,6 +3,7 @@
 import { terminalText } from '@/components/dev';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
 import { parseRunnerEvent } from '@nuera/shared/events';
+import { PREVIEW_POSITION_MESSAGE } from '@nuera/shared/runner';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   fetchRun,
@@ -26,8 +27,12 @@ import { useWorkspace } from '../WorkspaceContext';
 export type ServerState = 'loading' | 'unavailable' | 'stopped' | 'starting' | 'online' | 'error';
 export type PreviewViewport = 'bureau' | 'telephone';
 
-/** Message posted by the preview page (server/preview/html.ts `positionScript`). */
-const POSITION_MESSAGE = 'nuera-apercu:position';
+/**
+ * No position posted by the page (`previewPositionScript`, added by the runner to the dev server's
+ * HTML pages) this long after a navigation of the frame: the toolbar says so instead of leaving a
+ * blank frame unexplained.
+ */
+const STALL_MS = 15_000;
 const OUTPUT_KEEP = 16 * 1024;
 /** A handoff older than this is renewed by « Recharger » (the preview cookie lives 12 h). */
 const HANDOFF_RENEW_MS = 11 * 3_600_000;
@@ -116,6 +121,8 @@ export interface PreviewController {
   opening: boolean;
   /** Path shown in the frame (as reported by the page), else the last one asked. */
   path: string;
+  /** The frame showed no page of the dev server {@link STALL_MS} after its last navigation. */
+  stalled: boolean;
   starting: boolean;
   stopping: boolean;
   start: () => Promise<void>;
@@ -245,12 +252,23 @@ export function usePreview(): PreviewController {
     setPath(value);
   }, []);
 
+  // Navigations of the frame (handoff, path field, « Recharger ») and whether the page answered.
+  const [navigation, setNavigation] = useState(0);
+  const answered = useRef(-1);
+  const navigationRef = useRef(0);
+  const [stalledAt, setStalledAt] = useState(-1);
+  const markNavigation = useCallback(() => {
+    navigationRef.current += 1;
+    setNavigation(navigationRef.current);
+  }, []);
+
   const handoff = useCallback(
     async (id: string, at: string) => {
       setOpening(true);
       try {
         const { url } = await previewHandoffRequest(id, at);
         setFrame({ runId: id, src: url, at: Date.now() });
+        markNavigation();
         setActionError(null);
       } catch (error) {
         setFrame(null);
@@ -259,7 +277,7 @@ export function usePreview(): PreviewController {
         setOpening(false);
       }
     },
-    [],
+    [markNavigation],
   );
 
   const onlineRunId = state === 'online' && origin ? runId : null;
@@ -283,16 +301,28 @@ export function usePreview(): PreviewController {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== origin || event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as { type?: unknown; path?: unknown } | null;
-      if (data?.type !== POSITION_MESSAGE || typeof data.path !== 'string' || !data.path.startsWith('/') || data.path.length > 2048) return;
+      if (data?.type !== PREVIEW_POSITION_MESSAGE || typeof data.path !== 'string' || !data.path.startsWith('/') || data.path.length > 2048) return;
+      answered.current = navigationRef.current;
+      setStalledAt(-1);
       showPath(data.path);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [origin, showPath]);
 
+  const frameShown = frame !== null;
+  useEffect(() => {
+    if (!frameShown) return;
+    const timer = setTimeout(() => {
+      if (answered.current !== navigation) setStalledAt(navigation);
+    }, STALL_MS);
+    return () => clearTimeout(timer);
+  }, [frameShown, navigation]);
+
   const go = useCallback(
     (target: string) => {
       if (!origin || !onlineRunId) return;
+      markNavigation();
       if (frame && Date.now() - frame.at > HANDOFF_RENEW_MS) {
         void handoff(onlineRunId, withoutHash(target));
         return;
@@ -306,7 +336,7 @@ export function usePreview(): PreviewController {
         if (frameRef.current) frameRef.current.src = url;
       }
     },
-    [frame, handoff, onlineRunId, origin],
+    [frame, handoff, markNavigation, onlineRunId, origin],
   );
 
   const reload = useCallback(() => go(pathRef.current), [go]);
@@ -421,6 +451,7 @@ export function usePreview(): PreviewController {
     frameSrc: frame?.src ?? null,
     opening,
     path,
+    stalled: frameShown && stalledAt === navigation,
     starting,
     stopping,
     start,

@@ -137,6 +137,16 @@ function PathForm({ preview, size }: { preview: PreviewController; size: 'md' | 
   );
 }
 
+/** Shown when the frame stays without a page of the dev server (see `usePreview` STALL_MS). */
+function StallHint({ preview }: { preview: PreviewController }) {
+  if (preview.state !== 'online' || !preview.stalled) return null;
+  return (
+    <p role="status" className="m-0 font-sans text-app-12 text-muted">
+      La page ne s&apos;affiche toujours pas : rechargez-la, ou ouvrez-la dans un nouvel onglet pour voir ce que renvoie le serveur de développement.
+    </p>
+  );
+}
+
 function AutoReloadSwitch({ preview }: { preview: PreviewController }) {
   const id = useId();
   return (
@@ -178,6 +188,7 @@ function DesktopToolbar({ preview, variant }: { preview: PreviewController; vari
             <IconButton icon="refresh" label="Recharger" size="sm" onClick={() => preview.reload()} />
             <IconButton icon="external" label="Ouvrir dans un nouvel onglet" size="sm" onClick={() => void preview.openInNewTab()} />
           </div>
+          <StallHint preview={preview} />
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <AutoReloadSwitch preview={preview} />
             <SegmentedControl<PreviewViewport>
@@ -232,6 +243,7 @@ function PhoneToolbar({ preview }: { preview: PreviewController }) {
         </DropdownMenu>
       </div>
       {preview.state === 'online' ? <PathForm preview={preview} size="lg" /> : null}
+      <StallHint preview={preview} />
     </div>
   );
 }
