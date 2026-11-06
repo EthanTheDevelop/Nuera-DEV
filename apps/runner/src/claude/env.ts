@@ -7,9 +7,10 @@ import type { GitIdentity } from '@nuera/shared/runner';
  */
 
 /**
- * `CLAUDE_CONFIG_DIR` of every `claude` process of this runner (sessions, `auth status`, login,
- * `mcp …`, status terminals). One server = one Claude config = one Claude account holder.
- * Null (production): the process environment decides (HOME of the container).
+ * `CLAUDE_CONFIG_DIR` of a `claude` process of this runner (sessions, `auth status`, login,
+ * `mcp …`, status terminals, shells, project commands): the folder of ONE account
+ * (`ClaudeAccount.configDir`, claude/accounts.ts) — every account of a shared server has its own.
+ * Null (first account in production): the process environment decides (HOME of the container).
  */
 export function claudeEnv(configDir: string | null): Record<string, string> {
   return configDir ? { CLAUDE_CONFIG_DIR: configDir } : {};

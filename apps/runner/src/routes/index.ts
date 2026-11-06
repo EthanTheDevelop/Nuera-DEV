@@ -14,16 +14,19 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
   defineRoute(app, 'systemUptime', async ({ query }) => s.uptime.report(query.days));
 
   // --- Events ---------------------------------------------------------------------------------
-  defineRoute(app, 'events', async ({ request, reply }) => {
+  defineRoute(app, 'events', async ({ request, reply, query }) => {
+    // The account of the stream (lot P1): its own Claude status only, never another account's.
+    const account = await s.accounts.forRequest(query.spaceId).catch(() => null);
     await openSseStream({
       request,
       reply,
       bus: s.bus,
       channel: GLOBAL,
       replayable: true,
+      filter: (event) => event.type !== 'claude.status' || (account !== null && (event.data.spaceId ?? null) === account.spaceId),
       initial: async () => {
         const items = [snapshot('system.metrics', await s.metrics.collect())];
-        const claude = s.claude.cached();
+        const claude = account ? s.claude.cached(account) : null;
         if (claude) items.push(snapshot('claude.status', claude));
         return items;
       },
@@ -232,13 +235,17 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
   defineRoute(app, 'stopRun', async ({ params }) => s.runs.stop(params.runId));
 
   // --- Claude CLI -----------------------------------------------------------------------------
-  defineRoute(app, 'claudeStatus', async ({ query }) => {
-    const status = await s.claude.status({ refresh: query.refresh });
-    s.bus.publish('claude.status', status, { channels: [GLOBAL] });
-    return status;
+  // Every Claude route acts for ONE account of the server (its CLI config folder, lot P1).
+  defineRoute(app, 'claudeStatus', async ({ query }) => s.publishClaudeStatus(await s.accounts.forRequest(query.spaceId), { refresh: query.refresh }));
+  defineRoute(app, 'claudeMcpSync', async ({ body }) => s.claude.mcpSync(await s.accounts.forRequest(body.spaceId), body));
+  defineRoute(app, 'claudeConfigStatus', async ({ query }) => s.commonConfig.for(await s.accounts.forRequest(query.spaceId)).current());
+  defineRoute(app, 'claudeConfigSync', async ({ body }) => {
+    s.accounts.invalidate();
+    if (body.spaceId) return s.commonConfig.for(await s.accounts.forSpace(body.spaceId)).sync(body.reason);
+    return s.commonConfig.syncAll(body.reason);
   });
-  defineRoute(app, 'claudeMcpSync', async ({ body }) => s.claude.mcpSync(body));
-  defineRoute(app, 'claudeConfigStatus', async () => s.commonConfig.current());
-  defineRoute(app, 'claudeConfigSync', async ({ body }) => s.commonConfig.sync(body.reason));
-  defineRoute(app, 'claudeMcpGet', async ({ params }) => s.claude.mcpGet(params.name, { refresh: true }));
+  defineRoute(app, 'claudeMcpGet', async ({ params, query }) => s.claude.mcpGet(await s.accounts.forRequest(query.spaceId), params.name, { refresh: true }));
+  defineRoute(app, 'claudeAccountForget', async ({ params, body }) =>
+    s.accounts.forget(params.spaceId, (account) => s.claude.signOut(account), { deleted: body.deleted }),
+  );
 }

@@ -8,6 +8,7 @@ import { execCommand, type ExecResult } from '../safety/exec';
 import { redactSecrets } from '../safety/redact';
 import { binCommand } from '../sessions/runtime-files';
 import { resolveClaudeCommand } from './bin';
+import type { ClaudeAccount } from './accounts';
 import { claudeEnv } from './env';
 
 type Json = Record<string, unknown>;
@@ -78,11 +79,13 @@ function parseAgents(stdout: string): ClaudeStatus['agents'] {
 
 /**
  * Read-only use of the official CLI: `--version`, `auth status --json`, `agents --json`,
- * `mcp get`, plus user-scope MCP registration. Credential files are never read.
+ * `mcp get`, plus user-scope MCP registration. Credential files are never read. Every call that
+ * touches a login runs with the CLAUDE_CONFIG_DIR of ONE account ({@link ClaudeAccount}, lot P1):
+ * statuses and MCP states are cached per account, never shared between two.
  */
 export class ClaudeCli {
-  private cache: { at: number; status: ClaudeStatus } | null = null;
-  private inflight: Promise<ClaudeStatus> | null = null;
+  private readonly cache = new Map<string, { at: number; status: ClaudeStatus }>();
+  private readonly inflight = new Map<string, Promise<ClaudeStatus>>();
   private readonly mcpCache = new Map<string, { at: number; value: McpCliStatus }>();
   private readonly cwd: string;
 
@@ -90,64 +93,78 @@ export class ClaudeCli {
     private readonly claudeBin: string | null,
     dataDir: string,
     private readonly logger: Logger,
-    /** NUERA_CLAUDE_CONFIG_DIR: the same CLAUDE_CONFIG_DIR as the sessions (login, MCP user scope). */
-    private readonly claudeConfigDir: string | null = null,
   ) {
     this.cwd = path.join(dataDir, 'scratch', 'cli');
     mkdirSync(this.cwd, { recursive: true });
   }
 
-  private async exec(args: string[], timeoutMs = 20_000): Promise<ExecResult | null> {
+  /** `account` null: a call that reads no login (`--version`). */
+  private async exec(account: ClaudeAccount | null, args: string[], timeoutMs = 20_000): Promise<ExecResult | null> {
     const cmd = resolveClaudeCommand(this.claudeBin);
     if (!cmd) return null;
     return execCommand(cmd.file, [...cmd.prefix, ...args], {
       cwd: this.cwd,
-      env: withTrustedEnv(buildChildEnv(), { ...claudeEnv(this.claudeConfigDir), CI: '1', NO_COLOR: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
+      env: withTrustedEnv(buildChildEnv(), { ...(account ? claudeEnv(account.configDir) : {}), CI: '1', NO_COLOR: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
       timeoutMs,
       maxOutputBytes: 1024 * 1024,
     });
   }
 
-  invalidate(): void {
-    this.cache = null;
+  /** Forgets the cached status of one account (or of all). */
+  invalidate(account?: ClaudeAccount): void {
+    if (account) this.cache.delete(account.key);
+    else this.cache.clear();
   }
 
   async version(): Promise<string | null> {
-    const result = await this.exec(['--version'], 15_000);
+    const result = await this.exec(null, ['--version'], 15_000);
     if (!result || result.exitCode !== 0) return null;
     const m = /(\d+\.\d+\.\d+[^\s]*)/.exec(result.stdout);
     return m?.[1] ?? (result.stdout.trim() || null);
   }
 
-  async status(options: { refresh?: boolean } = {}): Promise<ClaudeStatus> {
-    if (!options.refresh && this.cache && Date.now() - this.cache.at < STATUS_TTL_MS) return this.cache.status;
-    if (this.inflight) return this.inflight;
-    this.inflight = this.compute().finally(() => {
-      this.inflight = null;
+  async status(account: ClaudeAccount, options: { refresh?: boolean } = {}): Promise<ClaudeStatus> {
+    const cached = this.cache.get(account.key);
+    if (!options.refresh && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
+    const running = this.inflight.get(account.key);
+    if (running) return running;
+    const promise = this.compute(account).finally(() => {
+      this.inflight.delete(account.key);
     });
-    return this.inflight;
+    this.inflight.set(account.key, promise);
+    return promise;
   }
 
-  cached(): ClaudeStatus | null {
-    return this.cache?.status ?? null;
+  cached(account: ClaudeAccount): ClaudeStatus | null {
+    return this.cache.get(account.key)?.status ?? null;
   }
 
-  private async compute(): Promise<ClaudeStatus> {
+  /** `claude auth logout` with the account's folder (an account leaving the server). */
+  async signOut(account: ClaudeAccount): Promise<boolean> {
+    const result = await this.exec(account, ['auth', 'logout'], 30_000);
+    this.invalidate(account);
+    return Boolean(result && result.exitCode === 0);
+  }
+
+  private async compute(account: ClaudeAccount): Promise<ClaudeStatus> {
     const checkedAt = new Date().toISOString();
-    if (!resolveClaudeCommand(this.claudeBin)) {
-      const status: ClaudeStatus = { checkedAt, installed: false, version: null, auth: null, state: 'not_installed', agents: null, error: 'Le CLI Claude Code est introuvable sur le serveur.' };
-      this.cache = { at: Date.now(), status };
+    const spaceId = account.spaceId;
+    const remember = (status: ClaudeStatus) => {
+      this.cache.set(account.key, { at: Date.now(), status });
       return status;
+    };
+    if (!resolveClaudeCommand(this.claudeBin)) {
+      return remember({ checkedAt, installed: false, version: null, auth: null, state: 'not_installed', agents: null, error: 'Le CLI Claude Code est introuvable sur le serveur.', spaceId });
     }
     try {
       const version = await this.version();
-      const authResult = await this.exec(['auth', 'status', '--json'], 25_000);
+      const authResult = await this.exec(account, ['auth', 'status', '--json'], 25_000);
       const auth = authResult ? parseAuthStatus(authResult.stdout, authResult.exitCode) : null;
-      const agentsResult = await this.exec(['agents', '--json'], 20_000);
+      const agentsResult = await this.exec(account, ['agents', '--json'], 20_000);
       const agents = agentsResult && agentsResult.exitCode === 0 ? parseAgents(agentsResult.stdout) : null;
       let state: ClaudeStatus['state'] = 'error';
       if (auth) state = !auth.loggedIn || auth.authMethod === 'none' ? 'disconnected' : auth.authMethod && auth.authMethod !== 'claude.ai' ? 'wrong_method' : 'connected';
-      const status: ClaudeStatus = {
+      return remember({
         checkedAt,
         installed: true,
         version,
@@ -155,44 +172,42 @@ export class ClaudeCli {
         state,
         agents,
         error: auth ? null : "La commande `claude auth status --json` n'a pas répondu.",
-      };
-      this.cache = { at: Date.now(), status };
-      return status;
+        spaceId,
+      });
     } catch (error) {
-      this.logger.warn({ err: error }, 'statut du CLI Claude indisponible');
-      const status: ClaudeStatus = { checkedAt, installed: true, version: null, auth: null, state: 'error', agents: null, error: 'Statut du CLI indisponible.' };
-      this.cache = { at: Date.now(), status };
-      return status;
+      this.logger.warn({ err: error, spaceId }, 'statut du CLI Claude indisponible');
+      return remember({ checkedAt, installed: true, version: null, auth: null, state: 'error', agents: null, error: 'Statut du CLI indisponible.', spaceId });
     }
   }
 
-  async mcpGet(name: string, options: { refresh?: boolean } = {}): Promise<McpCliStatus> {
-    const cached = this.mcpCache.get(name);
+  async mcpGet(account: ClaudeAccount, name: string, options: { refresh?: boolean } = {}): Promise<McpCliStatus> {
+    const key = `${account.key}|${name}`;
+    const cached = this.mcpCache.get(key);
     if (!options.refresh && cached && Date.now() - cached.at < MCP_TTL_MS) return cached.value;
-    const result = await this.exec(['mcp', 'get', name], 40_000);
+    const result = await this.exec(account, ['mcp', 'get', name], 40_000);
     if (!result) throw new RunnerError('CONFLICT', 'Le CLI Claude Code est introuvable sur le serveur.', { reason: 'CLAUDE_NOT_INSTALLED' });
     const raw = redactSecrets(`${result.stdout}\n${result.stderr}`.trim()).slice(0, 8000);
     const parsed = parseMcpGet(raw);
     const value: McpCliStatus = { name, state: result.timedOut ? 'failed' : parsed.state, statusLine: parsed.statusLine, raw, checkedAt: new Date().toISOString() };
-    this.mcpCache.set(name, { at: Date.now(), value });
+    this.mcpCache.set(key, { at: Date.now(), value });
     return value;
   }
 
   /** `claude mcp add-json --scope user` / `claude mcp remove --scope user`. Refuses configs holding secrets. */
-  async mcpSync(input: { upsert: Array<{ name: string; config: Record<string, unknown> }>; remove: string[] }) {
+  async mcpSync(account: ClaudeAccount, input: { upsert: Array<{ name: string; config: Record<string, unknown> }>; remove: string[] }) {
     // Everything is validated before the first CLI call: a refused config never leaves a half-applied sync.
     const upserts = input.upsert.map((item) => ({ name: item.name, config: userScopeMcpConfig(item.name, item.config) }));
     const results: Array<{ name: string; action: 'upsert' | 'remove'; ok: boolean; raw: string }> = [];
     for (const name of input.remove) {
-      const r = await this.exec(['mcp', 'remove', '--scope', 'user', name], 30_000);
+      const r = await this.exec(account, ['mcp', 'remove', '--scope', 'user', name], 30_000);
       results.push({ name, action: 'remove', ok: Boolean(r && r.exitCode === 0), raw: redactSecrets(`${r?.stdout ?? ''}${r?.stderr ?? ''}`).slice(0, 2000) });
-      this.mcpCache.delete(name);
+      this.mcpCache.delete(`${account.key}|${name}`);
     }
     for (const item of upserts) {
-      await this.exec(['mcp', 'remove', '--scope', 'user', item.name], 30_000);
-      const r = await this.exec(['mcp', 'add-json', '--scope', 'user', item.name, JSON.stringify(item.config)], 30_000);
+      await this.exec(account, ['mcp', 'remove', '--scope', 'user', item.name], 30_000);
+      const r = await this.exec(account, ['mcp', 'add-json', '--scope', 'user', item.name, JSON.stringify(item.config)], 30_000);
       results.push({ name: item.name, action: 'upsert', ok: Boolean(r && r.exitCode === 0), raw: redactSecrets(`${r?.stdout ?? ''}${r?.stderr ?? ''}`).slice(0, 2000) });
-      this.mcpCache.delete(item.name);
+      this.mcpCache.delete(`${account.key}|${item.name}`);
     }
     return { results };
   }

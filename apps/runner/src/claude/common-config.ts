@@ -17,6 +17,7 @@ import {
 import type { Logger } from 'pino';
 import { isPathInside } from '@nuera/shared/paths';
 import { PLATFORM } from '../safety/paths';
+import type { ClaudeAccount, ClaudeAccounts } from './accounts';
 
 /**
  * « Configuration Claude commune » on the disk of this server (lot K1). The web computes what applies
@@ -40,15 +41,19 @@ import { PLATFORM } from '../safety/paths';
  */
 
 export interface CommonConfigFetcher {
-  claudeConfig(have: Array<{ name: string; hash: string }>): Promise<unknown | null>;
+  claudeConfig(have: Array<{ name: string; hash: string }>, spaceId?: string | null): Promise<unknown | null>;
 }
 
 export interface CommonConfigDeps {
-  /** NUERA_CLAUDE_CONFIG_DIR, else `~/.claude` of the runner's user. */
+  /** CLAUDE_CONFIG_DIR of the account (claude/accounts.ts); null: `~/.claude` of the runner's user. */
   claudeConfigDir: string | null;
   dataDir: string;
   web: CommonConfigFetcher;
   logger: Logger;
+  /** Account (personal space) whose configuration this is (lot P1); null: the server's only account. */
+  spaceId?: string | null;
+  /** Folder of the runner's own files for this account (default `<dataDir>/claude-commun`). */
+  stateDir?: string;
 }
 
 interface SkillMarker {
@@ -92,7 +97,7 @@ export class CommonConfigSync {
     return path.join(this.configDir, 'rules');
   }
   get stateDir(): string {
-    return path.join(this.deps.dataDir, 'claude-commun');
+    return this.deps.stateDir ?? path.join(this.deps.dataDir, 'claude-commun');
   }
   /** `--append-system-prompt-file` of the sessions, when « Imposé » rules apply. */
   get lockedRulesPath(): string {
@@ -140,7 +145,10 @@ export class CommonConfigSync {
     const checkedAt = new Date().toISOString();
     let raw: unknown;
     try {
-      raw = await this.deps.web.claudeConfig(this.status.skills.map(({ name, hash }) => ({ name, hash })));
+      raw = await this.deps.web.claudeConfig(
+        this.status.skills.map(({ name, hash }) => ({ name, hash })),
+        this.deps.spaceId ?? null,
+      );
     } catch {
       raw = null;
     }
@@ -355,6 +363,43 @@ export class CommonConfigSync {
     } catch (error) {
       this.deps.logger.warn({ err: error }, 'état de la configuration commune non enregistré');
     }
+  }
+}
+
+/**
+ * One {@link CommonConfigSync} per account of the server (lot P1): the common configuration is
+ * written in EVERY account's CLI folder (audience and choices are per account), with the same guards.
+ * The first account keeps `<dataDir>/claude-commun`; the others `<dataDir>/claude-commun-comptes/<space id>`.
+ */
+export class CommonConfigRegistry {
+  private readonly syncs = new Map<string, CommonConfigSync>();
+
+  constructor(private readonly deps: { dataDir: string; web: CommonConfigFetcher; logger: Logger; accounts: Pick<ClaudeAccounts, 'all' | 'forRequest'> }) {}
+
+  /** Synchronisation of one account (created on first use). */
+  for(account: ClaudeAccount): CommonConfigSync {
+    let sync = this.syncs.get(account.key);
+    if (!sync) {
+      sync = new CommonConfigSync({
+        claudeConfigDir: account.configDir,
+        dataDir: this.deps.dataDir,
+        web: this.deps.web,
+        logger: this.deps.logger.child({ spaceId: account.spaceId }),
+        spaceId: account.spaceId,
+        stateDir: account.primary ? path.join(this.deps.dataDir, 'claude-commun') : path.join(this.deps.dataDir, 'claude-commun-comptes', account.key),
+      });
+      this.syncs.set(account.key, sync);
+    }
+    return sync;
+  }
+
+  /** Every account of the server (start-up, « Synchroniser les serveurs »); the first status is returned. */
+  async syncAll(reason: 'changed' | 'manual' | 'launch' | 'start'): Promise<CommonConfigStatus> {
+    const accounts = await this.deps.accounts.all();
+    if (accounts.length === 0) return this.for(await this.deps.accounts.forRequest(null)).sync(reason);
+    const statuses: CommonConfigStatus[] = [];
+    for (const account of accounts) statuses.push(await this.for(account).sync(reason));
+    return statuses[0]!;
   }
 }
 

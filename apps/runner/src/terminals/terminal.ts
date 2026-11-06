@@ -32,6 +32,8 @@ export interface TerminalSpawnOptions {
   sessionId?: string | null;
   /** Account that opened the terminal (`actorUserId` of the request); null when the runner opened it. */
   ownerUserId?: string | null;
+  /** Account (personal space) it works for: its project's, or its Claude config folder's (lot P1). */
+  spaceId?: string | null;
   /** Output never persisted nor logged; scrollback dropped on close (login terminals). */
   private?: boolean;
   scrollback?: number;
@@ -61,6 +63,7 @@ export class Terminal {
   readonly worktreeId: string | null;
   readonly sessionId: string | null;
   readonly ownerUserId: string | null;
+  readonly spaceId: string | null;
   readonly isPrivate: boolean;
   readonly idleTimeoutMs: number | null;
   readonly createdAt = new Date();
@@ -91,6 +94,7 @@ export class Terminal {
     this.worktreeId = options.worktreeId ?? null;
     this.sessionId = options.sessionId ?? null;
     this.ownerUserId = options.ownerUserId ?? null;
+    this.spaceId = options.spaceId ?? null;
     this.isPrivate = options.private ?? false;
     this.idleTimeoutMs = options.idleTimeoutMs ?? null;
     this.cols = options.cols;
@@ -263,6 +267,7 @@ export class Terminal {
       worktreeId: this.worktreeId,
       sessionId: this.sessionId,
       ownerUserId: this.ownerUserId,
+      spaceId: this.spaceId,
       cols: this.cols,
       rows: this.rows,
       alive: this.alive,

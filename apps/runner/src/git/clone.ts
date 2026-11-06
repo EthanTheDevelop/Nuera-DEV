@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { projects, worktrees, type Database } from '@nuera/db';
 import { formatBytes } from '@nuera/shared/format';
 import { formatShortDuration } from '@nuera/shared/events';
+import { isAbsolutePath, isPathInside, normalizeRelativePath } from '@nuera/shared/paths';
 import type { CloneResult, DestinationCheck, OperationStepDto } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { getProject } from '../db/lookups';
@@ -13,7 +14,7 @@ import { RunnerError } from '../errors';
 import type { OperationHandle, OperationService } from '../operations/service';
 import { buildChildEnv } from '../safety/env';
 import { execCommand } from '../safety/exec';
-import type { PathGuard } from '../safety/paths';
+import { PLATFORM, type PathGuard } from '../safety/paths';
 import { platformShell } from '../runs/shell';
 import type { Git } from './git';
 import { parseProgressLine, ProgressStream } from './progress';
@@ -64,14 +65,55 @@ export function parseInstalledPackages(output: string): number | null {
   return null;
 }
 
+/** `<NUERA_PROJECTS_ROOT>/espaces/<space id>/`: clones of the server's other accounts (lot P1). */
+export const SPACES_FOLDER = 'espaces';
+
 export class CloneService {
   constructor(
-    private readonly deps: { db: Database; environment: EnvironmentScope; git: Git; paths: PathGuard; ops: OperationService; logger: Logger },
+    private readonly deps: {
+      db: Database;
+      environment: EnvironmentScope;
+      git: Git;
+      paths: PathGuard;
+      ops: OperationService;
+      logger: Logger;
+      /** First account of the server (`environments.space_id`): it keeps the projects root (lot P1). */
+      primarySpace?: () => string | null;
+    },
   ) {}
 
+  /**
+   * Folder of an account on a shared server (lot P1): the first account clones under the projects
+   * root as before (never inside `espaces/`); every other one under `espaces/<space id>/`, where a
+   * relative path is resolved and outside of which an absolute one is refused. Two accounts can thus
+   * clone the same repository on one server.
+   */
+  private async resolveForSpace(input: string, spaceId: string | undefined): Promise<string> {
+    const root = this.deps.paths.projectsRoot;
+    const primary = this.deps.primarySpace?.() ?? null;
+    const own = spaceId && primary && spaceId.toLowerCase() !== primary.toLowerCase() ? spaceId.toLowerCase() : null;
+    const spacesRoot = path.join(root, SPACES_FOLDER);
+    if (!own) {
+      const target = await this.deps.paths.resolveDestination(input);
+      if (isPathInside(spacesRoot, target, PLATFORM)) {
+        throw new RunnerError('VALIDATION', "Ce dossier est réservé aux autres comptes du serveur : choisissez-en un autre.", { reason: 'DESTINATION_OUTSIDE_ROOT' });
+      }
+      return target;
+    }
+    const base = path.join(spacesRoot, own);
+    const relative = isAbsolutePath(input, PLATFORM) || path.isAbsolute(input) ? null : normalizeRelativePath(input, PLATFORM);
+    const prefix = `${SPACES_FOLDER}/${own}/`;
+    const candidate = relative === null ? input : relative.startsWith(prefix) ? relative : `${prefix}${relative}`;
+    const target = await this.deps.paths.resolveDestination(candidate);
+    if (!isPathInside(base, target, PLATFORM, { allowEqual: false })) {
+      throw new RunnerError('VALIDATION', 'La destination doit rester dans le dossier de votre compte sur ce serveur.', { reason: 'DESTINATION_OUTSIDE_ROOT' });
+    }
+    return target;
+  }
+
   /** A4: is the destination usable? (never writes anything) */
-  async checkDestination(input: { path: string; fullName?: string }): Promise<DestinationCheck> {
-    const target = await this.deps.paths.resolveDestination(input.path);
+  async checkDestination(input: { path: string; fullName?: string; spaceId?: string }): Promise<DestinationCheck> {
+    const target = await this.resolveForSpace(input.path, input.spaceId);
     const result: DestinationCheck = {
       path: target,
       exists: false,
@@ -132,7 +174,7 @@ export class CloneService {
     if (project.githubFullName.toLowerCase() !== input.fullName.toLowerCase()) {
       throw new RunnerError('VALIDATION', 'Le dépôt ne correspond pas au projet.');
     }
-    const check = await this.checkDestination({ path: input.destination, fullName: input.fullName });
+    const check = await this.checkDestination({ path: input.destination, fullName: input.fullName, spaceId: project.spaceId });
     if (!check.available) {
       throw new RunnerError('CONFLICT', "Le dossier de destination n'est pas vide.", {
         reason: 'DESTINATION_NOT_EMPTY',

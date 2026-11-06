@@ -59,9 +59,12 @@ if (argv[0] === '--version') {
   out('2.1.999 (Claude Code)\n');
   process.exit(0);
 }
+// Shared servers (lot P1): the folder the runner creates for another account (`<root>/<space id>`)
+// starts empty, like a real one — not signed in until `auth login` writes the marker.
+const accountFolder = Boolean(harnessDir && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path.basename(harnessDir)));
 if (argv[0] === 'auth' && argv[1] === 'status') {
   const marker = readMarker();
-  if (process.env.FAKE_CLAUDE_LOGGED_OUT === '1' || marker.loggedIn === false) {
+  if (process.env.FAKE_CLAUDE_LOGGED_OUT === '1' || marker.loggedIn === false || (accountFolder && marker.loggedIn !== true)) {
     out(JSON.stringify({ loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' }));
     process.exit(1);
   }

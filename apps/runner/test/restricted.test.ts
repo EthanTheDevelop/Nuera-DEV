@@ -2,8 +2,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { eq, sql } from 'drizzle-orm';
-import { appSettings, commandRuns, createDb, environments, operations, projects, sessions, uptimeDaily, user, worktrees, type Database } from '@nuera/db';
-import { createRunnerLoginRole, dropRole, pgFailure } from '@nuera/db/test';
+import { appSettings, commandRuns, createDb, environmentSpaces, environments, operations, projects, sessions, uptimeDaily, user, worktrees, type Database } from '@nuera/db';
+import { createRunnerLoginRole, dropRole, pgFailure, seedMember } from '@nuera/db/test';
 import type { OperationSnapshot, RunDto, SessionDto, SessionEventItem, WorktreeDto } from '@nuera/shared/runner';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -91,6 +91,23 @@ describe.skipIf(!dbReady)('restricted database role of a server (grants and RLS 
     await r.runner.services.heartbeat();
     const [row] = await admin.select().from(environments).where(eq(environments.id, serverR.environmentId));
     expect(row).toMatchObject({ status: 'active', backend: 'pty', capabilities: { database: { role, restricted: true } } });
+  });
+
+  it("lit les comptes de son serveur (0008) et donne à chacun son dossier Claude, jamais ceux d'un autre serveur", async () => {
+    const guest = await seedMember(admin, { email: `restreint-invite-${Date.now().toString(36)}@example.test`, environment: false });
+    await admin.insert(environmentSpaces).values({ environmentId: serverR.environmentId, spaceId: guest.spaceId });
+    try {
+      r.runner.services.accounts.invalidate();
+      expect((await r.runner.services.accounts.spaces()).sort()).toEqual([serverR.spaceId, guest.spaceId].sort());
+      const status = (await call('GET', `/v1/claude/status?spaceId=${guest.spaceId}`)).json() as { spaceId: string };
+      expect(status.spaceId).toBe(guest.spaceId);
+      // An account of another server (the default one) answers like an unknown one.
+      const foreign = await call('GET', `/v1/claude/status?spaceId=${(await defaultServer(admin)).spaceId}`);
+      expect(foreign.statusCode).toBe(404);
+    } finally {
+      await admin.delete(environmentSpaces).where(eq(environmentSpaces.spaceId, guest.spaceId));
+      r.runner.services.accounts.invalidate();
+    }
   });
 
   it('holds its lease through nuera_runner_try_lease() and may take no other advisory lock (0005)', async () => {

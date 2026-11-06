@@ -5,7 +5,8 @@ import path from 'node:path';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COMMON_SKILL_MARKER, type CommonConfigPayload, type CommonSkill } from '@nuera/shared/runner';
-import { CommonConfigSync, validateSkillFiles } from '../src/claude/common-config';
+import type { ClaudeAccount } from '../src/claude/accounts';
+import { CommonConfigRegistry, CommonConfigSync, validateSkillFiles } from '../src/claude/common-config';
 import { buildSettings } from '../src/sessions/runtime-files';
 
 /**
@@ -213,6 +214,42 @@ describe('configuration commune : écriture sur le serveur', () => {
     expect(a.skills).toHaveLength(1);
     expect(b.skills).toHaveLength(1);
     expect(readdirSync(path.join(claudeDir, 'skills')).sort()).toEqual(['revue']);
+  });
+});
+
+describe('configuration commune : un dossier Claude par compte (serveur partagé, lot P1)', () => {
+  it("écrit la configuration de chaque compte dans SON dossier, avec les mêmes gardes, sans toucher aux identifiants", async () => {
+    const guestDir = path.join(root, 'claude-comptes', '6f1c0b39-0000-4000-8000-00000000000b');
+    mkdirSync(guestDir, { recursive: true });
+    writeFileSync(path.join(guestDir, '.credentials.json'), CREDENTIALS, { mode: 0o600 });
+    const accounts: ClaudeAccount[] = [
+      { key: 'premier', spaceId: '6f1c0b39-0000-4000-8000-00000000000a', configDir: claudeDir, primary: true },
+      { key: 'invite', spaceId: '6f1c0b39-0000-4000-8000-00000000000b', configDir: guestDir, primary: false },
+    ];
+    const asked: Array<string | null | undefined> = [];
+    const perAccount = {
+      async claudeConfig(have: Array<{ name: string; hash: string }>, spaceId?: string | null) {
+        asked.push(spaceId);
+        const own = spaceId === accounts[1]!.spaceId ? payload({ defaultMarkdown: 'règle du compte invité', skills: [skill('tests', [{ path: 'SKILL.md', content: 'invité' }])] }) : payload({ defaultMarkdown: 'règle du premier compte', skills: [skill('revue', [{ path: 'SKILL.md', content: 'premier' }])] });
+        void have;
+        return own;
+      },
+    };
+    const registry = new CommonConfigRegistry({ dataDir, web: perAccount, logger, accounts: { all: async () => accounts, forRequest: async () => accounts[0]! } });
+    await registry.syncAll('start');
+    expect(asked.sort()).toEqual([accounts[0]!.spaceId, accounts[1]!.spaceId].sort());
+    expect(readFileSync(path.join(claudeDir, 'rules', 'nuera-commun.md'), 'utf8')).toContain('premier compte');
+    expect(readFileSync(path.join(guestDir, 'rules', 'nuera-commun.md'), 'utf8')).toContain('compte invité');
+    expect(existsSync(path.join(claudeDir, 'skills', 'revue', COMMON_SKILL_MARKER))).toBe(true);
+    expect(existsSync(path.join(guestDir, 'skills', 'tests', COMMON_SKILL_MARKER))).toBe(true);
+    // Never the other account's skills.
+    expect(existsSync(path.join(claudeDir, 'skills', 'tests'))).toBe(false);
+    expect(existsSync(path.join(guestDir, 'skills', 'revue'))).toBe(false);
+    // Own state folder per account (the first keeps the former one).
+    expect(registry.for(accounts[0]!).stateDir).toBe(path.join(dataDir, 'claude-commun'));
+    expect(registry.for(accounts[1]!).stateDir).toBe(path.join(dataDir, 'claude-commun-comptes', 'invite'));
+    untouched();
+    expect(readFileSync(path.join(guestDir, '.credentials.json'), 'utf8')).toBe(CREDENTIALS);
   });
 });
 

@@ -172,6 +172,11 @@ export async function writeSessionFiles(
       askRules?: string[];
       settingsEnv?: Record<string, string>;
       commonConfig?: CommonConfigLaunch | null;
+      /**
+       * Deny rules computed by the runner at each start (other accounts' Claude folders, lot P1):
+       * written in settings.json only, never kept in launch.json (the accounts of a server change).
+       */
+      isolationDenyRules?: string[];
     };
     permissionWaitSeconds: number;
     maxConcurrentSessions: number | null;
@@ -201,7 +206,7 @@ export async function writeSessionFiles(
   };
   const settings = buildSettings({
     permissionWaitSeconds: input.permissionWaitSeconds,
-    denyRules: input.launch.denyRules,
+    denyRules: [...input.launch.denyRules, ...(input.launch.isolationDenyRules ?? [])],
     allowRules: input.launch.allowRules ?? [],
     askRules: input.launch.askRules ?? [],
     env: input.launch.settingsEnv ?? {},
