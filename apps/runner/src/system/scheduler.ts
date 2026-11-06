@@ -1,31 +1,39 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { projects, type Database } from '@nuera/db';
 import type { Logger } from 'pino';
+import type { EnvironmentScope } from '../environment';
 import type { GitService } from '../git/service';
 import { RunnerError } from '../errors';
 import type { WebClient } from '../web/client';
 import type { UptimeTracker } from './uptime';
 
 /**
- * Periodic jobs (never overlapping):
+ * Periodic jobs of this runner's server (never overlapping), off when NUERA_SCHEDULER=0:
  * - every minute: uptime heartbeat;
- * - every 15 min: ask the web to check integrations (`/api/internal/integrations/check`);
- * - every 10 min: background `git fetch` of ready projects with a read token minted by the web
- *   (skipped silently when the web cannot be reached; a failing fetch is recorded on the project).
+ * - every 10 min: background `git fetch` of the server's ready projects with a read token minted
+ *   by the web (skipped silently when the web cannot be reached; a failing fetch is recorded on the
+ *   project).
+ * The integration checks are clocked by the web (one scheduler for every space), never by runners.
+ * The server heartbeat (`environments.last_seen_at`, status re-read) is not one of these jobs: it is
+ * part of the runner's identity and runs even without the scheduler (buildRunner, app.ts).
  */
 export class Scheduler {
   private timers: Array<ReturnType<typeof setInterval>> = [];
   private running = new Set<string>();
 
   constructor(
-    private readonly deps: { db: Database; git: GitService; web: WebClient; uptime: UptimeTracker; logger: Logger },
+    private readonly deps: {
+      db: Database;
+      environment: EnvironmentScope;
+      git: GitService;
+      web: WebClient;
+      uptime: UptimeTracker;
+      logger: Logger;
+    },
   ) {}
 
   start(): void {
     this.every('uptime', 60_000, () => this.deps.uptime.beat());
-    this.every('integrations', 15 * 60_000, async () => {
-      await this.deps.web.integrationsCheck();
-    });
     this.every('fetch', 10 * 60_000, () => this.fetchProjects(), 90_000);
     void this.deps.uptime.beat().catch(() => undefined);
   }
@@ -55,7 +63,7 @@ export class Scheduler {
     const rows = await this.deps.db
       .select()
       .from(projects)
-      .where(and(eq(projects.status, 'ready'), isNull(projects.archivedAt)));
+      .where(and(eq(projects.environmentId, this.deps.environment.id), eq(projects.status, 'ready'), isNull(projects.archivedAt)));
     let fetched = 0;
     let skipped = 0;
     let failed = 0;

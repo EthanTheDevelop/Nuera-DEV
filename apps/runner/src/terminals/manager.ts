@@ -3,6 +3,8 @@ import path from 'node:path';
 import type { CreateTerminalRequest, TerminalDto } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
+import { claudeEnv, gitIdentityEnv } from '../claude/env';
+import type { EnvironmentScope } from '../environment';
 import { RunnerError } from '../errors';
 import type { GitService } from '../git/service';
 import { buildChildEnv, withTrustedEnv } from '../safety/env';
@@ -36,7 +38,16 @@ export class TerminalManager {
   private readonly exitHooks = new Set<(terminal: Terminal) => void>();
 
   constructor(
-    private readonly deps: { dataDir: string; claudeBin: string | null; gitService: GitService; logger: Logger },
+    private readonly deps: {
+      dataDir: string;
+      claudeBin: string | null;
+      /** NUERA_CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_DIR of the login, MCP login and status terminals. */
+      claudeConfigDir: string | null;
+      gitService: GitService;
+      /** Server of this runner: a suspended server opens no shell. */
+      environment: EnvironmentScope;
+      logger: Logger;
+    },
   ) {
     this.sweeper = setInterval(() => this.sweep(), SWEEP_MS);
     this.sweeper.unref?.();
@@ -83,6 +94,7 @@ export class TerminalManager {
     switch (input.kind) {
       case 'shell': {
         const { worktree, cwd } = await this.deps.gitService.resolveWorktree(input.worktreeId);
+        await this.deps.environment.assertCanStartWork();
         const shell = defaultShell();
         return this.spawn({
           kind: 'shell',
@@ -90,10 +102,12 @@ export class TerminalManager {
           file: shell.file,
           args: shell.args,
           cwd,
-          env: terminalEnv(),
+          // Same Claude config as the server's sessions (a `claude` typed here uses the server's login).
+          env: terminalEnv({ ...claudeEnv(this.deps.claudeConfigDir), ...gitIdentityEnv(input.gitIdentity) }),
           cols: input.cols,
           rows: input.rows,
           worktreeId: worktree.id,
+          ownerUserId: input.actorUserId ?? null,
           idleTimeoutMs: SHELL_IDLE_MS,
         });
       }
@@ -105,9 +119,10 @@ export class TerminalManager {
           file: claude.file,
           args: [...claude.prefix, 'auth', 'login'],
           cwd: this.scratchDir('claude-login'),
-          env: terminalEnv(),
+          env: terminalEnv(claudeEnv(this.deps.claudeConfigDir)),
           cols: input.cols,
           rows: input.rows,
+          ownerUserId: input.actorUserId ?? null,
           private: true,
           scrollback: 500,
           idleTimeoutMs: LOGIN_IDLE_MS,
@@ -121,9 +136,10 @@ export class TerminalManager {
           file: claude.file,
           args: [...claude.prefix, 'mcp', 'login', input.serverName, '--no-browser'],
           cwd: this.scratchDir('mcp-login'),
-          env: terminalEnv(),
+          env: terminalEnv(claudeEnv(this.deps.claudeConfigDir)),
           cols: input.cols,
           rows: input.rows,
+          ownerUserId: input.actorUserId ?? null,
           private: true,
           scrollback: 500,
           idleTimeoutMs: LOGIN_IDLE_MS,
@@ -139,9 +155,10 @@ export class TerminalManager {
           file: claude.file,
           args: [...claude.prefix],
           cwd: this.scratchDir('claude-status'),
-          env: terminalEnv({ ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
+          env: terminalEnv({ ...claudeEnv(this.deps.claudeConfigDir), ENABLE_CLAUDEAI_MCP_SERVERS: 'false' }),
           cols: input.cols,
           rows: input.rows,
+          ownerUserId: input.actorUserId ?? null,
           private: true,
           scrollback: 1000,
           idleTimeoutMs: LOGIN_IDLE_MS,

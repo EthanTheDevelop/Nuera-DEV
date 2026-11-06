@@ -87,3 +87,18 @@ export function installBearerAuth(app: FastifyInstance, token: string): void {
     }
   });
 }
+
+/**
+ * Registered after the bearer check. While the runner does not serve its server (token unknown or
+ * server retired, lease held by another runner, start-up tasks), every route but `GET /v1/health`
+ * answers 503 with the reason (`ENVIRONMENT_UNREGISTERED` + token fingerprint in standby,
+ * `ENVIRONMENT_STARTING` while another runner holds the lease or the start-up tasks run).
+ */
+export function installEnvironmentGuard(app: FastifyInstance, environment: { readonly serving: boolean; notServingError(): RunnerError }): void {
+  app.addHook('onRequest', async (request, reply) => {
+    if (reply.sent || environment.serving) return;
+    if (request.method === 'GET' && request.routeOptions.url === RUNNER_ROUTES.health.path) return;
+    const error = environment.notServingError();
+    await reply.code(error.status).header('cache-control', 'no-store').header('retry-after', '15').send(toErrorBody(error));
+  });
+}

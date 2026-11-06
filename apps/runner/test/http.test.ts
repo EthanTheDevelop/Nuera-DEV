@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { HealthResponseSchema, RUNNER_ROUTES, UptimeResponseSchema } from '@nuera/shared/runner';
+import { HealthResponseSchema, RUNNER_CONTRACT_VERSION, RUNNER_ROUTES, UptimeResponseSchema } from '@nuera/shared/runner';
 import { parseRunnerEvent } from '@nuera/shared/events';
-import { auth, dbReady, startTestRunner, type TestEnv } from './helpers';
+import { auth, dbReady, defaultServer, startTestRunner, type TestEnv } from './helpers';
 
 describe.skipIf(!dbReady)('runner HTTP API (fastify.inject)', () => {
   let env: TestEnv;
@@ -69,6 +69,9 @@ describe.skipIf(!dbReady)('runner HTTP API (fastify.inject)', () => {
     expect(h.database.ok).toBe(true);
     expect(h.backend).toBe('pty');
     expect(h.claude.version).toContain('2.1.999');
+    // Contract 2: the server this runner serves (found by its token), its state and the contract.
+    const server = await defaultServer(env.db);
+    expect(h).toMatchObject({ environment: { id: server.environmentId, name: 'VPS-3' }, state: 'ready', contractVersion: RUNNER_CONTRACT_VERSION });
     const metrics = await env.runner.api.inject({ method: 'GET', url: '/v1/system/metrics', headers: auth });
     const m = metrics.json() as { memory: { totalBytes: number; usedBytes: number }; cpuPercent: number; disk: { totalBytes: number } | null };
     expect(m.memory.totalBytes).toBeGreaterThan(m.memory.usedBytes);
@@ -77,6 +80,8 @@ describe.skipIf(!dbReady)('runner HTTP API (fastify.inject)', () => {
     await env.runner.services.uptime.beat();
     const uptime = await env.runner.api.inject({ method: 'GET', url: '/v1/system/uptime?days=7', headers: auth });
     const u = UptimeResponseSchema.parse(uptime.json());
+    // The default server keeps the historical key (its availability history is not lost).
+    expect(u.service).toBe('runner');
     expect(u.days).toHaveLength(7);
     expect(u.days[6]!.upMinutes).toBeGreaterThanOrEqual(1);
   });

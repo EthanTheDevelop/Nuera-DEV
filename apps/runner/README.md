@@ -1,9 +1,11 @@
 # @nuera/runner — moteur d'exécution de Nuera Dev
 
 Service Fastify privé (jamais exposé à Internet) : seul composant qui touche au disque des projets, à Git, aux PTY,
-aux sessions du CLI officiel Claude Code et aux processus des projets. Le web (`apps/web`) l'appelle avec
-`Authorization: Bearer ${RUNNER_TOKEN}` via le client typé `apps/web/src/server/runner/client.ts` et relaie ses flux
-SSE au navigateur (`/api/stream/*`).
+aux sessions du CLI officiel Claude Code et aux processus des projets. **Un runner = un serveur** (ligne
+`environments`, « serveur » dans l'interface, `docs/MULTICOMPTE.md` §4) : il ne voit, ne liste et ne reprend que les
+projets, worktrees, sessions, opérations et lancements de **son** serveur. Le web l'appelle avec
+`Authorization: Bearer <jeton du serveur>` (`RUNNER_TOKEN` pour le serveur par défaut) et relaie ses flux SSE au
+navigateur (`/api/stream/*`).
 
 ```bash
 pnpm --filter @nuera/runner dev        # tsx watch (charge le .env racine en dev)
@@ -18,32 +20,123 @@ pnpm --filter @nuera/runner typecheck
 |---|---|---|
 | `RUNNER_HOST` / `RUNNER_PORT` | `127.0.0.1` / `4100` | API privée (réseau Docker interne en production). |
 | `RUNNER_HOOK_PORT` | `4101` | Écoute des hooks / status line / headersHelper, **toujours 127.0.0.1**. |
-| `RUNNER_TOKEN` | — (≥ 16 car.) | Jeton partagé web ⇄ runner (comparaison à temps constant, empreintes SHA-256). |
-| `DATABASE_URL` | — | PostgreSQL (tables écrites : worktrees, sessions, session_events, permission_requests, operations, command_runs, uptime_daily ; projects pour la synchro). |
+| `RUNNER_TOKEN` | — (≥ 16 car.) | Jeton **du serveur** (format `nrt_…` pour les nouveaux, l'ancien reste accepté) : web ⇄ runner dans les deux sens, comparaison à temps constant. Le runner trouve son serveur par `sha256(RUNNER_TOKEN)` dans `environments.token_hash` (ou `next_token_hash` pendant une rotation). |
+| `RUNNER_DATABASE_URL` | — | DSN du **rôle restreint** du serveur (affiché une fois par l'administration) ; prioritaire sur `DATABASE_URL`. |
+| `DATABASE_URL` | — | DSN complet (serveur par défaut tant qu'il n'est pas restreint). Tables écrites : worktrees, sessions, session_events, permission_requests, operations, command_runs, uptime_daily ; projects pour la synchro ; `environments` (battement seulement). |
+| `NUERA_DB_POOL_MAX` | `5` | Connexions du pool principal (+ 1 connexion dédiée au bail). |
+| `NUERA_ENVIRONMENT_ID` | — | Assertion facultative : identifiant attendu du serveur. Différent de celui que désigne le jeton → arrêt (« NUERA_ENVIRONMENT_ID ne correspond pas au serveur de ce jeton : vérifiez la configuration du runner. »). |
+| `NUERA_CLAUDE_CONFIG_DIR` | — | Dev, tests, plusieurs runners sur une machine : `CLAUDE_CONFIG_DIR` de **tous** les processus `claude` du runner (sessions, `auth status`, connexion, `mcp …`, terminal /status ; aussi les terminaux de shell et les commandes du projet, pour un `claude` tapé à la main) et racine des journaux acceptés. Non défini en production (HOME propre au conteneur). |
+| `NUERA_ENV_FILE` | — | Dev : fichier lu **avant** le `.env` racine (ses valeurs l'emportent), pour un second runner. |
 | `APP_URL` | `http://localhost:3000` | Web, pour les rappels `/api/internal/*` (`NUERA_WEB_INTERNAL_URL` pour une URL interne différente). |
 | `NUERA_PROJECTS_ROOT` | `./.data/projects` | Racine des clones et worktrees (prod : `/srv/dev`). Chemins relatifs = relatifs à la racine du dépôt. |
 | `NUERA_DATA_DIR` | `./.data/runner` | Fichiers d'exécution (réglages de session, tmux.conf, dossiers de travail du CLI). |
 | `NUERA_SESSION_BACKEND` | auto | `tmux` (prod Linux), `pty` (dev Windows), vide = tmux si `tmux -V` répond. |
+| `NUERA_TMUX_SOCKET` | `nuera` (serveur par défaut), `nuera-<8 premiers caractères hexadécimaux de l'id du serveur>` (autres serveurs) | Nom du socket tmux (`tmux -L <nom>`). Par défaut, chaque serveur a le sien : deux runners sous le même utilisateur Linux ne partagent pas de serveur tmux. Le serveur par défaut garde `nuera` (ses sessions déjà lancées sont retrouvées après la mise à jour). Une session tmux n'est rattachée ou adoptée que si son `NUERA_SESSION_ID` est l'id de la ligne. |
 | `NUERA_CLAUDE_BIN` | `claude` du `PATH` | Binaire officiel. Un chemin `.mjs` est lancé avec Node : **réservé aux tests** (faux CLI). |
 | `NUERA_GIT_REMOTE_BASE` | `https://github.com/` | Base des URL Git (`<base><owner>/<repo>.git`). Les tests pointent vers des dépôts nus locaux. |
-| `NUERA_SCHEDULER` | `1` (hors tests) | Tâches périodiques (disponibilité, vérification des intégrations, fetch). |
+| `NUERA_SCHEDULER` | `1` (hors tests) | Tâches périodiques (disponibilité, fetch). Le battement du serveur tourne même à `0`. |
 | `LOG_LEVEL` | `info` | pino (en-têtes d'autorisation et jetons masqués). |
 
-En développement, le `.env` de la racine est chargé sans écraser les variables déjà présentes dans le shell.
+En développement, le `.env` de la racine (précédé de `NUERA_ENV_FILE` s'il est défini) est chargé sans écraser les
+variables déjà présentes dans le shell.
+
+## Identité, attente, bail, marqueurs
+
+Démarrage (`src/app.ts`, `src/environment.ts`) : écoute des hooks → recherche du serveur par l'empreinte du jeton
+(colonnes explicites, jamais `token_encrypted`) → **attente** si le jeton est inconnu ou le serveur retiré → **bail
+exclusif** → **marqueurs** → reprise limitée à son serveur → écoute API → planificateur.
+
+- **Attente (standby)** : `GET /v1/health` répond (`state: 'unregistered'`, `environment: null`), toute autre route
+  répond 503 `ENVIRONMENT_UNREGISTERED` « Ce runner n'est rattaché à aucun serveur. Enregistrez-le depuis
+  Administration, rubrique Serveurs (empreinte du jeton : 3f9a1c2e). » ; nouvel essai toutes les 15 s, rien n'est
+  repris ni écrit. Un runner ne revendique jamais une ligne : seul le web (ou `migrate` pour le serveur par défaut)
+  enregistre l'empreinte. Un serveur retiré pendant le service (ou un jeton révoqué) ramène le runner en attente
+  sans rien arrêter.
+- **Bail** : `pg_try_advisory_lock(hashtextextended('nuera:environment:' || id, 0))` sur une connexion **dédiée**
+  (réservée : ni le délai d'inactivité ni la durée de vie du pool ne la recyclent). Un rôle restreint ne peut prendre
+  aucun verrou consultatif depuis la migration `0005` : il appelle `nuera_runner_try_lease()` (même clé, celle de son
+  seul serveur) et `nuera_runner_release_lease()` ; contre une base pas encore en `0005`, il garde l'appel direct.
+  Refusé : 503 « Un autre runner du
+  serveur « <nom> » est encore actif : attente de son arrêt… » et nouvel essai (chevauchement d'un redéploiement
+  Coolify, `.env` copié, deux terminaux). PostgreSQL libère le verrou quand la connexion meurt ; si le runner la perd,
+  il s'arrête (jamais deux runners pour un serveur). Pendant les tâches de reprise : 503 « Le runner du serveur
+  « <nom> » démarre : réessayez dans un instant. ». Ces deux 503 portent la raison `ENVIRONMENT_STARTING`.
+- **Marqueurs** `.nuera-environment` (JSON `{ environmentId, name, createdAt }`) dans `NUERA_DATA_DIR` et
+  `NUERA_PROJECTS_ROOT`, écrits au premier démarrage. Un dossier qui porte un autre serveur arrête le runner :
+  « Le dossier de données <chemin> appartient au serveur « <nom> » : donnez un dossier propre à ce runner
+  (NUERA_DATA_DIR). » (idem « Le dossier des projets … (NUERA_PROJECTS_ROOT). »). Après une base recréée en
+  développement (nouvel identifiant de serveur), supprimer ces deux fichiers (ou les dossiers).
+- **Statuts** : `suspended` (compte désactivé) → `state: 'disabled'`, refus 403 `ENVIRONMENT_DISABLED` « Ce serveur est
+  désactivé : aucune nouvelle session, aucun clonage ni aucune commande ne peut démarrer. » pour la création, le
+  démarrage et la reprise de session, le clonage, la création de worktree, les lancements et les terminaux de shell ;
+  lecture et arrêt restent possibles. `retired` → attente (ci-dessus).
+- **Réglages lus** : sa ligne `environments` (sessions simultanées, plafond mémoire), relue au plus toutes les 15 s et
+  à chaque battement ; une valeur des options de lancement (web plus ancien, `launch.json` antérieur au serveur) ne
+  peut être que plus stricte. Les politiques de session arrivent dans les options de lancement (`blockBypassPermissions`,
+  `permissionWaitSeconds`, `gitIdentity`, champs **facultatifs** de `launch.json`) ; absentes : mode sans
+  autorisation bloqué, attente de 120 s. De `app_settings`, seul `force_block_bypass_permissions` (instance) est lu ; illisible, il compte comme actif (refus par
+  précaution).
+- **Battement** (60 s, indépendant du planificateur : il tourne aussi avec `NUERA_SCHEDULER=0`) : `last_seen_at`,
+  `runner_version`, `contract_version`, `backend`, `capabilities` (hôte, plateforme, versions de Claude/Git/tmux,
+  `database: { role, restricted }`) ; jamais `status`. Une relecture qui trouve le jeton sur la ligne d'un autre
+  serveur (ou de plusieurs) arrête le runner, comme au démarrage.
+  `restricted: false` = le serveur se connecte encore en superutilisateur ou propriétaire des tables
+  (l'administration affiche « Le serveur … accède encore à toute la base de données. »). Cette colonne est écrite par
+  le runner : le web ne la croit que si `pg_roles` et `pg_stat_activity` la confirment
+  (`apps/web/src/server/admin/db-access.ts`).
+- **Contrat** : `/v1/health` expose `environment { id, name }`, `state` (`ready` · `starting` · `unregistered` ·
+  `disabled`) et `contractVersion` (`RUNNER_CONTRACT_VERSION`, 2).
+
+### Rôle PostgreSQL restreint
+
+Un serveur enregistré par l'administration reçoit un rôle de connexion `nuera_env_<8 hex>` membre de `nuera_runner`
+(migration `0004_runner_roles`, `environments.db_role`) : droits sur les seules tables du runner, colonnes
+explicites sur `environments`/`projects`/`app_settings`, **RLS** par serveur (`nuera_runner_environment_id()`), aucun
+accès aux comptes, invitations, sources GitHub, intégrations, MCP, variables, notifications, push ni journal. Le
+runner ne supprime jamais une ligne. Toute nouvelle table touchée par le runner doit porter son `GRANT` et sa
+politique (sinon `test/restricted.test.ts` échoue). Le serveur par défaut garde son DSN complet tant que
+l'administrateur ne lui donne pas `RUNNER_DATABASE_URL`.
+
+### Plusieurs runners sur un poste Windows (développement)
+
+Le second runner a son propre jeton, ses ports, ses dossiers et son dossier Claude (une connexion Claude par
+serveur). Fichier `.env.runner-b` à la racine (non versionné, comme `.env`) :
+
+```dotenv
+RUNNER_TOKEN=nrt_…            # jeton affiché par Administration › Serveurs
+RUNNER_DATABASE_URL=postgres://nuera_env_…:…@127.0.0.1:54329/nuera   # DSN affiché (facultatif en dev)
+RUNNER_PORT=4110
+RUNNER_HOOK_PORT=4111
+NUERA_PROJECTS_ROOT=./.data/envs/b/projects
+NUERA_DATA_DIR=./.data/envs/b/runner
+NUERA_CLAUDE_CONFIG_DIR=./.data/envs/b/claude
+```
+
+```powershell
+$env:NUERA_ENV_FILE = '.env.runner-b'; pnpm --filter @nuera/runner dev
+```
+
+(Git Bash : `NUERA_ENV_FILE=.env.runner-b pnpm --filter @nuera/runner dev`.) URL à enregistrer pour ce serveur :
+`http://127.0.0.1:4110`. Le backend PTY s'applique (pas de tmux sous Windows) ; deux runners ne partagent jamais un
+dossier (marqueurs) ni un serveur (bail). Se connecter à Claude pour ce serveur depuis son terminal « Connexion à
+Claude » (le `CLAUDE_CONFIG_DIR` injecté isole la connexion du `%USERPROFILE%\.claude` du poste).
 
 ## Routes (`/v1`, contrat partagé `@nuera/shared/runner` → `RUNNER_ROUTES`)
 
-Toutes exigent le Bearer et valident leurs entrées avec Zod. Erreurs uniformes :
+Toutes exigent le Bearer et valident leurs entrées avec Zod. **Cloisonnement** : toute recherche par identifiant
+(projet, worktree, session, autorisation via sa session, opération, lancement) porte `environment_id = <son serveur>`
+**dans la requête** ; un identifiant d'un autre serveur reçoit exactement la réponse d'un identifiant inconnu (même
+404, même message), avant toute écriture. Chaque insertion porte `environment_id`. Erreurs uniformes :
 `{ error: { code, message, detail?, raw?, untouched?, reason?, data? } }` — `raw` = sortie brute masquée (règle T4),
 `untouched` = ce qui n'a pas été touché, `reason` = sous-code machine (`DESTINATION_NOT_EMPTY`, `PULL_DIVERGED`,
 `WORKTREE_DIRTY`, `CAPACITY_REACHED`…).
 
 | Domaine | Routes |
 |---|---|
-| Système | `GET /health`, `GET /system/metrics`, `GET /system/uptime?days=` |
+| Système | `GET /health` (seule route servie en attente), `GET /system/metrics`, `GET /system/uptime?days=` |
 | Événements | `GET /events` (SSE global), `POST /events/publish` (web → diffusion de `notification.created`) |
 | Dépôts | `POST /repos/check-destination`, `POST /repos/clone` (opération async), `POST /repos/:projectId/fetch\|pull`, `GET …/status\|sync\|branches\|log`, `POST …/branches\|checkout` |
-| Worktrees | `GET\|POST /repos/:projectId/worktrees`, `DELETE /worktrees/:id?force=&deleteBranch=`, `GET /worktrees/:id/status` |
+| Worktrees | `GET\|POST /repos/:projectId/worktrees`, `DELETE /worktrees/:id?force=&deleteBranch=&actorUserId=`, `DELETE /repos/:projectId/clone?actorUserId=`, `GET /worktrees/:id/status` |
 | Changements | `GET /worktrees/:id/changes\|diff?path=\|ahead-behind`, `POST …/stage\|unstage\|commit\|push` |
 | Fichiers | `GET /worktrees/:id/tree?path=\|file?path=`, `GET\|PUT /projects/:projectId/claude-md` |
 | Opérations | `GET /operations/:id`, `GET /operations/:id/stream` (SSE) |
@@ -55,8 +148,9 @@ Toutes exigent le Bearer et valident leurs entrées avec Zod. Erreurs uniformes 
 Écoute locale (127.0.0.1:`RUNNER_HOOK_PORT`, jeton de session en Bearer) : `POST /internal/hooks/:sessionId`,
 `POST /internal/statusline/:sessionId`, `POST /internal/mcp-headers/:sessionId`.
 
-Rappels vers le web (Bearer `RUNNER_TOKEN`, tolérés absents/injoignables) : `POST /api/internal/notify`,
-`/api/internal/mcp-headers`, `/api/internal/git-credentials`, `/api/internal/integrations/check` (toutes les 15 min).
+Rappels vers le web (Bearer = jeton du serveur, d'où le web déduit le serveur ; tolérés absents/injoignables ; 401/403
+journalisés « Le web refuse le jeton de ce serveur … ») : `POST /api/internal/notify`, `/api/internal/mcp-headers`,
+`/api/internal/git-credentials`. Les vérifications d'intégrations sont cadencées par le web, plus par les runners.
 
 ## Flux SSE (`@nuera/shared/events`)
 
@@ -88,12 +182,20 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
   n'est jamais servi.
 - **Environnement nettoyé** pour tout enfant (`src/safety/env.ts`) : liste blanche (HOME, USER, PATH, LANG, TERM,
   proxies…) puis liste noire prioritaire (`ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `RUNNER_TOKEN`, `DATABASE_URL`,
-  `BETTER_AUTH_SECRET`, `APP_ENCRYPTION_KEY`, `SETUP_TOKEN`, `VAPID_*`, `GITHUB_*`, `GIT_*`, `NODE_OPTIONS`…).
+  `RUNNER_DATABASE_URL`, `BETTER_AUTH_SECRET`, `APP_ENCRYPTION_KEY`, `SETUP_TOKEN`, `VAPID_*`, `GITHUB_*`, `GIT_*`,
+  `NODE_OPTIONS`…). Valeurs **de confiance** injectées par le runner seul (`src/claude/env.ts`) : `CLAUDE_CONFIG_DIR`
+  (`NUERA_CLAUDE_CONFIG_DIR`) pour tout processus `claude`, et `GIT_AUTHOR_NAME/EMAIL` + `GIT_COMMITTER_NAME/EMAIL`
+  depuis `gitIdentity` (options de lancement d'une session, terminal de shell, lancement) ; le préfixe `GIT_` et
+  `CLAUDE_CONFIG_DIR` restent refusés dans les variables libres.
+- **Attribution** : `command_runs.actor_user_id` enregistré, `actorUserId` sur les opérations de suppression de
+  worktree et de clone, `TerminalDto.ownerUserId` (compte qui a ouvert le terminal, pour que le web refuse à un autre
+  compte de suivre une connexion Claude ou MCP).
 - **Git** (`src/git/git.ts`) : `GIT_TERMINAL_PROMPT=0`, askpass qui refuse, configuration d'exécution par
   `GIT_CONFIG_COUNT/KEY/VALUE` (prioritaire sur `.git/config`, que Claude peut modifier) : assistants d'identification
   réinitialisés, hooks du dépôt désactivés (`core.hooksPath` vers un dossier vide, sauf `runHooks: true` explicite au
   commit), fsmonitor coupé, TLS vérifié ; pour le réseau : config système/globale ignorée, protocoles limités à
-  HTTPS. Le jeton (fourni par le web, réduit au dépôt et à l'opération) n'existe que dans l'environnement du processus
+  HTTPS. `core.autocrlf=false` sur toutes les commandes (fidélité aux octets du dépôt, Git pour Windows compris ;
+  `core.eol` n'est pas touché). Le jeton (fourni par le web, réduit au dépôt et à l'opération) n'existe que dans l'environnement du processus
   git, sous `http.https://github.com/.extraheader` — jamais dans une URL, l'argv, `.git/config` ni un magasin. Push et
   fetch visent l'URL explicite `https://github.com/<owner>/<repo>.git`, pas `origin`. Ces surcharges ne battent qu'une
   clé **de même nom** : avant toute commande réseau, `git config --list --show-scope -z` est lu et l'opération est
@@ -119,10 +221,11 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
    `claude --session-id <uuid> --name <titre> --permission-mode <mode> [--model] [--effort] --settings <fichier>
    [--mcp-config <fichier> --strict-mcp-config] [--remote-control <nom>]`, avec `ENABLE_CLAUDEAI_MCP_SERVERS=false`,
    `NUERA_HOOK_URL`, `NUERA_SESSION_ID` et le jeton de hook (aléatoire par lancement, seule son empreinte SHA-256 est
-   en base). Backend **tmux** : `tmux -L nuera -f <data>/tmux.conf new-session -d -s nuera-<slug>-<worktree> -c <cwd>
+   en base). Backend **tmux** : `tmux -L <socket> -f <data>/tmux.conf new-session -d -s nuera-<slug>-<worktree> -c <cwd>
    -e K=V … -- claude …` puis un client PTY `tmux attach` ; le jeton passe par un fichier 0600
    (`NUERA_HOOK_TOKEN_FILE`) pour ne jamais apparaître dans l'argv de tmux. Backend **pty** : PTY direct
-   (`NUERA_HOOK_TOKEN` dans l'environnement). Le propriétaire peut s'attacher en SSH : `tmux -L nuera attach -t <nom>`.
+   (`NUERA_HOOK_TOKEN` dans l'environnement). Le propriétaire peut s'attacher en SSH : `tmux -L <socket> attach -t <nom>`
+   (`<socket>` : `NUERA_TMUX_SOCKET`, voir la table des variables).
 3. **Instruction** : collage entre crochets (`ESC[200~ … ESC[201~`) puis Entrée, après le hook `SessionStart` et un
    court silence du terminal ; avant cela, l'instruction est mise en file (les instructions sont tapées une à une,
    dans l'ordre). Pendant une demande d'autorisation, l'envoi est refusé (409). Un seul lancement du CLI par session :
@@ -138,7 +241,8 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
    avec méta (Read « 212 lignes », Glob « 14 fichiers », Edit « +46 −12 », Bash commande + code + résultats de tests
    « 10 réussis · 3,2 s ») ; `TodoWrite` → plan `3 / 5` mis à jour sur place ; `Stop` → message final
    (`last_assistant_message`, dédoublonné avec le journal) ; `StopFailure` → erreur (+ T6 si authentification) ;
-   `Notification`, sous-agents, compaction, `SessionStart` (`transcript_path` validé sous `~/.claude/projects`) et
+   `Notification`, sous-agents, compaction, `SessionStart` (`transcript_path` validé sous `<CLAUDE_CONFIG_DIR>/projects`,
+   le même dossier que celui du CLI) et
    `SessionEnd`. Le journal `transcript_path` est lu de façon tolérante pour les textes intermédiaires de Claude
    (formes inconnues ignorées, rien n'est inventé) ; ses lectures périodiques prennent la file de la session, comme
    les hooks. À la fin d'un tour, une ligne d'outil restée en cours est fermée sans méta (ou « refusé » si elle
@@ -152,11 +256,15 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
    `answered_in_terminal`, aucune sortie, le dialogue officiel s'affiche dans le terminal. Jamais d'auto-approbation.
 6. **Status line** : le JSON officiel est filtré et stocké dans `sessions.cli_status` (modèle, contexte %,
    `rate_limits`), sans estimation ni coût.
-7. **Garde-fous** : plafond de sessions simultanées (requête ou `app_settings`), une session vivante par worktree,
-   plafond mémoire optionnel par arbre de processus (`pidusage`), `nice 10` sous Linux, mode `bypassPermissions`
-   refusé tant que `app_settings.block_bypass_permissions` est actif.
-8. **Démarrage** : réattache les sessions tmux `nuera-*` encore vivantes, passe les autres en `interrupted`
-   (« reprise possible » si worktree et conversation existent), échoue les opérations et runs interrompus.
+7. **Garde-fous** : plafond de sessions simultanées (`environments.max_concurrent_sessions` du serveur ; une valeur
+   de la requête ne peut que l'abaisser), une session vivante par worktree, plafond mémoire optionnel par arbre de
+   processus (`pidusage`, le plus strict de la requête et de `environments.session_memory_limit_mb`), `nice 10` sous Linux, mode `bypassPermissions` refusé sauf
+   `blockBypassPermissions: false` dans les options de lancement **et** `app_settings.force_block_bypass_permissions`
+   inactif. `gitIdentity` des options signe les commits de Claude (gardée à la reprise si la requête n'en donne pas).
+8. **Démarrage** : réattache les sessions tmux `nuera-*` encore vivantes **de son serveur**, passe ses autres
+   sessions vivantes en `interrupted` (« reprise possible » si worktree et conversation existent), échoue ses
+   opérations et lancements interrompus. Une session tmux dont la ligne appartient à un autre serveur (socket partagé
+   par erreur) n'est jamais adoptée : elle reste en place, journalisée comme orpheline.
    **Arrêt** : les sessions tmux continuent ; les sessions PTY directes passent `interrupted`.
 
 Confiance du dossier : le CLI retient ses hooks tant que le dialogue de confiance n'est pas accepté. Accepter une
@@ -168,16 +276,52 @@ worktree ; sinon la session affiche « Action requise dans le terminal » et l'i
 - `POST /runs` : commande du projet dans un PTY (couleurs conservées), détection de port (« port 3000 »), lecture
   des résultats Vitest / Jest / Playwright / node:test en direct (« 10 / 10 réussis »), ligne `command_runs`.
 - Métriques : CPU échantillonné, mémoire limitée par cgroup si applicable, disque de la racine des projets
-  (`fs.statfs`), charge, uptime. Disponibilité : battement par minute dans `uptime_daily`, trou détecté au démarrage
-  = incident.
-- Planificateur : vérification des intégrations (15 min), `git fetch` des projets prêts avec un jeton de lecture
-  demandé au web (10 min, ignoré si le web ne répond pas, erreur notée sur le projet).
+  (`fs.statfs`), charge, uptime. Disponibilité : battement par minute dans `uptime_daily` sous la clé
+  `uptimeServiceKey()` (`runner` pour le serveur par défaut, historique conservé ; `runner:<id>` pour les autres),
+  trou détecté au démarrage = incident de ce serveur.
+- Planificateur : disponibilité (1 min), `git fetch` des projets prêts **de son
+  serveur** avec un jeton de lecture demandé au web (10 min, ignoré si le web ne répond pas, erreur notée sur le
+  projet).
 
 ## Tests
 
 `vitest` exécute de vrais processus : dépôts Git temporaires avec un dépôt nu local comme `origin`, PTY réels, et le
 faux CLI **de test** `test/fixtures/fake-claude.mjs` (sélectionné par `NUERA_CLAUDE_BIN`) qui lit `--settings`,
 exécute les hooks configurés avec des charges réalistes, écrit un journal JSONL et répond à `--version` /
-`auth status --json`. La base `nuera_runner_test` (PostgreSQL local de `pnpm db:local`) est recréée à chaque
-lancement ; sans PostgreSQL, les suites base de données sont ignorées. Sous Windows, les tests utilisent le backend
-PTY ; le backend tmux est exercé sur Linux.
+`auth status --json` (état de connexion par `CLAUDE_CONFIG_DIR`), et note les variables de confiance reçues
+(`<CLAUDE_CONFIG_DIR>/nuera-fake-env/<session>.json`). La base `nuera_runner_test` (PostgreSQL local de
+`pnpm db:local`, autre nom avec `RUNNER_TEST_DATABASE_URL`) est recréée à chaque lancement et migrée comme en
+production (empreinte du jeton de test sur le serveur par défaut, adopté par un compte propriétaire) ; sans
+PostgreSQL, les suites base de données sont ignorées, ou échouent avec `NUERA_REQUIRE_PG=1`.
+
+- `test/environments.test.ts` : **deux runners sur une même base** (listes, capacité, reprise, opérations et
+  lancements interrompus, fetch planifié, disponibilité, connexion Claude propres à chaque serveur ; identifiants de
+  l'autre serveur = 404 « inconnu » sans écriture ; attente sur jeton inconnu, bail, marqueurs,
+  `NUERA_ENVIRONMENT_ID`, serveur suspendu ou retiré).
+- `test/restricted.test.ts` : un rôle de connexion membre de `nuera_runner` (nommé d'après la base de test, supprimé à
+  la fin) exécute les parcours du runner (clonage, synchro, worktrees, commit, lancement, session avec événements et
+  autorisation, reprise, disponibilité, battement) avec les seuls droits et politiques de `0004` et `0005` (bail par
+  `nuera_runner_try_lease()`, tout autre verrou consultatif refusé).
+- `test/lease-compat.test.ts` : runner restreint contre une base migrée jusqu'à `0004` seulement (repli sur
+  `pg_try_advisory_lock`, même clé).
+
+Sous Windows, les tests utilisent le backend PTY ; le backend tmux (`test/tmux.test.ts`, dont la non-adoption d'une
+session d'un autre serveur) est exercé sur Linux seulement : à lancer sur une machine Linux avec tmux avant tout
+déploiement.
+
+## Limites connues
+
+- Serveur retiré pendant le service : ses sessions tmux continuent, mais rien ne les arrête plus par Nuera (attente,
+  et la RLS masque ses lignes à un rôle restreint) → arrêter les sessions (désactiver le compte) **avant** de retirer.
+- Le runner republie encore `notification.created` sur son flux global ; le navigateur l'ignore (seq ≠ 0) et ne lit
+  que le canal web du compte.
+- Les connexions PostgreSQL s'appellent `nuera-runner` et `nuera-runner-lease`, sans l'id du serveur : le web ne peut
+  rattacher une connexion de `pg_stat_activity` qu'au serveur par défaut quand il vérifie l'« accès base restreint »
+  (il accepte déjà `nuera-runner:<id>` / `nuera-runner-lease:<id>`).
+- `NUERA_DB_POOL_MAX` accepte jusqu'à 50, mais le rôle restreint du serveur est plafonné par
+  `NUERA_RUNNER_DB_CONNECTION_LIMIT` (web, 20 par défaut) : garder ce plafond au moins égal au pool + 3.
+
+`sessions.create` avec un `sessionId` fourni vérifie son unicité par une insertion annulée (CONFLICT « Une session
+porte déjà cet identifiant. » quel que soit le serveur qui le détient, rien n'est créé) ; une relecture périodique qui
+trouve le jeton sur une autre ligne arrête le runner ; l'attente du bail et la reprise répondent 503
+`ENVIRONMENT_STARTING`.

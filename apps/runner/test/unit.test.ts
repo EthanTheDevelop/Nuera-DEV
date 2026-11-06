@@ -9,7 +9,7 @@ import { parseNumstatZ, parsePushPorcelain, parseStatusV2, parseUnifiedDiff, par
 import { parseProgressLine, ProgressStream } from '../src/git/progress';
 import { detectPackageManager, parseInstalledPackages } from '../src/git/clone';
 import { buildChildEnv, isDeniedEnvName, rejectedEnvNames } from '../src/safety/env';
-import { execCommand } from '../src/safety/exec';
+import { execCommand, type ExecResult } from '../src/safety/exec';
 import { redactSecrets } from '../src/safety/redact';
 import { parseTestOutput, TestOutputParser } from '../src/runs/test-parser';
 import { detectPort } from '../src/runs/manager';
@@ -21,7 +21,10 @@ import { permissionNotificationCopy, sanitizeInstruction } from '../src/sessions
 import { walkDiskUsage } from '../src/system/disk-usage';
 import { buildMcpConfig, buildSettings, HOOK_EVENTS } from '../src/sessions/runtime-files';
 import { parseAuthStatus, parseMcpGet, userScopeMcpConfig } from '../src/claude/cli';
-import { tmuxSessionName } from '../src/sessions/backend';
+import { defaultTmuxSocket, parseTmuxEnvironmentValue, TmuxBackend, tmuxSessionName } from '../src/sessions/backend';
+import { tmuxSocketResolver } from '../src/services';
+import { RunnerError } from '../src/errors';
+import type { TerminalManager } from '../src/terminals/manager';
 
 describe('environment sanitisation', () => {
   const source = {
@@ -376,6 +379,66 @@ describe('session runtime', () => {
     expect(tmuxSessionName('a.b', 'c:d', new Set(['nuera-a-b-c-d']))).toBe('nuera-a-b-c-d-2');
   });
 
+  it('gives every server its own tmux socket (nuera kept for the default server)', () => {
+    expect(defaultTmuxSocket({ id: '6F1C0B39-0000-4000-8000-000000000001', isDefault: false })).toBe('nuera-6f1c0b39');
+    expect(defaultTmuxSocket({ id: '0d9e8a77-1111-4000-8000-000000000002', isDefault: false })).toBe('nuera-0d9e8a77');
+    expect(defaultTmuxSocket({ id: '6f1c0b39-0000-4000-8000-000000000001', isDefault: true })).toBe('nuera');
+
+    // Resolved once the server is known, then fixed; NUERA_TMUX_SOCKET wins.
+    const environment = {
+      current: null as { id: string; isDefault: boolean } | null,
+      notServingError: () => new RunnerError('UPSTREAM', 'Serveur inconnu.'),
+    };
+    const resolve = tmuxSocketResolver({ tmuxSocket: undefined }, environment as never);
+    expect(() => resolve()).toThrow(RunnerError);
+    environment.current = { id: '0d9e8a77-1111-4000-8000-000000000002', isDefault: false };
+    expect(resolve()).toBe('nuera-0d9e8a77');
+    environment.current = null;
+    expect(resolve()).toBe('nuera-0d9e8a77');
+    expect(tmuxSocketResolver({ tmuxSocket: 'nuera-local' }, environment as never)()).toBe('nuera-local');
+  });
+
+  it("reads the row id a tmux session was started for (NUERA_SESSION_ID)", async () => {
+    expect(parseTmuxEnvironmentValue('NUERA_SESSION_ID=6f1c0b39-0000-4000-8000-000000000001\n', 'NUERA_SESSION_ID')).toBe(
+      '6f1c0b39-0000-4000-8000-000000000001',
+    );
+    expect(parseTmuxEnvironmentValue('-NUERA_SESSION_ID\n', 'NUERA_SESSION_ID')).toBeNull();
+    expect(parseTmuxEnvironmentValue('NUERA_SESSION_ID_X=1\r\nNUERA_SESSION_ID=a=b\r\n', 'NUERA_SESSION_ID')).toBe('a=b');
+    expect(parseTmuxEnvironmentValue('', 'NUERA_SESSION_ID')).toBeNull();
+
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'nuera-tmux-'));
+    try {
+      const calls: string[][] = [];
+      class FakeTmux extends TmuxBackend {
+        override async run(args: string[]): Promise<ExecResult> {
+          calls.push(args);
+          const known = args[args.indexOf('-t') + 1] === '=nuera-site-main';
+          return {
+            stdout: known ? 'NUERA_SESSION_ID=row-1\n' : '',
+            stderr: known ? '' : "can't find session: nuera-autre",
+            exitCode: known ? 0 : 1,
+            signal: null,
+            timedOut: false,
+            aborted: false,
+            truncated: false,
+            durationMs: 1,
+            spawnError: null,
+          };
+        }
+      }
+      let socket = 'nuera-0d9e8a77';
+      const tmux = new FakeTmux({} as TerminalManager, dataDir, () => socket);
+      expect(await tmux.sessionOwner('nuera-site-main')).toBe('row-1');
+      expect(await tmux.sessionOwner('nuera-autre')).toBeNull();
+      expect(calls[0]).toEqual(['show-environment', '-t', '=nuera-site-main', 'NUERA_SESSION_ID']);
+      expect(tmux.socket).toBe('nuera-0d9e8a77');
+      socket = 'nuera';
+      expect(tmux.socket).toBe('nuera');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('whitelists the status line JSON (no cost estimate)', () => {
     const status = sanitizeStatusLine({
       model: { id: 'claude-x', display_name: 'Opus' },
@@ -447,7 +510,9 @@ describe('disk usage walk (du-like, bounded)', () => {
       expect(base).toBeGreaterThanOrEqual(96 * 1024);
       // A big file behind a symbolic link (here outside the root) is not walked; a hard link adds nothing.
       writeFileSync(path.join(outside, 'big.bin'), Buffer.alloc(4 * 1024 * 1024, 3));
-      symlinkSync(outside, path.join(root, 'link'));
+      // Windows: a directory junction needs no privilege (a symbolic link does); both are reparse points
+      // that the walk must not follow.
+      symlinkSync(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
       linkSync(path.join(root, 'a', 'one.bin'), path.join(root, 'hard.bin'));
       const after = await walkDiskUsage(root);
       expect(after).not.toBeNull();

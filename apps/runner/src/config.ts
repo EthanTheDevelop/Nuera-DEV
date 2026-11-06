@@ -17,8 +17,23 @@ export interface RunnerConfig {
   port: number;
   /** Hook / status-line listener, always bound to 127.0.0.1. */
   hookPort: number;
+  /** Token of this runner's server: `sha256(token)` is how it finds its row in `environments`. */
   token: string;
+  /** RUNNER_DATABASE_URL (restricted role of the server) or DATABASE_URL. */
   databaseUrl: string;
+  /** Pool size of the main database client (NUERA_DB_POOL_MAX, default 5). */
+  dbPoolMax: number;
+  /**
+   * NUERA_ENVIRONMENT_ID: optional assertion only. The server is found by its token; a different id
+   * is a fatal configuration error.
+   */
+  environmentId: string | null;
+  /**
+   * NUERA_CLAUDE_CONFIG_DIR (dev, tests, several runners on one machine): CLAUDE_CONFIG_DIR given to
+   * every `claude` process of this runner and root of the transcripts it accepts. Null: the process
+   * environment (production: HOME of the container).
+   */
+  claudeConfigDir: string | null;
   /** Public URL of the web app (internal callbacks: /api/internal/*). */
   appUrl: string;
   /** URL the runner uses to reach the web app (defaults to appUrl). */
@@ -26,7 +41,10 @@ export interface RunnerConfig {
   projectsRoot: string;
   dataDir: string;
   sessionBackend: SessionBackendSetting;
-  /** tmux socket (`tmux -L <name>`) of the Claude sessions; `nuera` by default (tests use their own). */
+  /**
+   * tmux socket (`tmux -L <name>`) of the Claude sessions (NUERA_TMUX_SOCKET). Unset: `nuera` for
+   * the default server, `nuera-<first 8 hex of the server id>` for the others (sessions/backend.ts).
+   */
   tmuxSocket?: string;
   /** Official CLI (`claude` on PATH by default). A .mjs/.js path is run with node (tests only). */
   claudeBin: string | null;
@@ -36,7 +54,7 @@ export interface RunnerConfig {
    * of bare repositories (`file:///…/`).
    */
   gitRemoteBase: string;
-  /** Periodic jobs (integration check, background fetch, uptime heartbeat). Off in tests. */
+  /** Periodic jobs (server heartbeat, background fetch, uptime). Off in tests. */
   schedulerEnabled: boolean;
   version: string;
 }
@@ -47,7 +65,16 @@ const EnvSchema = z.object({
   RUNNER_PORT: z.coerce.number().int().min(1).max(65535).default(4100),
   RUNNER_HOOK_PORT: z.coerce.number().int().min(0).max(65535).default(4101),
   RUNNER_TOKEN: z.string().min(16, 'RUNNER_TOKEN doit contenir au moins 16 caractères.'),
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL manquant.'),
+  DATABASE_URL: z.string().optional(),
+  RUNNER_DATABASE_URL: z.string().optional(),
+  // Compose passes `${VAR:-}`: an empty value means « not set ».
+  NUERA_DB_POOL_MAX: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(2).max(15).default(5)),
+  NUERA_ENVIRONMENT_ID: z
+    .string()
+    .trim()
+    .optional()
+    .refine((v) => !v || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v), 'NUERA_ENVIRONMENT_ID doit être un identifiant de serveur (UUID).'),
+  NUERA_CLAUDE_CONFIG_DIR: z.string().optional(),
   APP_URL: z.string().url().default('http://localhost:3000'),
   NUERA_WEB_INTERNAL_URL: z.string().url().optional(),
   NUERA_PROJECTS_ROOT: z.string().default('./.data/projects'),
@@ -68,15 +95,23 @@ const EnvSchema = z.object({
 
 /**
  * Loads the repository-root `.env` (development only), without overriding variables already set
- * in the environment (shell variables take precedence).
+ * in the environment (shell variables take precedence). With NUERA_ENV_FILE (a second runner on
+ * the same machine, e.g. `.env.runner-b`), that file is read first: its values win over the root
+ * `.env` (token, ports, folders and Claude config dir of that runner).
  */
 export function loadDotEnv(env: NodeJS.ProcessEnv = process.env, file = path.join(REPO_ROOT, '.env')): boolean {
-  if (env.NODE_ENV === 'production' || !existsSync(file)) return false;
-  const parsed = parseEnv(readFileSync(file, 'utf8'));
-  for (const [key, value] of Object.entries(parsed)) {
-    if (env[key] === undefined && typeof value === 'string') env[key] = value;
+  if (env.NODE_ENV === 'production') return false;
+  const files = [...(env.NUERA_ENV_FILE?.trim() ? [resolveFromRoot(env.NUERA_ENV_FILE.trim())] : []), file];
+  let loaded = false;
+  for (const candidate of files) {
+    if (!existsSync(candidate)) continue;
+    const parsed = parseEnv(readFileSync(candidate, 'utf8'));
+    for (const [key, value] of Object.entries(parsed)) {
+      if (env[key] === undefined && typeof value === 'string') env[key] = value;
+    }
+    loaded = true;
   }
-  return true;
+  return loaded;
 }
 
 function readVersion(): string {
@@ -100,6 +135,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     throw new Error(`Configuration du runner invalide : ${issues}`);
   }
   const e = parsed.data;
+  // The restricted role of the server (MULTICOMPTE §11) wins over the full DSN.
+  const databaseUrl = e.RUNNER_DATABASE_URL?.trim() || e.DATABASE_URL?.trim();
+  if (!databaseUrl) throw new Error('Configuration du runner invalide : RUNNER_DATABASE_URL ou DATABASE_URL manquant.');
   const mode = e.NODE_ENV === 'production' ? 'production' : e.NODE_ENV === 'test' ? 'test' : 'development';
   const appUrl = e.APP_URL.replace(/\/+$/, '');
   const remoteBase = e.NUERA_GIT_REMOTE_BASE.endsWith('/') ? e.NUERA_GIT_REMOTE_BASE : `${e.NUERA_GIT_REMOTE_BASE}/`;
@@ -109,13 +147,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     port: e.RUNNER_PORT,
     hookPort: e.RUNNER_HOOK_PORT,
     token: e.RUNNER_TOKEN,
-    databaseUrl: e.DATABASE_URL,
+    databaseUrl,
+    dbPoolMax: e.NUERA_DB_POOL_MAX,
+    environmentId: e.NUERA_ENVIRONMENT_ID?.toLowerCase() || null,
+    claudeConfigDir: e.NUERA_CLAUDE_CONFIG_DIR?.trim() ? resolveFromRoot(e.NUERA_CLAUDE_CONFIG_DIR.trim()) : null,
     appUrl,
     webInternalUrl: (e.NUERA_WEB_INTERNAL_URL ?? appUrl).replace(/\/+$/, ''),
     projectsRoot: resolveFromRoot(e.NUERA_PROJECTS_ROOT),
     dataDir: resolveFromRoot(e.NUERA_DATA_DIR),
     sessionBackend: e.NUERA_SESSION_BACKEND,
-    tmuxSocket: e.NUERA_TMUX_SOCKET ?? 'nuera',
+    tmuxSocket: e.NUERA_TMUX_SOCKET,
     claudeBin: e.NUERA_CLAUDE_BIN?.trim() ? e.NUERA_CLAUDE_BIN.trim() : null,
     logLevel: e.LOG_LEVEL,
     gitRemoteBase: remoteBase,

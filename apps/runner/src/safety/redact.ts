@@ -10,6 +10,8 @@ const PATTERNS: Array<[RegExp, string]> = [
   // GitHub tokens (classic, fine-grained, installation, OAuth, refresh)
   [/\b(gh[pousr]_[A-Za-z0-9]{20,})\b/g, '[jeton GitHub masqué]'],
   [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[jeton GitHub masqué]'],
+  // Runner tokens of Nuera Dev servers (nrt_ + base64url of 32 bytes)
+  [/\bnrt_[A-Za-z0-9_-]{32,}/g, '[jeton du runner masqué]'],
   // Anthropic keys / OAuth tokens
   [/\bsk-ant-[A-Za-z0-9_-]{10,}\b/g, '[clé Anthropic masquée]'],
   // Generic "token in URL" (https://user:secret@host)

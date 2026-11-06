@@ -33,7 +33,8 @@ const ALLOW_EXACT = new Set([
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
   'NODE_EXTRA_CA_CERTS',
-  // Claude Code: same config dir everywhere (one supervisor, one login), update policy.
+  // Claude Code: same config dir for every claude process of a runner (one server = one login;
+  // NUERA_CLAUDE_CONFIG_DIR overrides it as a trusted value), update policy.
   'CLAUDE_CONFIG_DIR',
   'DISABLE_AUTOUPDATER',
   'DISABLE_UPDATES',

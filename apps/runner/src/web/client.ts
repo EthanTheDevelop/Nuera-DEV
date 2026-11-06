@@ -3,7 +3,8 @@ import { GitExtraHeaderSchema } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 
 /**
- * Runner → web callbacks (`/api/internal/*`, Bearer RUNNER_TOKEN, implemented by the web app).
+ * Runner → web callbacks (`/api/internal/*`, Bearer RUNNER_TOKEN = the token of this runner's
+ * server: the web derives the server from it and refuses any project or session outside it).
  * Every call tolerates an unreachable web app or a 404 (endpoint not deployed yet): it returns
  * null and the runner carries on.
  */
@@ -54,6 +55,10 @@ export class WebClient {
         this.logger.debug({ path }, 'callback web absent (404)');
         return null;
       }
+      if (response.status === 401 || response.status === 403) {
+        this.logger.warn({ path, status: response.status }, 'Le web refuse le jeton de ce serveur (révoqué, renouvelé ou serveur suspendu ?) : rappel ignoré.');
+        return null;
+      }
       if (!response.ok) {
         this.logger.warn({ path, status: response.status }, 'callback web refusé');
         return null;
@@ -88,10 +93,5 @@ export class WebClient {
     const raw = await this.post('/api/internal/git-credentials', payload, 10_000);
     const parsed = GitCredentialsResponseSchema.safeParse(raw);
     return parsed.success ? { extraHeader: parsed.data.extraHeader } : null;
-  }
-
-  /** Asks the web to run its integration checks (every 15 min). */
-  async integrationsCheck(trigger: 'schedule' | 'startup' = 'schedule'): Promise<boolean> {
-    return (await this.post('/api/internal/integrations/check', { trigger }, 120_000)) !== null;
   }
 }

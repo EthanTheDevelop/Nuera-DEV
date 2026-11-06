@@ -104,7 +104,7 @@ describe.skipIf(!dbReady)('maintenance: sizes, clone removal, bounded changes, a
   it('re-publishes session.status (with the title) after a web-side rename or archive', async () => {
     const [other] = await env.db.select().from(projects).where(eq(projects.id, projectId));
     const id = randomUUID();
-    await env.db.insert(sessions).values({ id, projectId: other!.id, title: 'Avant', status: 'stopped', backend: 'pty' });
+    await env.db.insert(sessions).values({ id, projectId: other!.id, environmentId: other!.environmentId, title: 'Avant', status: 'stopped', backend: 'pty' });
     await env.db.update(sessions).set({ title: 'Après', status: 'archived', archivedAt: new Date() }).where(eq(sessions.id, id));
     const seen: RunnerEvent[] = [];
     const off = env.runner.services.bus.subscribe('global', (e) => {

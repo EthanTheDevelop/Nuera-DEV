@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { McpConfigSchema } from '@nuera/shared/runner';
+import { GitIdentitySchema, McpConfigSchema, type GitIdentity } from '@nuera/shared/runner';
 import { z } from 'zod';
 
 /** MCP config as received (input type: `args` may be omitted), validated again here. */
@@ -31,6 +31,11 @@ export const HOOK_EVENTS = [
 export type HookEventName = (typeof HOOK_EVENTS)[number];
 const TOOL_EVENTS = new Set<string>(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure']);
 
+/**
+ * `launch.json`: launch options kept with the session (resume after a restart). Fields added after
+ * the first version are OPTIONAL: a file written by an older runner must still be read, otherwise
+ * a resume silently falls back to default files (no MCP, no deny rules, no env).
+ */
 export const LaunchFileSchema = z.object({
   sessionId: z.string(),
   /** Current Claude conversation id (changes after /clear). */
@@ -42,6 +47,10 @@ export const LaunchFileSchema = z.object({
   denyRules: z.array(z.string()),
   hasMcp: z.boolean(),
   updatedAt: z.string(),
+  /** « Bloquer le mode sans autorisation » given by the web (absent: blocked). Contract 2. */
+  blockBypassPermissions: z.boolean().optional(),
+  /** Author of Claude's commits (GIT_AUTHOR_* / GIT_COMMITTER_*). Contract 2. */
+  gitIdentity: GitIdentitySchema.nullable().optional(),
 });
 export type LaunchFile = z.infer<typeof LaunchFileSchema>;
 
@@ -123,6 +132,8 @@ export async function writeSessionFiles(
     maxConcurrentSessions: number | null;
     memoryLimitMb: number | null;
     hookToken: string | null;
+    blockBypassPermissions?: boolean;
+    gitIdentity?: GitIdentity | null;
   },
 ): Promise<SessionFiles> {
   validateSessionEnv(input.launch.env);
@@ -152,6 +163,8 @@ export async function writeSessionFiles(
     denyRules: input.launch.denyRules,
     hasMcp: Boolean(files.mcp),
     updatedAt: new Date().toISOString(),
+    ...(input.blockBypassPermissions !== undefined ? { blockBypassPermissions: input.blockBypassPermissions } : {}),
+    ...(input.gitIdentity ? { gitIdentity: GitIdentitySchema.parse(input.gitIdentity) } : {}),
   };
   await writeFile(files.launch, JSON.stringify(launch, null, 2), 'utf8');
   if (input.hookToken) {

@@ -20,7 +20,18 @@ import type {
   WorktreeDto,
 } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
-import { ensurePrimaryWorktree, getProject, getReadyProject, getWorktree, listActiveWorktrees, worktreeRowToDto, type ProjectRow, type WorktreeRow } from '../db/lookups';
+import {
+  ensurePrimaryWorktree,
+  getProject,
+  getReadyProject,
+  getSessionRow,
+  getWorktree,
+  listActiveWorktrees,
+  worktreeRowToDto,
+  type ProjectRow,
+  type WorktreeRow,
+} from '../db/lookups';
+import type { EnvironmentScope } from '../environment';
 import { RunnerError } from '../errors';
 import type { OperationService } from '../operations/service';
 import type { PathGuard } from '../safety/paths';
@@ -52,6 +63,8 @@ const literal = (p: string) => `:(literal)${p}`;
 
 export interface GitServiceDeps {
   db: Database;
+  /** Server of this runner: every project / worktree id is looked up within it. */
+  environment: EnvironmentScope;
   git: Git;
   paths: PathGuard;
   ops: OperationService;
@@ -93,6 +106,10 @@ export class GitService {
   private get db() {
     return this.deps.db;
   }
+  /** Id of this runner's server (throws while it does not serve). */
+  private get envId(): string {
+    return this.deps.environment.id;
+  }
 
   // -------------------------------------------------------------------------------------------
   // Resolution
@@ -122,9 +139,14 @@ export class GitService {
     }
   }
 
+  /** A session id recorded on an operation must be one of this server's sessions. */
+  private async assertOwnSession(sessionId: string | null | undefined): Promise<void> {
+    if (sessionId) await getSessionRow(this.db, this.envId, sessionId);
+  }
+
   async resolveWorktree(worktreeId: string): Promise<ResolvedWorktree> {
-    const worktree = await getWorktree(this.db, worktreeId);
-    const project = await getProject(this.db, worktree.projectId);
+    const worktree = await getWorktree(this.db, this.envId, worktreeId);
+    const project = await getProject(this.db, this.envId, worktree.projectId);
     const cwd = await this.worktreeCwd(worktree);
     return { project, worktree, cwd };
   }
@@ -136,7 +158,7 @@ export class GitService {
       if (resolved.project.id !== projectId) throw new RunnerError('NOT_FOUND', 'Worktree introuvable pour ce projet.');
       return resolved;
     }
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
     const cwd = await this.projectCwd(project);
     const branch = await this.currentBranch(cwd);
     const worktree = await ensurePrimaryWorktree(this.db, project, branch);
@@ -230,7 +252,7 @@ export class GitService {
   }
 
   async syncStatus(projectId: string): Promise<SyncStatus> {
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
     const cwd = await this.projectCwd(project);
     return this.syncStatusFor(project, cwd);
   }
@@ -268,7 +290,7 @@ export class GitService {
 
   /** `git fetch` of the primary clone. `record: false` for the background scheduler. */
   async fetch(projectId: string, input: { extraHeader?: string; actorUserId?: string | null }, options: { record?: boolean } = {}) {
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
     const cwd = await this.projectCwd(project);
     const work = async () => {
       await this.fetchOrigin(project, cwd, input.extraHeader);
@@ -370,7 +392,7 @@ export class GitService {
   // -------------------------------------------------------------------------------------------
 
   async branches(projectId: string, protectedCsv: string | undefined): Promise<{ defaultBranch: string; branches: Branch[] }> {
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
     const cwd = await this.projectCwd(project);
     const protectedSet = new Set(
       (protectedCsv ?? '')
@@ -384,7 +406,7 @@ export class GitService {
     const defaultRef = (await this.resolveBaseRef(cwd, project.defaultBranch)) ?? 'HEAD';
     const mergedOut = await this.git.output(['for-each-ref', '--merged', defaultRef, '--format=%(refname)', 'refs/heads', 'refs/remotes'], { cwd });
     const merged = new Set(mergedOut.split(/\r?\n/).filter(Boolean));
-    const rows = await listActiveWorktrees(this.db, project.id);
+    const rows = await listActiveWorktrees(this.db, project);
     const byBranch = new Map(rows.map((w) => [w.branch, w]));
     const branches: Branch[] = [];
     for (const line of out.split(/\r?\n/)) {
@@ -525,10 +547,10 @@ export class GitService {
   // -------------------------------------------------------------------------------------------
 
   async listWorktrees(projectId: string, options: { sizes?: boolean } = {}): Promise<{ worktrees: WorktreeDto[] }> {
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
     const primaryCwd = await this.projectCwd(project);
     await ensurePrimaryWorktree(this.db, project, await this.currentBranch(primaryCwd));
-    const rows = await listActiveWorktrees(this.db, project.id);
+    const rows = await listActiveWorktrees(this.db, project);
     const listed = parseWorktreeList(await this.git.output(['worktree', 'list', '--porcelain'], { cwd: primaryCwd }));
     const result: WorktreeDto[] = [];
     for (const row of rows) {
@@ -586,7 +608,7 @@ export class GitService {
    * Paths are confined to the projects root (never the root itself). The project row stays.
    */
   async removeClone(projectId: string, input: { actorUserId?: string | null } = {}) {
-    const project = await getProject(this.db, projectId);
+    const project = await getProject(this.db, this.envId, projectId);
     const rows = await this.db.select().from(worktrees).where(and(eq(worktrees.projectId, project.id), isNull(worktrees.removedAt)));
     for (const row of rows) {
       if (this.deps.liveSessionForWorktree(row.id)) {
@@ -660,7 +682,7 @@ export class GitService {
       { kind: 'clone_remove', projectId: project.id, title: `Suppression du clone de ${project.name}`, actorUserId: input.actorUserId },
       async (op) => {
         // Worktrees first (their .git file points into the primary clone), then the clone itself.
-        for (const { dir } of [...folders].reverse()) {
+        for (const { dir } of folders.toReversed()) {
           op.appendLog([`Suppression de ${dir}`]);
           await rm(dir, { recursive: true, force: true, maxRetries: 3 });
           this.deps.diskUsage?.forget(dir);
@@ -683,10 +705,11 @@ export class GitService {
     input: { name?: string; branch: string; base?: string; actorUserId?: string | null },
     options: { sessionId?: string | null } = {},
   ): Promise<WorktreeRow> {
-    const project = await getReadyProject(this.db, projectId);
+    const project = await getReadyProject(this.db, this.envId, projectId);
+    await this.deps.environment.assertCanStartWork();
     const primaryCwd = await this.projectCwd(project);
     if (!isValidBranchName(input.branch)) throw new RunnerError('VALIDATION', 'Nom de branche invalide.');
-    const existing = await listActiveWorktrees(this.db, project.id);
+    const existing = await listActiveWorktrees(this.db, project);
     const baseName = input.name ?? worktreeNameFromBranch(input.branch);
     let name = baseName;
     for (let i = 2; existing.some((w) => w.name === name) || name === project.slug; i += 1) name = `${baseName}-${i}`;
@@ -701,7 +724,7 @@ export class GitService {
     const { value } = await this.deps.ops.run(
       {
         kind: 'worktree_create',
-        projectId,
+        projectId: project.id,
         sessionId: options.sessionId ?? null,
         title: `Worktree ${name}`,
         actorUserId: input.actorUserId,
@@ -728,7 +751,17 @@ export class GitService {
         }
         const [row] = await this.db
           .insert(worktrees)
-          .values({ projectId, name, branch: input.branch, baseBranch: base, path: target, isPrimary: false, status: 'active', lastUsedAt: new Date() })
+          .values({
+            projectId: project.id,
+            environmentId: project.environmentId,
+            name,
+            branch: input.branch,
+            baseBranch: base,
+            path: target,
+            isPrimary: false,
+            status: 'active',
+            lastUsedAt: new Date(),
+          })
           .returning();
         if (!row) throw new RunnerError('INTERNAL', 'Worktree non enregistré.');
         return row;
@@ -743,12 +776,12 @@ export class GitService {
   }
 
   async removeWorktree(worktreeId: string, input: { force: boolean; deleteBranch: boolean; actorUserId?: string | null }) {
-    const row = await getWorktree(this.db, worktreeId);
+    const row = await getWorktree(this.db, this.envId, worktreeId);
     if (row.isPrimary) throw new RunnerError('VALIDATION', 'Le clone principal ne peut pas être supprimé ici.');
     if (this.deps.liveSessionForWorktree(row.id)) {
       throw new RunnerError('CONFLICT', "Une session Claude utilise ce worktree : arrêtez-la d'abord.", { reason: 'WORKTREE_IN_USE' });
     }
-    const project = await getProject(this.db, row.projectId);
+    const project = await getProject(this.db, this.envId, row.projectId);
     const primaryCwd = await this.projectCwd(project);
     const { operationId, value } = await this.deps.ops.run(
       { kind: 'worktree_remove', projectId: project.id, worktreeId: row.id, title: `Suppression du worktree ${row.name}`, actorUserId: input.actorUserId },
@@ -1022,6 +1055,7 @@ export class GitService {
     input: { message: string; body?: string; author: GitIdentity; paths?: string[]; runHooks: boolean; sessionId?: string; actorUserId?: string | null },
   ): Promise<CommitResult> {
     const { project, worktree, cwd } = await this.resolveWorktree(worktreeId);
+    await this.assertOwnSession(input.sessionId);
     const { operationId, value } = await this.deps.ops.run(
       {
         kind: 'commit',
@@ -1054,6 +1088,7 @@ export class GitService {
     input: { extraHeader: string; remoteBranch?: string; setUpstream: boolean; protectedBranches: string[]; sessionId?: string; actorUserId?: string | null },
   ): Promise<PushResult> {
     const { project, worktree, cwd } = await this.resolveWorktree(worktreeId);
+    await this.assertOwnSession(input.sessionId);
     const branch = await this.currentBranch(cwd);
     if (!branch) throw new RunnerError('CONFLICT', "Le worktree n'est sur aucune branche (HEAD détachée).");
     const remoteBranch = input.remoteBranch ?? branch;

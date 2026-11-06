@@ -30,6 +30,8 @@ export interface TerminalSpawnOptions {
   rows: number;
   worktreeId?: string | null;
   sessionId?: string | null;
+  /** Account that opened the terminal (`actorUserId` of the request); null when the runner opened it. */
+  ownerUserId?: string | null;
   /** Output never persisted nor logged; scrollback dropped on close (login terminals). */
   private?: boolean;
   scrollback?: number;
@@ -58,6 +60,7 @@ export class Terminal {
   readonly cwd: string;
   readonly worktreeId: string | null;
   readonly sessionId: string | null;
+  readonly ownerUserId: string | null;
   readonly isPrivate: boolean;
   readonly idleTimeoutMs: number | null;
   readonly createdAt = new Date();
@@ -87,6 +90,7 @@ export class Terminal {
     this.cwd = options.cwd;
     this.worktreeId = options.worktreeId ?? null;
     this.sessionId = options.sessionId ?? null;
+    this.ownerUserId = options.ownerUserId ?? null;
     this.isPrivate = options.private ?? false;
     this.idleTimeoutMs = options.idleTimeoutMs ?? null;
     this.cols = options.cols;
@@ -258,6 +262,7 @@ export class Terminal {
       cwd: this.isPrivate ? null : this.cwd,
       worktreeId: this.worktreeId,
       sessionId: this.sessionId,
+      ownerUserId: this.ownerUserId,
       cols: this.cols,
       rows: this.rows,
       alive: this.alive,

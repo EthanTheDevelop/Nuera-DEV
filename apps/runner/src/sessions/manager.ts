@@ -8,7 +8,9 @@ import { LIVE_SESSION_STATUSES, type CliStatus, type PermissionRequestDto, type 
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
-import { getReadyProject, getWorktree, readAppSettings, type WorktreeRow } from '../db/lookups';
+import { claudeEnv, gitIdentityEnv } from '../claude/env';
+import { getPermissionRow, getReadyProject, getSessionRow, getWorktree, type WorktreeRow } from '../db/lookups';
+import type { EnvironmentScope } from '../environment';
 import { GLOBAL, sessionChannel, type EventBus } from '../events/bus';
 import { RunnerError } from '../errors';
 import type { GitService } from '../git/service';
@@ -41,7 +43,7 @@ import {
 } from './runtime-files';
 import { sanitizeStatusLine, statusFingerprint } from './statusline';
 import { planFromTodoWrite, toolOutcome, toolSummary, toolTarget } from './tool-meta';
-import { TranscriptTailer, validateTranscriptPath } from './transcript';
+import { TranscriptTailer, transcriptsRoot, validateTranscriptPath } from './transcript';
 
 type SessionRow = typeof sessions.$inferSelect;
 type PermissionRow = typeof permissionRequests.$inferSelect;
@@ -107,6 +109,8 @@ interface LiveSession {
 
 export interface SessionManagerDeps {
   db: Database;
+  /** Server of this runner: sessions are created, read, listed and reconciled within it only. */
+  environment: EnvironmentScope;
   bus: EventBus;
   store: SessionEventStore;
   git: GitService;
@@ -116,6 +120,8 @@ export interface SessionManagerDeps {
   logger: Logger;
   dataDir: string;
   claudeBin: string | null;
+  /** NUERA_CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_DIR of every session CLI, root of the accepted transcripts. */
+  claudeConfigDir?: string | null;
   /** `http://127.0.0.1:<port>` of the hook listener (resolved after it listens). */
   hookBaseUrl: () => string;
   /** A session reported an authentication problem: refresh `claude auth status`. */
@@ -137,6 +143,9 @@ const STOP_FAILURE_MESSAGES: Record<string, string> = {
   unknown: 'Erreur inattendue du CLI.',
 };
 const AUTH_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowed']);
+
+/** Hook wait for a decision taken in Nuera Dev when the launch options give none (space default). */
+const DEFAULT_PERMISSION_WAIT_SECONDS = 120;
 
 /** Delay after Échap / Ctrl+C without any activity hook before the step is considered stopped. */
 const INTERRUPT_SETTLE_MS = 2500;
@@ -219,6 +228,21 @@ export class SessionManager {
 
   constructor(private readonly deps: SessionManagerDeps) {}
 
+  /** Id of this runner's server (throws while it does not serve). */
+  private get envId(): string {
+    return this.deps.environment.id;
+  }
+
+  /** WHERE clause of a write to one of this server's sessions (defense in depth). */
+  private ownSession(sessionId: string) {
+    return and(eq(sessions.id, sessionId), eq(sessions.environmentId, this.envId));
+  }
+
+  /** Same config dir as the CLI's: the only place its transcripts may live. */
+  private transcriptRoot(): string {
+    return transcriptsRoot(this.deps.claudeConfigDir ?? null);
+  }
+
   // -------------------------------------------------------------------------------------------
   // Queries
   // -------------------------------------------------------------------------------------------
@@ -237,9 +261,7 @@ export class SessionManager {
   }
 
   private async row(sessionId: string): Promise<SessionRow> {
-    const [row] = await this.deps.db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-    if (!row) throw new RunnerError('NOT_FOUND', 'Session introuvable.');
-    return row;
+    return getSessionRow(this.deps.db, this.envId, sessionId);
   }
 
   private permissionDto(row: PermissionRow, cwd: string | null): PermissionRequestDto {
@@ -323,7 +345,10 @@ export class SessionManager {
   }
 
   async list(): Promise<{ sessions: SessionDto[]; capacity: { live: number; max: number } }> {
-    const rows = await this.deps.db.select().from(sessions).where(inArray(sessions.status, [...LIVE_SESSION_STATUSES, 'new']));
+    const rows = await this.deps.db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.environmentId, this.envId), inArray(sessions.status, [...LIVE_SESSION_STATUSES, 'new'])));
     const result: SessionDto[] = [];
     for (const row of rows) result.push(await this.dto(row));
     return { sessions: result, capacity: { live: this.liveCount, max: await this.maxSessions() } };
@@ -338,10 +363,14 @@ export class SessionManager {
     return Number(row?.n ?? 0);
   }
 
+  /**
+   * The server's own setting (`environments.max_concurrent_sessions`, capped by the administration);
+   * a launch value (older webs, or a `launch.json` written before the server existed) may only be
+   * stricter, never above it.
+   */
   async maxSessions(override?: number | null): Promise<number> {
-    if (override) return override;
-    const settings = await readAppSettings(this.deps.db);
-    return settings?.maxConcurrentSessions ?? 4;
+    const serverMax = (await this.deps.environment.settings()).maxConcurrentSessions;
+    return override ? Math.min(override, serverMax) : serverMax;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -352,7 +381,7 @@ export class SessionManager {
     const [row] = await this.deps.db
       .update(sessions)
       .set({ ...patch, lastActivityAt: patch.lastActivityAt ?? new Date() })
-      .where(eq(sessions.id, sessionId))
+      .where(this.ownSession(sessionId))
       .returning();
     if (!row) throw new RunnerError('NOT_FOUND', 'Session introuvable.');
     await this.publishStatus(row);
@@ -414,18 +443,33 @@ export class SessionManager {
     start: boolean;
     createdByUserId?: string | null;
   }): Promise<SessionDto> {
-    const project = await getReadyProject(this.deps.db, input.projectId);
-    await this.assertModeAllowed(input.permissionMode);
+    const project = await getReadyProject(this.deps.db, this.envId, input.projectId);
+    await this.deps.environment.assertCanStartWork();
+    await this.assertModeAllowed(input.permissionMode, input.launch.blockBypassPermissions);
     validateSessionEnv(input.launch.env ?? {});
     if (input.start) await this.assertCapacity(input.launch.maxConcurrentSessions ?? null);
     const id = input.sessionId ?? randomUUID();
-    if (input.sessionId) {
-      const [taken] = await this.deps.db.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
-      if (taken) throw new RunnerError('CONFLICT', 'Une session porte déjà cet identifiant.');
-    }
+    const rowValues = (worktreeId: string | null): typeof sessions.$inferInsert => ({
+      id,
+      projectId: project.id,
+      environmentId: project.environmentId,
+      worktreeId,
+      title: input.title,
+      status: 'new',
+      backend: this.deps.backend.kind,
+      permissionMode: input.permissionMode,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+      remoteControl: input.remoteControl,
+      // `--session-id` of the first launch; replaced by the id the CLI reports (SessionStart).
+      claudeSessionId: id,
+      createdByUserId: input.createdByUserId ?? null,
+    });
+    // A caller-supplied id is checked before any side effect (a worktree created in 'new' mode).
+    if (input.sessionId) await this.assertSessionIdFree(rowValues(null));
     let worktree: WorktreeRow;
     if (input.worktree.mode === 'existing') {
-      worktree = await getWorktree(this.deps.db, input.worktree.worktreeId);
+      worktree = await getWorktree(this.deps.db, this.envId, input.worktree.worktreeId);
       if (worktree.projectId !== project.id) throw new RunnerError('NOT_FOUND', 'Worktree introuvable pour ce projet.');
     } else if (input.worktree.mode === 'primary') {
       worktree = (await this.deps.git.resolveProjectWorktree(project.id)).worktree;
@@ -439,33 +483,47 @@ export class SessionManager {
     const busy = this.liveSessionForWorktree(worktree.id);
     if (busy) throw new RunnerError('CONFLICT', 'Une session tourne déjà dans ce worktree.', { reason: 'WORKTREE_IN_USE', data: { sessionId: busy } });
 
-    await this.deps.db.insert(sessions).values({
-      id,
-      projectId: project.id,
-      worktreeId: worktree.id,
-      title: input.title,
-      status: 'new',
-      backend: this.deps.backend.kind,
-      permissionMode: input.permissionMode,
-      model: input.model ?? null,
-      effort: input.effort ?? null,
-      remoteControl: input.remoteControl,
-      // `--session-id` of the first launch; replaced by the id the CLI reports (SessionStart).
-      claudeSessionId: id,
-      createdByUserId: input.createdByUserId ?? null,
-    });
-    const settings = await readAppSettings(this.deps.db);
+    await this.deps.db
+      .insert(sessions)
+      .values(rowValues(worktree.id))
+      .catch((error: unknown) => {
+        // A row of another server is invisible here (restricted role), but its id stays unique.
+        if (isUniqueViolation(error)) throw new RunnerError('CONFLICT', 'Une session porte déjà cet identifiant.');
+        throw error;
+      });
+    const settings = await this.deps.environment.settings();
     await writeSessionFiles(this.deps.dataDir, {
       sessionId: id,
       claudeSessionId: id,
       launch: { denyRules: input.launch.denyRules ?? [], env: input.launch.env ?? {}, mcpConfig: input.launch.mcpConfig ?? null },
-      permissionWaitSeconds: input.launch.permissionWaitSeconds ?? settings?.permissionWaitSeconds ?? 120,
+      permissionWaitSeconds: input.launch.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: input.launch.maxConcurrentSessions ?? null,
-      memoryLimitMb: input.launch.memoryLimitMb ?? settings?.sessionMemoryLimitMb ?? null,
+      memoryLimitMb: input.launch.memoryLimitMb ?? settings.sessionMemoryLimitMb,
       hookToken: null,
+      ...(input.launch.blockBypassPermissions !== undefined ? { blockBypassPermissions: input.launch.blockBypassPermissions } : {}),
+      gitIdentity: input.launch.gitIdentity ?? null,
     });
     if (input.start) await this.launch(id, { resume: false, queue: [] });
     return this.dto(id);
+  }
+
+  /**
+   * A caller-supplied session id must be free. The probe is the insert itself, rolled back: the
+   * primary key is unique across servers, and a row of another server is invisible to a restricted
+   * role (RLS), so a SELECT would answer differently under the full DSN and under that role. The
+   * same CONFLICT whatever server holds the id, and nothing is created when it is taken.
+   */
+  private async assertSessionIdFree(values: typeof sessions.$inferInsert): Promise<void> {
+    try {
+      await this.deps.db.transaction(async (tx) => {
+        await tx.insert(sessions).values(values);
+        throw PROBE_ROLLBACK;
+      });
+    } catch (error) {
+      if (error === PROBE_ROLLBACK) return;
+      if (isUniqueViolation(error)) throw new RunnerError('CONFLICT', 'Une session porte déjà cet identifiant.');
+      throw error;
+    }
   }
 
   /** « 2 sessions actives sur 4 autorisées » — refuse a new live CLI above the cap. */
@@ -482,10 +540,15 @@ export class SessionManager {
     }
   }
 
-  private async assertModeAllowed(mode: SessionRow['permissionMode']): Promise<void> {
+  /**
+   * « Bloquer le mode sans autorisation »: the effective value comes with the launch options
+   * (computed by the web: instance OR space), blocked when absent; the instance-wide forced block
+   * (`app_settings.force_block_bypass_permissions`) always wins.
+   */
+  private async assertModeAllowed(mode: SessionRow['permissionMode'], blockFromLaunch: boolean | undefined): Promise<void> {
     if (mode !== 'bypassPermissions') return;
-    const settings = await readAppSettings(this.deps.db);
-    if (settings?.blockBypassPermissions ?? true) {
+    const blocked = (blockFromLaunch ?? true) || (await this.deps.environment.forceBlockBypass());
+    if (blocked) {
       throw new RunnerError('FORBIDDEN', 'Le mode sans autorisation est bloqué dans les paramètres.', { reason: 'BYPASS_BLOCKED' });
     }
   }
@@ -540,7 +603,8 @@ export class SessionManager {
   private async refreshLaunch(sessionId: string, launch: Partial<SessionLaunchOptions>): Promise<void> {
     const current = await readLaunchFile(this.deps.dataDir, sessionId);
     if (launch.env) validateSessionEnv(launch.env);
-    const [stored] = await this.deps.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    const blockBypass = launch.blockBypassPermissions ?? current?.blockBypassPermissions;
+    const [stored] = await this.deps.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(this.ownSession(sessionId)).limit(1);
     await writeSessionFiles(this.deps.dataDir, {
       sessionId,
       claudeSessionId: stored?.claudeSessionId ?? current?.claudeSessionId ?? sessionId,
@@ -549,10 +613,13 @@ export class SessionManager {
         env: launch.env ?? current?.env ?? {},
         mcpConfig: launch.mcpConfig === undefined ? undefined : launch.mcpConfig,
       },
-      permissionWaitSeconds: launch.permissionWaitSeconds ?? current?.permissionWaitSeconds ?? 120,
+      permissionWaitSeconds: launch.permissionWaitSeconds ?? current?.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: launch.maxConcurrentSessions ?? current?.maxConcurrentSessions ?? null,
       memoryLimitMb: launch.memoryLimitMb ?? current?.memoryLimitMb ?? null,
       hookToken: null,
+      ...(blockBypass !== undefined ? { blockBypassPermissions: blockBypass } : {}),
+      // The account resuming the session signs Claude's next commits (null clears, absent keeps).
+      gitIdentity: launch.gitIdentity === undefined ? (current?.gitIdentity ?? null) : launch.gitIdentity,
     });
   }
 
@@ -594,27 +661,29 @@ export class SessionManager {
 
   private async spawnCli(sessionId: string, options: { resume: boolean; queue: string[] }): Promise<void> {
     const row = await this.row(sessionId);
+    await this.deps.environment.assertCanStartWork();
     if (!row.worktreeId) throw new RunnerError('CONFLICT', "La session n'a plus de worktree.", { reason: 'WORKTREE_MISSING' });
-    await this.assertModeAllowed(row.permissionMode);
     const { project, worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
     const busy = this.liveSessionForWorktree(worktree.id);
     if (busy && busy !== sessionId) throw new RunnerError('CONFLICT', 'Une session tourne déjà dans ce worktree.', { reason: 'WORKTREE_IN_USE' });
     let launchFile: LaunchFile | null = await readLaunchFile(this.deps.dataDir, sessionId);
     if (!launchFile) {
-      const settings = await readAppSettings(this.deps.db);
+      const settings = await this.deps.environment.settings();
       await writeSessionFiles(this.deps.dataDir, {
         sessionId,
         claudeSessionId: row.claudeSessionId ?? sessionId,
         launch: { denyRules: [], env: {}, mcpConfig: null },
-        permissionWaitSeconds: settings?.permissionWaitSeconds ?? 120,
+        permissionWaitSeconds: DEFAULT_PERMISSION_WAIT_SECONDS,
         maxConcurrentSessions: null,
-        memoryLimitMb: settings?.sessionMemoryLimitMb ?? null,
+        memoryLimitMb: settings.sessionMemoryLimitMb,
         hookToken: null,
       });
       launchFile = await readLaunchFile(this.deps.dataDir, sessionId);
     }
     if (!launchFile) throw new RunnerError('INTERNAL', 'Fichiers de session illisibles.');
+    await this.assertModeAllowed(row.permissionMode, launchFile.blockBypassPermissions);
     const maxSessions = await this.maxSessions(launchFile.maxConcurrentSessions);
+    const memoryLimitMb = tighterLimit(launchFile.memoryLimitMb, (await this.deps.environment.settings()).sessionMemoryLimitMb);
     this.assertCapacityFor(maxSessions);
     const claude = resolveClaudeCommand(this.deps.claudeBin);
     if (!claude) throw new RunnerError('CONFLICT', 'Le CLI Claude Code est introuvable sur le serveur.', { reason: 'CLAUDE_NOT_INSTALLED' });
@@ -632,6 +701,8 @@ export class SessionManager {
       maxConcurrentSessions: launchFile.maxConcurrentSessions,
       memoryLimitMb: launchFile.memoryLimitMb,
       hookToken: isTmux ? token : null,
+      ...(launchFile.blockBypassPermissions !== undefined ? { blockBypassPermissions: launchFile.blockBypassPermissions } : {}),
+      gitIdentity: launchFile.gitIdentity ?? null,
     });
     const mcpFile = launchFile.hasMcp ? `${sessionDir(this.deps.dataDir, sessionId)}/mcp.json` : null;
 
@@ -651,6 +722,9 @@ export class SessionManager {
     ];
     const sessionEnv: Record<string, string> = {
       ...launchFile.env,
+      // Trusted values, after the free-form env (where they are refused anyway).
+      ...gitIdentityEnv(launchFile.gitIdentity),
+      ...claudeEnv(this.deps.claudeConfigDir ?? null),
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
       NUERA_HOOK_URL: this.deps.hookBaseUrl(),
       NUERA_SESSION_ID: sessionId,
@@ -674,7 +748,7 @@ export class SessionManager {
       terminal: null,
       tokenHash,
       permissionWaitSeconds: launchFile.permissionWaitSeconds,
-      memoryLimitMb: launchFile.memoryLimitMb,
+      memoryLimitMb,
       ready: false,
       queue: [...options.queue],
       typing: Promise.resolve(),
@@ -719,7 +793,7 @@ export class SessionManager {
         currentActivity: 'Démarrage de Claude Code…',
         ...(options.resume ? { resumeCount: row.resumeCount + 1 } : {}),
       })
-      .where(eq(sessions.id, sessionId));
+      .where(this.ownSession(sessionId));
     // First item of this run, queued before any hook of the new process can be processed.
     await this.deps.store.queue.run(sessionId, async () => {
       await this.deps.store.append(sessionId, 'status', {
@@ -752,7 +826,7 @@ export class SessionManager {
           // not permitted: keep the default priority
         }
       }
-      await this.deps.db.update(sessions).set({ pid: live.pid }).where(eq(sessions.id, sessionId));
+      await this.deps.db.update(sessions).set({ pid: live.pid }).where(this.ownSession(sessionId));
     } catch (error) {
       this.live.delete(sessionId);
       const message = error instanceof RunnerError ? error.message : "Le CLI Claude Code n'a pas pu démarrer.";
@@ -967,7 +1041,11 @@ export class SessionManager {
 
   async interrupt(sessionId: string): Promise<SessionDto> {
     const live = this.live.get(sessionId);
-    if (!live?.terminal?.alive) throw new RunnerError('CONFLICT', 'Aucun processus Claude Code actif pour cette session.', { reason: 'SESSION_NOT_LIVE' });
+    if (!live?.terminal?.alive) {
+      // Unknown (or another server's) session: « introuvable », like every other session route.
+      await this.row(sessionId);
+      throw new RunnerError('CONFLICT', 'Aucun processus Claude Code actif pour cette session.', { reason: 'SESSION_NOT_LIVE' });
+    }
     live.terminal.write('\u001b');
     this.noteInterrupt(sessionId);
     return this.dto(sessionId);
@@ -1073,8 +1151,8 @@ export class SessionManager {
     permissionId: string,
     input: { behavior: 'allow' | 'deny'; always: boolean; message?: string; decidedByUserId?: string | null },
   ): Promise<PermissionRequestDto> {
-    const [row] = await this.deps.db.select().from(permissionRequests).where(eq(permissionRequests.id, permissionId)).limit(1);
-    if (!row) throw new RunnerError('NOT_FOUND', "Demande d'autorisation introuvable.");
+    // Scoped through its session BEFORE any write: another server's request is « introuvable ».
+    const row = await getPermissionRow(this.deps.db, this.envId, permissionId);
     if (row.status !== 'pending') {
       throw new RunnerError('CONFLICT', 'Cette demande a déjà reçu une réponse.', { reason: 'PERMISSION_NOT_PENDING', data: { status: row.status } });
     }
@@ -1220,7 +1298,7 @@ export class SessionManager {
 
   private async onSessionStart(live: LiveSession, p: Json): Promise<void> {
     const source = str(p.source) ?? 'startup';
-    const transcript = await validateTranscriptPath(p.transcript_path);
+    const transcript = await validateTranscriptPath(p.transcript_path, this.transcriptRoot());
     const claudeId = str(p.session_id);
     const bridge = str(p.nuera_bridge_session_id);
     const patch: Partial<typeof sessions.$inferInsert> = {};
@@ -1576,7 +1654,7 @@ export class SessionManager {
     const [row] = await this.deps.db
       .update(sessions)
       .set({ cliStatus: status as unknown as Record<string, unknown> })
-      .where(eq(sessions.id, live.id))
+      .where(this.ownSession(live.id))
       .returning();
     if (row) await this.publishStatus(row);
   }
@@ -1669,10 +1747,15 @@ export class SessionManager {
    * status, e.g. a crash between the spawn and the status write): a session whose row is known and
    * can still be reached (hook token, worktree free, not archived) is adopted (`waiting_input`);
    * any other one is left running and logged — the runner never kills a tmux session on its own
-   * (the owner may be attached to it over SSH, `tmux -L nuera attach -t <nom>`).
+   * (the owner may be attached to it over SSH, `tmux -L <socket> attach -t <nom>`). A tmux session is
+   * only re-attached or adopted when its NUERA_SESSION_ID is the row's id.
    */
   async reconcile(): Promise<{ reattached: number; interrupted: number; adopted: number; orphans: number }> {
-    const rows = await this.deps.db.select().from(sessions).where(inArray(sessions.status, [...LIVE_SESSION_STATUSES]));
+    const environmentId = this.envId;
+    const rows = await this.deps.db
+      .select()
+      .from(sessions)
+      .where(and(eq(sessions.environmentId, environmentId), inArray(sessions.status, [...LIVE_SESSION_STATUSES])));
     let reattached = 0;
     let interrupted = 0;
     let adopted = 0;
@@ -1702,7 +1785,13 @@ export class SessionManager {
       const attached = new Set([...this.live.values()].map((l) => l.tmuxName).filter(Boolean));
       for (const name of alive) {
         if (!name.startsWith('nuera-') || attached.has(name)) continue;
-        const [known] = await this.deps.db.select().from(sessions).where(eq(sessions.tmuxName, name)).orderBy(desc(sessions.createdAt)).limit(1);
+        // Only a row of THIS server may be adopted (a socket shared by mistake never crosses servers).
+        const [known] = await this.deps.db
+          .select()
+          .from(sessions)
+          .where(and(eq(sessions.tmuxName, name), eq(sessions.environmentId, environmentId)))
+          .orderBy(desc(sessions.createdAt))
+          .limit(1);
         const adoptable =
           known &&
           !tried.has(known.id) &&
@@ -1730,8 +1819,16 @@ export class SessionManager {
     const tmuxName = row.tmuxName;
     let terminal: Terminal | null = null;
     try {
+      // The tmux session must carry this row's id (NUERA_SESSION_ID, set at start-up): a session of
+      // the same name started for another row (another server on a shared socket) is never attached.
+      const owner = await tmux.sessionOwner(tmuxName);
+      if (owner !== row.id) {
+        this.deps.logger.warn({ tmuxName, sessionId: row.id, owner }, "session tmux d'une autre session : jamais rattachée");
+        return false;
+      }
       const { worktree, cwd } = await this.deps.git.resolveWorktree(row.worktreeId);
       const launchFile = await readLaunchFile(this.deps.dataDir, row.id);
+      const serverMemory = (await this.deps.environment.settings()).sessionMemoryLimitMb;
       terminal = tmux.attach(tmuxName, { sessionId: row.id, title: row.title, cwd, worktreeId: worktree.id, cols: 120, rows: 36 });
       const live: LiveSession = {
         id: row.id,
@@ -1744,7 +1841,7 @@ export class SessionManager {
         terminal,
         tokenHash: row.hookTokenHash,
         permissionWaitSeconds: launchFile?.permissionWaitSeconds ?? 120,
-        memoryLimitMb: launchFile?.memoryLimitMb ?? null,
+        memoryLimitMb: tighterLimit(launchFile?.memoryLimitMb, serverMemory),
         ready: true,
         queue: [],
         typing: Promise.resolve(),
@@ -1770,7 +1867,7 @@ export class SessionManager {
       this.watchTerminal(live, terminal);
       live.pid = await tmux.pid(terminal, tmuxName);
       if (row.transcriptPath) {
-        const transcript = await validateTranscriptPath(row.transcriptPath);
+        const transcript = await validateTranscriptPath(row.transcriptPath, this.transcriptRoot());
         if (transcript) {
           live.tailer = this.newTailer(live, transcript, true);
           live.tailer.start();
@@ -1849,4 +1946,26 @@ async function processTree(root: number): Promise<number[]> {
     }
   }
   return out;
+}
+
+/**
+ * Memory ceiling of a session process tree: the launch value (kept in `launch.json`) and the
+ * server's own setting (`environments.session_memory_limit_mb`), the stricter one wins.
+ */
+export function tighterLimit(launch: number | null | undefined, server: number | null | undefined): number | null {
+  if (launch && server) return Math.min(launch, server);
+  return launch || server || null;
+}
+
+/** Thrown inside the probe transaction of a caller-supplied session id, to roll it back. */
+const PROBE_ROLLBACK = new Error('rollback of the session id probe');
+
+/** PostgreSQL unique violation (23505), wrapped or not by Drizzle (« Failed query », cause). */
+function isUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if ((current as { code?: unknown }).code === '23505') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }

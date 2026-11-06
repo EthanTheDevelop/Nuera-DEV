@@ -20,9 +20,13 @@ export interface TranscriptText {
 type Json = Record<string, unknown>;
 const isObj = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** `<CLAUDE_CONFIG_DIR or ~/.claude>/projects` — the only place a transcript may live. */
-export function transcriptsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), '.claude'), 'projects');
+/**
+ * `<config dir>/projects` — the only place a transcript may live. The config dir is the one given to
+ * every `claude` process of the runner (NUERA_CLAUDE_CONFIG_DIR), else the runner's own
+ * CLAUDE_CONFIG_DIR, else `~/.claude`.
+ */
+export function transcriptsRoot(configDir: string | null = null, env: Record<string, string | undefined> = process.env): string {
+  return path.join(configDir?.trim() || env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), '.claude'), 'projects');
 }
 
 /** Validates a transcript path reported by a hook (never a credentials file, never outside projects/). */
