@@ -16,6 +16,7 @@ import { credentialSourceOf, denyRulesOf, staticHeadersOf, type McpServerRow } f
  * to `claude --mcp-config <file> --strict-mcp-config`. No secret inside — authenticated servers use
  * `headersHelper: 'nuera'`, which the runner replaces by its own helper (bin/nuera-mcp-headers.mjs);
  * the helper asks the web (POST /api/internal/mcp-headers) for the headers of the running session.
+ * Everything is read in the space of the project (its registry, its Coolify, its GitHub sources).
  */
 
 export interface SessionMcpConfig {
@@ -71,19 +72,27 @@ async function entryFor(
 }
 
 export async function buildSessionMcpConfig(projectId: string): Promise<SessionMcpConfig> {
-  const [project] = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  const [project] = await db.select({ id: projects.id, spaceId: projects.spaceId }).from(projects).where(eq(projects.id, projectId)).limit(1);
   if (!project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
   const rows = await db
     .select({ server: mcpServers })
     .from(projectMcpServers)
     .innerJoin(mcpServers, eq(mcpServers.id, projectMcpServers.mcpServerId))
-    .where(and(eq(projectMcpServers.projectId, projectId), eq(projectMcpServers.enabled, true), eq(mcpServers.isEnabled, true)));
+    .where(
+      and(
+        eq(projectMcpServers.projectId, projectId),
+        eq(projectMcpServers.enabled, true),
+        eq(mcpServers.isEnabled, true),
+        // Defence in depth: only the registry of the project's space.
+        eq(mcpServers.spaceId, project.spaceId),
+      ),
+    );
 
-  const coolify = await getStoredCoolify();
+  const coolify = await getStoredCoolify(project.spaceId);
   const context = {
     coolifyBaseUrl: coolify?.config.baseUrl ?? null,
     coolifyRefusal: coolify ? coolifyTokenRefusal(coolify.config) : null,
-    githubMode: await getGithubMode(),
+    githubMode: await getGithubMode(project.spaceId),
   };
   const servers: Record<string, ServerEntry> = {};
   const deny = new Set<string>();

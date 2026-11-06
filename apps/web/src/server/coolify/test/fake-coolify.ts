@@ -1,7 +1,9 @@
 /**
  * Fake Coolify v4.6 API (tests only): health, version, team (403 for scoped tokens), projects and
  * environments, applications, deployments, and the built-in MCP server at /mcp whose tools depend
- * on the token's abilities. Records every request (method + path) to prove the client is GET-only.
+ * on the token's abilities. Records every request (method + path + bearer) to prove the client is
+ * GET-only and which token each call carried. The MCP side is keyed by bearer: each valid token
+ * lists the tools of its own abilities, an unknown or revoked one gets 401 (two spaces, two tokens).
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,7 +21,7 @@ export interface FakeCoolify {
   tokens: FakeCoolifyToken[];
   environments: Array<{ project: string; uuid: string; envs: string[] }>;
   applications: Array<Record<string, unknown>>;
-  requests: Array<{ method: string; path: string }>;
+  requests: Array<{ method: string; path: string; bearer: string | null }>;
   down: boolean;
   mcp: FakeMcpState;
   close(): Promise<void>;
@@ -36,10 +38,21 @@ export function toolsFor(abilities: string[]): string[] {
 }
 
 export async function startFakeCoolify(): Promise<FakeCoolify> {
-  const mcp = newMcpState({ expectedAuthorization: null, tools: READ_TOOLS, serverName: 'Coolify' });
+  const tokens: FakeCoolifyToken[] = [];
+  const mcp = newMcpState({
+    expectedAuthorization: null,
+    tools: READ_TOOLS,
+    serverName: 'Coolify',
+    // MCP tools follow the abilities of the token presenting itself; unknown or revoked → 401.
+    authorize: (authorization) => {
+      const bearer = /^Bearer (.+)$/.exec(authorization ?? '')?.[1];
+      const token = state.tokens.find((item) => item.value === bearer && !item.revoked);
+      return token ? toolsFor(token.abilities) : null;
+    },
+  });
   const mcpHandler = createMcpHandler(mcp);
   const state = {
-    tokens: [] as FakeCoolifyToken[],
+    tokens,
     environments: [] as FakeCoolify['environments'],
     applications: [] as FakeCoolify['applications'],
     requests: [] as FakeCoolify['requests'],
@@ -55,17 +68,14 @@ export async function startFakeCoolify(): Promise<FakeCoolify> {
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       const url = new URL(req.url ?? '/', 'http://localhost');
-      state.requests.push({ method: req.method ?? 'GET', path: url.pathname });
+      const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
+      state.requests.push({ method: req.method ?? 'GET', path: url.pathname, bearer: bearer ?? null });
       if (state.down) {
         res.destroy();
         return;
       }
-      const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1];
       const token = state.tokens.find((item) => item.value === bearer && !item.revoked);
       if (url.pathname === '/mcp') {
-        // MCP tools follow the abilities of the token presenting itself.
-        mcp.expectedAuthorization = token ? `Bearer ${token.value}` : 'Bearer <valid>';
-        mcp.tools = token ? toolsFor(token.abilities) : [];
         void mcpHandler(req, res, Buffer.concat(chunks).toString('utf8'));
         return;
       }

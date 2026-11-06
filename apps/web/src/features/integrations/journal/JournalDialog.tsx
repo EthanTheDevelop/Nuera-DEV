@@ -11,13 +11,24 @@ export function isPageJournal(value: string | null | undefined): value is PageJo
 }
 
 /**
- * `/integrations?journal=github|coolify` — the journal of the GitHub App or of the Coolify token
- * (« Voir le journal » of the diagnostic banners). MCP servers show theirs in their drawer
- * (`/integrations/mcp/<nom>?journal=1`).
+ * `/integrations?journal=github|coolify` — the journal of the GitHub App (`&source=<id>`: of that
+ * GitHub source, among several) or of the Coolify token (« Voir le journal » of the diagnostic
+ * banners). MCP servers show theirs in their drawer (`/integrations/mcp/<nom>?journal=1`).
  */
-export function JournalDialog({ journal, overview, onClose }: { journal: PageJournal | null; overview: IntegrationsOverview; onClose: () => void }) {
-  const source = journal === 'github' ? overview.github : journal === 'coolify' ? overview.coolify : null;
-  const label = journal === 'github' ? 'GitHub' : 'Coolify';
+export function JournalDialog({
+  journal,
+  sourceId = null,
+  overview,
+  onClose,
+}: {
+  journal: PageJournal | null;
+  sourceId?: string | null;
+  overview: IntegrationsOverview;
+  onClose: () => void;
+}) {
+  const githubSource = sourceId ? overview.github.sources.find((item) => item.id === sourceId) : undefined;
+  const source = journal === 'github' ? (githubSource ?? overview.github) : journal === 'coolify' ? overview.coolify : null;
+  const label = journal === 'github' ? (githubSource && overview.github.sources.length > 1 ? `GitHub · ${githubSource.label}` : 'GitHub') : 'Coolify';
   return (
     <Dialog open={journal !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
       {journal ? (

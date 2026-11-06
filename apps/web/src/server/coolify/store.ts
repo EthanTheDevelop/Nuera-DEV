@@ -1,17 +1,19 @@
 import 'server-only';
 import { integrations } from '@nuera/db/schema';
 import type { IntegrationStatus } from '@nuera/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import type { CheckHistoryEntry, IntegrationCheck } from '@/server/integrations/model';
-import { decryptJson, encryptJson } from '@/server/security/crypto';
+import { decryptJson, encryptJson, needsReencryption, reencryptSecret, SecretScopes } from '@/server/security/crypto';
 
 /**
- * Coolify credentials: one `integrations` row (kind = 'coolify').
+ * Coolify credentials of a space: one `integrations` row per space (kind = 'coolify', unique
+ * `(space_id, kind)`). Every read and write names the space.
  * config = base URL, token fingerprint (« jeton n°67 », the non-secret id before `|`), inferred scope
- * and abilities, declared expiry, last check. secrets_encrypted = { token } (AES-256-GCM).
+ * and abilities, declared expiry, last check. secrets_encrypted = { token } (AES-256-GCM, bound to
+ * the space: `integrations` / `<spaceId>:coolify`; a legacy value is read, then rewritten bound).
  */
 
 export const coolifyConfigSchema = z.object({
@@ -42,22 +44,30 @@ const coolifySecretsSchema = z.object({ token: z.string().min(1) });
 
 export type CoolifyRow = typeof integrations.$inferSelect;
 
-export async function readCoolifyRow(): Promise<CoolifyRow | null> {
-  const [row] = await db.select().from(integrations).where(eq(integrations.kind, 'coolify')).limit(1);
+const scopeOf = (spaceId: string) => SecretScopes.integration(spaceId, 'coolify');
+const isUuid = (value: string) => z.uuid().safeParse(value).success;
+
+export async function readCoolifyRow(spaceId: string): Promise<CoolifyRow | null> {
+  if (!isUuid(spaceId)) return null;
+  const [row] = await db
+    .select()
+    .from(integrations)
+    .where(and(eq(integrations.spaceId, spaceId), eq(integrations.kind, 'coolify')))
+    .limit(1);
   return row ?? null;
 }
 
-export async function getStoredCoolify(): Promise<{ row: CoolifyRow; config: CoolifyConfig } | null> {
-  const row = await readCoolifyRow();
+export async function getStoredCoolify(spaceId: string): Promise<{ row: CoolifyRow; config: CoolifyConfig } | null> {
+  const row = await readCoolifyRow(spaceId);
   if (!row) return null;
   const parsed = coolifyConfigSchema.safeParse(row.config);
   return parsed.success ? { row, config: parsed.data } : null;
 }
 
-export function readCoolifyToken(row: CoolifyRow): string {
+export function readCoolifyToken(row: Pick<CoolifyRow, 'spaceId' | 'secretsEncrypted'>): string {
   if (!row.secretsEncrypted) throw new AppError('CONFLICT', "Aucun jeton Coolify n'est enregistré.");
   try {
-    return coolifySecretsSchema.parse(decryptJson<unknown>(row.secretsEncrypted)).token;
+    return coolifySecretsSchema.parse(decryptJson<unknown>(row.secretsEncrypted, scopeOf(row.spaceId))).token;
   } catch {
     throw new AppError('INTERNAL', 'Le jeton Coolify ne peut pas être déchiffré.', {
       detail: 'Vérifiez APP_ENCRYPTION_KEY, puis reconnectez Coolify si besoin.',
@@ -65,8 +75,9 @@ export function readCoolifyToken(row: CoolifyRow): string {
   }
 }
 
-/** Inserts or replaces the Coolify credentials (reconnect). */
+/** Inserts or replaces the Coolify credentials of the space (reconnect). */
 export async function upsertCoolify(input: {
+  spaceId: string;
   config: CoolifyConfig;
   token: string;
   status: IntegrationStatus;
@@ -74,11 +85,12 @@ export async function upsertCoolify(input: {
 }): Promise<CoolifyRow> {
   const config = coolifyConfigSchema.parse(input.config) as unknown as Record<string, unknown>;
   const values = {
+    spaceId: input.spaceId,
     kind: 'coolify' as const,
     status: input.status,
     label: 'Coolify',
     config,
-    secretsEncrypted: encryptJson({ token: input.token }),
+    secretsEncrypted: encryptJson({ token: input.token }, scopeOf(input.spaceId)),
     lastCheckedAt: input.checkedAt,
     lastSuccessAt: input.checkedAt,
     lastError: null,
@@ -88,7 +100,7 @@ export async function upsertCoolify(input: {
     .insert(integrations)
     .values(values)
     .onConflictDoUpdate({
-      target: integrations.kind,
+      target: [integrations.spaceId, integrations.kind],
       set: {
         status: values.status,
         config: values.config,
@@ -105,22 +117,35 @@ export async function upsertCoolify(input: {
 }
 
 export async function updateCoolify(
+  spaceId: string,
   mutate: (config: CoolifyConfig) => CoolifyConfig,
   patch: { status?: IntegrationStatus; lastCheckedAt?: Date; lastSuccessAt?: Date; lastError?: string | null } = {},
 ): Promise<{ row: CoolifyRow; config: CoolifyConfig }> {
-  const current = await getStoredCoolify();
+  const current = await getStoredCoolify(spaceId);
   if (!current) throw new AppError('NOT_FOUND', "Coolify n'est pas connecté.");
   const config = coolifyConfigSchema.parse(mutate(structuredClone(current.config)));
+  let secretsEncrypted = current.row.secretsEncrypted;
+  if (secretsEncrypted && needsReencryption(secretsEncrypted)) {
+    try {
+      secretsEncrypted = reencryptSecret(secretsEncrypted, scopeOf(spaceId));
+    } catch {
+      // Unreadable: left as is (the check reports it).
+    }
+  }
   const [row] = await db
     .update(integrations)
-    .set({ config: config as unknown as Record<string, unknown>, ...patch })
-    .where(eq(integrations.id, current.row.id))
+    .set({ config: config as unknown as Record<string, unknown>, secretsEncrypted, ...patch })
+    .where(and(eq(integrations.id, current.row.id), eq(integrations.spaceId, spaceId)))
     .returning();
   if (!row) throw new AppError('NOT_FOUND', "Coolify n'est pas connecté.");
   return { row, config };
 }
 
-export async function deleteCoolify(): Promise<boolean> {
-  const rows = await db.delete(integrations).where(eq(integrations.kind, 'coolify')).returning({ id: integrations.id });
+export async function deleteCoolify(spaceId: string): Promise<boolean> {
+  if (!isUuid(spaceId)) return false;
+  const rows = await db
+    .delete(integrations)
+    .where(and(eq(integrations.spaceId, spaceId), eq(integrations.kind, 'coolify')))
+    .returning({ id: integrations.id });
   return rows.length > 0;
 }

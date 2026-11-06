@@ -3,7 +3,7 @@
  * cookie, Origin checked by `apiRoute` on mutations). Errors carry the French message of the API
  * body plus `detail`, `untouched` and `raw` for the T4 panels. Nothing secret ever comes back.
  */
-import type { AccessibleReposResult, CoolifyReconnectResult, GithubStatus, McpServerView } from './types';
+import type { AccessibleReposResult, CoolifyReconnectResult, GithubOverview, GithubSourceStatus, McpServerView } from './types';
 
 export class IntegrationsApiError extends Error {
   readonly status: number;
@@ -89,10 +89,20 @@ export interface ReconnectCoolifyBody {
 }
 
 export const integrationsApi = {
-  /** « Vérifier la connexion » (D07 / M07). */
-  checkGithub: () => integrationsFetch<GithubStatus>('/api/integrations/github/check', { method: 'POST' }),
-  /** « Voir les N dépôts ». */
-  githubRepos: (signal?: AbortSignal) => integrationsFetch<AccessibleReposResult>('/api/integrations/github/repos', signal ? { signal } : {}),
+  /** « Vérifier la connexion » (D07 / M07) of every GitHub source of the space. */
+  checkGithub: () => integrationsFetch<GithubOverview>('/api/integrations/github/check', { method: 'POST' }),
+  /** « Vérifier la connexion » of one GitHub source. */
+  checkGithubSource: (sourceId: string) =>
+    integrationsFetch<GithubSourceStatus>(`/api/integrations/github/sources/${encodeURIComponent(sourceId)}/check`, { method: 'POST' }),
+  /** « Déconnecter » one GitHub source (refused while an active project uses it). */
+  disconnectGithubSource: (sourceId: string) =>
+    integrationsFetch<{ deleted: boolean; appHtmlUrl: string | null }>(`/api/integrations/github/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' }),
+  /** « Voir les N dépôts » (of one source when `sourceId` is given). */
+  githubRepos: (signal?: AbortSignal, sourceId?: string | null) =>
+    integrationsFetch<AccessibleReposResult>(
+      `/api/integrations/github/repos${sourceId ? `?source=${encodeURIComponent(sourceId)}` : ''}`,
+      signal ? { signal } : {},
+    ),
   getMcpServer: (name: string, signal?: AbortSignal) => integrationsFetch<McpServerView>(server(name), signal ? { signal } : {}),
   /** « Tester la connexion » (D1). */
   checkMcpServer: (name: string) => integrationsFetch<McpServerView>(`${server(name)}/check`, { method: 'POST' }),

@@ -16,6 +16,20 @@ const validDate = (value: DateInput | null | undefined): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+/** Name of the space's server in the copy (« VPS-3 »), or « votre serveur » while none is assigned. */
+export function serverLabel(environment: { name: string } | null | undefined): string {
+  return environment?.name || 'votre serveur';
+}
+
+/**
+ * Where secrets are encrypted, in the copy: « chiffré sur VPS-3 » for the default server (Figma),
+ * « chiffré par Nuera Dev » elsewhere (the secrets live in the central database, not on that server).
+ */
+export function encryptedPlace(environment: { name: string; isDefault: boolean } | null | undefined, several = false): string {
+  const word = several ? 'chiffrés' : 'chiffré';
+  return environment?.isDefault ? `${word} sur ${environment.name}` : `${word} par Nuera Dev`;
+}
+
 export function iconOf(name: string | null | undefined, fallback: IconName = 'plug'): IconName {
   return name && (ICON_NAMES as readonly string[]).includes(name) ? (name as IconName) : fallback;
 }
@@ -97,6 +111,26 @@ export interface GithubTileModel {
   repoCount: number | null;
   /** Expiry line next to the actions. */
   note: string | null;
+}
+
+/**
+ * Title of a GitHub tile: the Figma title when the space has a single source (or none), « GitHub ·
+ * <libellé> » for each source among several.
+ */
+export function githubTileTitle(label: string | null | undefined, several: boolean): string {
+  return several && label ? `GitHub · ${label}` : 'GitHub · import et synchronisation des dépôts';
+}
+
+/** M07 card heading: « GitHub », or « GitHub · <libellé> » among several sources. */
+export function githubPhoneTitle(label: string | null | undefined, several: boolean): string {
+  return several && label ? `GitHub · ${label}` : 'GitHub';
+}
+
+/** « 2 projets actifs l'utilisent : Nuera OS et Roux Conseil. » — why a source cannot be disconnected. */
+export function sourceInUseSentence(projects: ReadonlyArray<{ name: string }>): string | null {
+  if (projects.length === 0) return null;
+  const names = frenchList(projects.map((project) => project.name));
+  return projects.length > 1 ? `${projects.length} projets actifs l'utilisent : ${names}.` : `Le projet actif ${names} l'utilise.`;
 }
 
 export function githubTile(github: GithubStatus, now: DateInput = new Date()): GithubTileModel {
@@ -208,6 +242,9 @@ export const GITHUB_OUTCOMES = [
   'installation_unknown',
   'installation_failed',
   'not_connected',
+  'source_limit',
+  'wrong_account',
+  'choose_source',
 ] as const;
 export type GithubOutcome = (typeof GITHUB_OUTCOMES)[number];
 
@@ -290,6 +327,30 @@ export function githubNotice(outcome: GithubOutcome, account?: string | null): G
         title: "Aucune application GitHub n'est enregistrée",
         body: "Connectez GitHub avant d'installer l'application sur un compte.",
         action: 'connect',
+      };
+    case 'source_limit':
+      return {
+        kind: 'banner',
+        tone: 'warn',
+        title: 'Nombre maximal de sources GitHub atteint',
+        body: "Votre espace a déjà 10 sources GitHub : déconnectez-en une avant d'en ajouter une autre. Aucune source n'a été ajoutée.",
+        action: null,
+      };
+    case 'wrong_account':
+      return {
+        kind: 'banner',
+        tone: 'danger',
+        title: 'Retour de GitHub destiné à un autre compte',
+        body: "Cette demande a été lancée par un autre compte Nuera Dev de ce navigateur. Rien n'a été enregistré : recommencez depuis ce compte.",
+        action: 'connect',
+      };
+    case 'choose_source':
+      return {
+        kind: 'banner',
+        tone: 'info',
+        title: 'Choisissez la source GitHub',
+        body: "Plusieurs sources GitHub sont connectées : utilisez « Installer sur GitHub » ou « Gérer l'accès » sur la source concernée.",
+        action: null,
       };
   }
 }
@@ -415,7 +476,7 @@ export function connectionValue(server: Pick<McpServerView, 'credential' | 'tran
     case 'claude_oauth':
       return 'autorisation OAuth dans Claude Code';
     case 'github_installation': {
-      const logins = context.github.accounts.filter((account) => !account.suspended).map((account) => account.login);
+      const logins = [...new Set(context.github.accounts.filter((account) => !account.suspended).map((account) => account.login))];
       return logins.length ? `application GitHub · ${logins.join(', ')}` : "application GitHub non installée";
     }
     case 'coolify_token': {
@@ -534,12 +595,20 @@ export function parseArgs(value: string): string[] {
 // ---------------------------------------------------------------------------------------------
 
 /** Service label, status and icon behind a diagnostic banner. */
-export function diagnosticSubject(banner: Pick<DiagnosticBanner, 'target'>, overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>): {
+export function diagnosticSubject(
+  banner: Pick<DiagnosticBanner, 'target'> & Partial<Pick<DiagnosticBanner, 'sourceId'>>,
+  overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>,
+): {
   label: string;
   status: string;
   icon: IconName;
 } {
   if (banner.target === 'github') return { label: 'GitHub', status: overview.github.status, icon: 'github' };
+  if (banner.target.startsWith('github:')) {
+    const id = banner.sourceId ?? banner.target.slice('github:'.length);
+    const source = (overview.github.sources ?? []).find((item) => item.id === id);
+    return { label: source ? `GitHub · ${source.label}` : 'GitHub', status: source?.status ?? overview.github.status, icon: 'github' };
+  }
   if (banner.target === 'coolify') return { label: 'Coolify', status: overview.coolify.status, icon: 'rocket' };
   const name = banner.target.replace(/^mcp:/, '');
   const server = overview.mcp.servers.find((item) => item.name === name);
@@ -547,12 +616,12 @@ export function diagnosticSubject(banner: Pick<DiagnosticBanner, 'target'>, over
 }
 
 /** T7 « après » banners use the service icon; the D07 diagnostic keeps the alert triangle. */
-export function diagnosticIcon(banner: Pick<DiagnosticBanner, 'title' | 'tone' | 'target'>, overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>): IconName {
+export function diagnosticIcon(banner: Pick<DiagnosticBanner, 'title' | 'tone' | 'target'> & Partial<Pick<DiagnosticBanner, 'sourceId'>>, overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>): IconName {
   return banner.tone === 'danger' && banner.title.startsWith("L'accès ") ? diagnosticSubject(banner, overview).icon : 'alert';
 }
 
 /** M07 « Coolify : autorisation expirée ». */
-export function phoneAlertTitle(banner: Pick<DiagnosticBanner, 'target' | 'tone' | 'title'>, overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>): string {
+export function phoneAlertTitle(banner: Pick<DiagnosticBanner, 'target' | 'tone' | 'title'> & Partial<Pick<DiagnosticBanner, 'sourceId'>>, overview: Pick<IntegrationsOverview, 'github' | 'coolify' | 'mcp'>): string {
   const subject = diagnosticSubject(banner, overview);
   if (banner.tone === 'warn') return `${subject.label} : autorisation bientôt expirée`;
   if (subject.status === 'expired') return `${subject.label} : autorisation expirée`;

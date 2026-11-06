@@ -1,6 +1,7 @@
 import 'server-only';
 import { pickDiagnosticHeaders, type CheckStep } from '@/server/integrations/model';
 import { providerMessageOf, sanitizeText } from '@/server/integrations/redact';
+import { guardedFetch, SsrfRefusedError } from '@/server/security/ssrf';
 
 /**
  * Non-mutating health probe of a remote MCP server over Streamable HTTP (research §5.6):
@@ -8,6 +9,8 @@ import { providerMessageOf, sanitizeText } from '@/server/integrations/redact';
  * Only `initialize` and `tools/list` are sent: never a tool call. Short timeout (10 s).
  * A server that answers `initialize` with "unsupported protocol version" and lists 2026-07-28 is
  * retried with the modern `server/discover` handshake (dual-era client).
+ * The address is chosen by a user: every request goes through the SSRF guard (an internal address
+ * ends as `forbidden` with the refusal message), pinned to the checked address, redirects returned.
  */
 
 export const PROBE_CLIENT_INFO = { name: 'nuera-dev-healthcheck', version: '1.0.0' } as const;
@@ -42,6 +45,7 @@ export interface McpProbeOptions {
   /** Credential + static headers (never logged: steps only keep allow-listed response headers). */
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /** Default: the SSRF-guarded fetch. */
   fetchImpl?: typeof fetch;
   /** Max tools/list pages followed. */
   maxPages?: number;
@@ -119,7 +123,7 @@ async function readEventStream(response: Response, id: number | string | null): 
 }
 
 export async function probeMcpServer(options: McpProbeOptions): Promise<McpProbeResult> {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? guardedFetch;
   const deadline = AbortSignal.timeout(options.timeoutMs ?? 10_000);
   const started = performance.now();
   const steps: CheckStep[] = [];
@@ -143,6 +147,10 @@ export async function probeMcpServer(options: McpProbeOptions): Promise<McpProbe
     try {
       response = await fetchImpl(options.url, { method: 'POST', headers, body: JSON.stringify(body), signal: deadline, redirect: 'manual' });
     } catch (error) {
+      if (error instanceof SsrfRefusedError) {
+        steps.push({ name, ok: false, ms: Math.round(performance.now() - t0), providerMessage: error.message });
+        throw new ProbeStop('forbidden', null, error.message);
+      }
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
       steps.push({ name, ok: false, ms: Math.round(performance.now() - t0), providerMessage: timedOut ? 'délai dépassé' : 'connexion impossible' });
       throw new ProbeStop(timedOut ? 'timeout' : 'network', null, timedOut ? 'Délai dépassé.' : 'Serveur injoignable.');
@@ -310,7 +318,7 @@ export async function probeMcpServer(options: McpProbeOptions): Promise<McpProbe
  * `WWW-Authenticate: Bearer resource_metadata=…` proves the endpoint is up and requires OAuth.
  */
 export async function probeOAuthEndpoint(url: string, options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {}): Promise<CheckStep & { reachable: boolean }> {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? guardedFetch;
   const t0 = performance.now();
   try {
     const response = await fetchImpl(url, {
@@ -342,7 +350,7 @@ export async function probeOAuthEndpoint(url: string, options: { timeoutMs?: num
       name: 'POST initialize (sans authentification)',
       ok: false,
       ms: Math.round(performance.now() - t0),
-      providerMessage: timedOut ? 'délai dépassé' : 'connexion impossible',
+      providerMessage: error instanceof SsrfRefusedError ? error.message : timedOut ? 'délai dépassé' : 'connexion impossible',
       reachable: false,
     };
   }

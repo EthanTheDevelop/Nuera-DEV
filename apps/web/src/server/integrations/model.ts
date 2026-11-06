@@ -43,7 +43,7 @@ export interface CheckResult<TStatus extends string = string> {
 
 export interface IntegrationCheck<TStatus extends string = string> {
   id: string;
-  /** 'github' | 'coolify' | `mcp:${name}` */
+  /** `github:<sourceId>` (historically 'github') | 'github:fallback' | 'coolify' | `mcp:${name}` */
   target: string;
   trigger: CheckTrigger;
   startedAt: string;

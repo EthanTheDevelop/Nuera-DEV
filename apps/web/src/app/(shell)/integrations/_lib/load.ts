@@ -1,16 +1,17 @@
 import 'server-only';
 import { getCoolifySettings } from '@/server/coolify';
 import { toAppError } from '@/server/errors';
-import { getGithubStatus } from '@/server/github';
-import { getIntegrationsOverview } from '@/server/integrations';
+import { getGithubOverview } from '@/server/github';
+import { getIntegrationsOverview, presetServerOf } from '@/server/integrations';
 import { CHECK_INTERVAL_MINUTES } from '@/server/integrations/model';
 import { getMcpServer } from '@/server/mcp';
+import type { RequestContext } from '@/server/tenancy/context';
 import type { IntegrationsOverview, Loaded, McpDetailContext, McpServerView } from '@/features/integrations/types';
 
 /**
- * Server loaders of the Intégrations routes (D07 / M07 page, D1 / D2 drawer and full page). They only
- * compose the existing server modules (database reads, no network call, no secret) and turn a failure
- * into the T4 description shown inline by the page.
+ * Server loaders of the Intégrations routes (D07 / M07 page, D1 / D2 drawer and full page), for the
+ * space of the request context. They only compose the existing server modules (database reads, no
+ * network call, no secret) and turn a failure into the T4 description shown inline by the page.
  */
 
 function failure(error: unknown) {
@@ -27,9 +28,9 @@ function failure(error: unknown) {
   };
 }
 
-export async function loadOverview(): Promise<Loaded<IntegrationsOverview>> {
+export async function loadOverview(ctx: Pick<RequestContext, 'space' | 'environment'>): Promise<Loaded<IntegrationsOverview>> {
   try {
-    return { ok: true, data: await getIntegrationsOverview() };
+    return { ok: true, data: await getIntegrationsOverview(ctx) };
   } catch (error) {
     return failure(error);
   }
@@ -37,10 +38,10 @@ export async function loadOverview(): Promise<Loaded<IntegrationsOverview>> {
 
 export type McpDetailLoad = Loaded<{ server: McpServerView; context: McpDetailContext }> | { ok: 'not_found' };
 
-export async function loadMcpDetail(serverId: string): Promise<McpDetailLoad> {
+export async function loadMcpDetail(ctx: Pick<RequestContext, 'space' | 'environment'>, serverId: string): Promise<McpDetailLoad> {
   try {
-    const [coolify, github] = await Promise.all([getCoolifySettings(), getGithubStatus()]);
-    const server = await getMcpServer(serverId, { coolifyBaseUrl: coolify.baseUrl });
+    const [coolify, github] = await Promise.all([getCoolifySettings(ctx.space.id), getGithubOverview(ctx.space.id)]);
+    const server = await getMcpServer({ spaceId: ctx.space.id, idOrName: serverId }, { coolifyBaseUrl: coolify.baseUrl, server: presetServerOf(ctx) });
     return {
       ok: true,
       data: {
@@ -52,7 +53,8 @@ export async function loadMcpDetail(serverId: string): Promise<McpDetailLoad> {
             status: github.status,
             accounts: github.accounts,
             manageAccessUrl: github.manageAccessUrl,
-            installUrl: github.installUrl,
+            // Several sources: « Réautoriser » leads to Intégrations, where each source has its own action.
+            installUrl: github.installUrl ?? (github.sources.length > 1 ? '/integrations' : null),
             action: github.action,
             app: github.app,
           },

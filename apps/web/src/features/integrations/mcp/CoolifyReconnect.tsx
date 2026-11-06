@@ -15,7 +15,8 @@ export interface CoolifyReconnectState {
 export interface CoolifyReconnectProps {
   formId: string;
   coolify: CoolifySettingsView;
-  serverName: string;
+  /** « chiffré sur VPS-3 » (default server) or « chiffré par Nuera Dev ». */
+  secretPlace: string;
   onStateChange: (state: CoolifyReconnectState) => void;
   onReconnected: (result: CoolifyReconnectResult) => void;
 }
@@ -26,7 +27,7 @@ export interface CoolifyReconnectProps {
  * Coolify (the API does not return it), then `PUT /api/integrations/coolify` — validated with GET
  * calls only. A refusal keeps the previous token (`untouched`) and puts the field in its Erreur state.
  */
-export function CoolifyReconnect({ formId, coolify, serverName, onStateChange, onReconnected }: CoolifyReconnectProps) {
+export function CoolifyReconnect({ formId, coolify, secretPlace, onStateChange, onReconnected }: CoolifyReconnectProps) {
   const [token, setToken] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [expiry, setExpiry] = useState<string>(DEFAULT_COOLIFY_EXPIRY);
@@ -71,7 +72,7 @@ export function CoolifyReconnect({ formId, coolify, serverName, onStateChange, o
           Reconnecter
         </SectionLabel>
         <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">
-          {`Créez un nouveau jeton dans Coolify, limité à l'équipe Développement, puis collez-le ici. Il est chiffré sur ${serverName} et n'est plus jamais affiché.`}
+          {`Créez un nouveau jeton dans Coolify, limité à l'équipe Développement, puis collez-le ici. Il est ${secretPlace} et n'est plus jamais affiché.`}
         </p>
         {needsUrl ? (
           <Field label="Adresse de Coolify">

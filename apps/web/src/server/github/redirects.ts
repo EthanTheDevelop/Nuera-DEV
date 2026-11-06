@@ -18,7 +18,13 @@ export type GithubFlowOutcome =
   | 'conversion_failed'
   | 'installation_unknown'
   | 'installation_failed'
-  | 'not_connected';
+  | 'not_connected'
+  /** The space already has the maximum of GitHub sources. */
+  | 'source_limit'
+  /** The return of GitHub was started by another account (state of another user). */
+  | 'wrong_account'
+  /** « Installer sur GitHub » without `source` while the space has several sources. */
+  | 'choose_source';
 
 export function redirectResponse(location: string, cookies: string[] = []): Response {
   const headers = new Headers({ location, 'cache-control': 'no-store' });
@@ -26,7 +32,7 @@ export function redirectResponse(location: string, cookies: string[] = []): Resp
   return new Response(null, { status: 303, headers });
 }
 
-/** Absolute URL of the Intégrations page with the outcome code. */
+/** Absolute URL of the Intégrations page with the outcome code (`source`: the source concerned). */
 export function integrationsUrl(outcome: GithubFlowOutcome, extra: Record<string, string> = {}): string {
   const url = new URL('/integrations', `${appUrl()}/`);
   url.searchParams.set('github', outcome);
@@ -38,7 +44,8 @@ export function integrationsUrl(outcome: GithubFlowOutcome, extra: Record<string
 export function outcomeOfError(error: unknown, fallback: GithubFlowOutcome): GithubFlowOutcome {
   if (error instanceof AppError) {
     if (error.code === 'FORBIDDEN') return error.message.includes('expiré') ? 'state_expired' : 'state_invalid';
-    if (error.code === 'CONFLICT') return error.message.includes('déjà') ? 'already_connected' : fallback;
+    if (error.code === 'CONFLICT' && error.reason === 'SOURCE_LIMIT') return 'source_limit';
+    if (error.code === 'CONFLICT') return error.message.includes('déjà enregistrée') ? 'already_connected' : fallback;
   }
   return fallback;
 }

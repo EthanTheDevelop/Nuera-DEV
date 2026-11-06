@@ -1,14 +1,18 @@
 import 'server-only';
 import { z } from 'zod';
 import { AppError } from '@/server/errors';
-import { getOctokitForRepo } from './access';
+import { getOctokitForProject } from './access';
 import { githubErrorMessage, githubErrorStatus, toGithubAppError, type Octokit } from './client';
 import { parseFullName } from './config';
-import type { ChecksState, CreatePullRequestInput, PullRequestDetail, PullRequestInfo, ReviewsState } from './types';
+import type { ChecksState, CreatePullRequestInput, GithubProjectRef, PullRequestDetail, PullRequestInfo, ReviewsState } from './types';
 
 /**
- * Pull requests (W5 « Préparer le commit », research §2.8–2.9). Each call mints a token restricted
- * to the repository and to the permissions of the operation.
+ * Pull requests (W5 « Préparer le commit », research §2.8–2.9) of a PROJECT: each call mints a token
+ * of the project's own GitHub source, restricted to its repository and to the permissions of the
+ * operation.
+ *
+ *   createPullRequest(project, { title, head, base })   // project = { id, spaceId, githubSourceId, githubFullName }
+ *   getPullRequest(project, 57)
  */
 
 const branchName = z
@@ -19,7 +23,8 @@ const branchName = z
   .refine((value) => !/[\s~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.lock$|^-/.test(value), 'nom de branche invalide');
 
 export const createPullRequestInputSchema = z.object({
-  fullName: z.string().trim().min(3),
+  /** Ignored when given: the repository is the project's. */
+  fullName: z.string().trim().min(3).optional(),
   title: z.string().trim().min(1, 'titre requis').max(256, '256 caractères au maximum'),
   head: branchName,
   base: branchName,
@@ -59,13 +64,13 @@ function toInfo(pull: z.infer<typeof pullSchema>): PullRequestInfo {
   };
 }
 
-export async function createPullRequest(input: CreatePullRequestInput): Promise<PullRequestInfo> {
+export async function createPullRequest(project: GithubProjectRef, input: Omit<CreatePullRequestInput, 'fullName'> & { fullName?: string }): Promise<PullRequestInfo> {
   const parsed = createPullRequestInputSchema.parse(input);
-  const { owner, repo } = parseFullName(parsed.fullName);
+  const { owner, repo } = parseFullName(project.githubFullName);
   if (parsed.head === parsed.base) {
     throw new AppError('VALIDATION', 'La branche de la pull request doit différer de la branche cible.');
   }
-  const octokit = await getOctokitForRepo(parsed.fullName, { metadata: 'read', pull_requests: 'write' });
+  const octokit = await getOctokitForProject(project, { metadata: 'read', pull_requests: 'write' });
   try {
     const { data } = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
       owner,
@@ -192,10 +197,10 @@ async function readReviews(octokit: Octokit, owner: string, repo: string, pullNu
 }
 
 /** Pull request with its combined CI state (check runs + commit statuses) and review state. */
-export async function getPullRequest(fullName: string, pullNumber: number): Promise<PullRequestDetail> {
-  const { owner, repo } = parseFullName(fullName);
+export async function getPullRequest(project: GithubProjectRef, pullNumber: number): Promise<PullRequestDetail> {
+  const { owner, repo } = parseFullName(project.githubFullName);
   if (!Number.isInteger(pullNumber) || pullNumber <= 0) throw new AppError('VALIDATION', 'Numéro de pull request invalide.');
-  const octokit = await getOctokitForRepo(fullName, {
+  const octokit = await getOctokitForProject(project, {
     metadata: 'read',
     contents: 'read',
     pull_requests: 'read',

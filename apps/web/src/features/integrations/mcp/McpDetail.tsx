@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { mcpStatusBadge } from '@/components/dev';
 import { Icon, type IconName } from '@/components/icons';
-import { useOptionalShellData } from '@/components/shell';
+import { useShellEnvironment } from '@/components/shell';
 import { mcpLoginTerminal, useTerminalLauncher } from '@/components/terminal';
 import {
   Badge,
@@ -33,10 +33,12 @@ import {
   connectionValue,
   drawerMode,
   effectiveMcpStatus,
+  encryptedPlace,
   iconOf,
   lastCallValue,
   lastTestLine,
   reconnectBanner,
+  serverLabel,
   verificationValue,
   type ReconnectVia,
 } from '../model';
@@ -79,7 +81,8 @@ function writeJournalParam(open: boolean) {
 export function useMcpDetailView(initial: { server: McpServerView; context: McpDetailContext }, onClose: () => void): McpDetailView {
   const state = useMcpServer(initial);
   const { server, context } = state;
-  const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+  const environment = useShellEnvironment();
+  const serverName = serverLabel(environment);
   const terminal = useTerminalLauncher();
   const params = useSearchParams();
   const baseId = useId();
@@ -351,7 +354,7 @@ export function useMcpDetailView(initial: { server: McpServerView; context: McpD
   let reconnectBlock: ReactNode = null;
   if (via === 'coolify_token') {
     reconnectBlock = (
-      <CoolifyReconnect formId={formId} coolify={context.coolify} serverName={serverName} onStateChange={setCoolifyForm} onReconnected={onCoolifyReconnected} />
+      <CoolifyReconnect formId={formId} coolify={context.coolify} secretPlace={encryptedPlace(environment)} onStateChange={setCoolifyForm} onReconnected={onCoolifyReconnected} />
     );
   } else if (via === 'mcp_login') {
     reconnectBlock = (
@@ -374,7 +377,7 @@ export function useMcpDetailView(initial: { server: McpServerView; context: McpD
       <form id={formId} noValidate onSubmit={submitSecret} className="flex flex-col gap-2.5">
         <SectionLabel as="h3">Reconnecter</SectionLabel>
         <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">
-          {`Collez le nouveau secret${server.secretKeys.length ? ` (${server.secretKeys.join(', ')})` : ''}. Il remplace l'ancien, est chiffré sur ${serverName} et n'est plus jamais affiché.`}
+          {`Collez le nouveau secret${server.secretKeys.length ? ` (${server.secretKeys.join(', ')})` : ''}. Il remplace l'ancien, est ${encryptedPlace(environment)} et n'est plus jamais affiché.`}
         </p>
         <Field error={secretError?.message} hint={secretError ? (secretError.detail ?? secretError.untouched) : undefined}>
           <SecretField

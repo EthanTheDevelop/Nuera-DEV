@@ -4,7 +4,7 @@
  * `@/server/github`), which the browser never imports at runtime.
  */
 import type { CoolifySettingsView } from '@/server/coolify';
-import type { AccessibleReposResult, GithubStatus } from '@/server/github';
+import type { AccessibleReposResult, GithubOverview, GithubSourceStatus, GithubStatus } from '@/server/github';
 import type { DiagnosticBanner, IntegrationsOverview } from '@/server/integrations';
 import type { CheckHistoryEntry, CheckStep, IntegrationCheck } from '@/server/integrations/model';
 import type { McpServerView } from '@/server/mcp';
@@ -15,6 +15,8 @@ export type {
   CheckStep,
   CoolifySettingsView,
   DiagnosticBanner,
+  GithubOverview,
+  GithubSourceStatus,
   GithubStatus,
   IntegrationCheck,
   IntegrationsOverview,

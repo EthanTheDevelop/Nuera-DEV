@@ -5,7 +5,7 @@ import { LiveTime } from '@/components/dev';
 import { Badge, Banner, Button, Card, CompactButton, Pastille, SectionLabel, toast } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { integrationsApi, toApiError, type IntegrationsApiError } from '../api';
-import { githubTile, type GithubTileModel } from '../model';
+import { githubPhoneTitle, githubTile, githubTileTitle, type GithubTileModel } from '../model';
 import type { GithubStatus } from '../types';
 import { ConnectGithubForm } from './ConnectGithubForm';
 import { ReposDialog } from './ReposDialog';
@@ -16,6 +16,12 @@ export interface GithubSectionProps {
   onChanged: () => void;
   /** `desktop` = D07 featured tile (216:2120) · `phone` = M07 card. */
   variant: 'desktop' | 'phone';
+  /** Source of this tile (null: the space has no source — connect form, or the fallback token). */
+  sourceId?: string | null;
+  /** The space has several sources: the tile is titled « GitHub · <libellé> » and checks its own source. */
+  several?: boolean;
+  /** « Déconnecter » of this source (tiles among several sources). */
+  onDisconnect?: () => void;
 }
 
 /** GitHub navigation for internal API routes (redirects to github.com): a full navigation, never a client one. */
@@ -52,8 +58,12 @@ function PrimaryAction({ primary, size }: { primary: NonNullable<GithubTileModel
  * « Voir les N dépôts », expiry line) or the condensed M07 card, plus the « Connecter GitHub »
  * manifest form when no GitHub App is registered. Every value comes from `getGithubStatus()`.
  */
-export function GithubSection({ github, onChanged, variant }: GithubSectionProps) {
+export function GithubSection({ github, onChanged, variant, sourceId = null, several = false, onDisconnect }: GithubSectionProps) {
   const model = githubTile(github);
+  // The desktop (D07) and phone (M07) tiles are both in the DOM: their ids must differ.
+  const titleId =
+    several && sourceId ? `github-title-${sourceId}${variant === 'phone' ? '-phone' : ''}` : variant === 'phone' ? 'github-phone-title' : 'github-title';
+  const anchor = sourceId ? `github-source-${sourceId}${variant === 'phone' ? '-phone' : ''}` : undefined;
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<IntegrationsApiError | { message: string; detail?: string } | null>(null);
   const [reposOpen, setReposOpen] = useState(false);
@@ -62,7 +72,7 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
     setChecking(true);
     setCheckError(null);
     try {
-      const result = await integrationsApi.checkGithub();
+      const result = several && sourceId ? await integrationsApi.checkGithubSource(sourceId) : await integrationsApi.checkGithub();
       if (result.status === 'connected' || result.status === 'expiring') toast({ message: 'Connexion GitHub vérifiée', icon: 'check' });
       else setCheckError({ message: 'La vérification de GitHub a échoué', detail: result.reason ?? undefined });
       onChanged();
@@ -79,16 +89,19 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
     </Banner>
   ) : null;
 
-  const repos = model.repoCount !== null && model.repoCount > 0 ? <ReposDialog open={reposOpen} onOpenChange={setReposOpen} /> : null;
+  const repos =
+    model.repoCount !== null && model.repoCount > 0 ? (
+      <ReposDialog open={reposOpen} onOpenChange={setReposOpen} sourceId={several ? sourceId : null} />
+    ) : null;
 
   if (variant === 'phone') {
     return (
-      <Card variant="card" as="section" aria-labelledby="github-phone-title" className="gap-3 border-[1.5px] border-accent">
+      <Card variant="card" as="section" id={anchor} aria-labelledby={titleId} className="gap-3 border-[1.5px] border-accent">
         <div className="flex min-w-0 items-center gap-3">
           <Pastille icon="github" size={32} className="size-9 rounded-sm" />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <h2 id="github-phone-title" className="m-0 truncate font-sans text-app-16 font-semibold text-text">
-              GitHub
+            <h2 id={titleId} className="m-0 truncate font-sans text-app-16 font-semibold text-text">
+              {githubPhoneTitle(github.label, several)}
             </h2>
             <p className="m-0 truncate font-sans text-app-12 text-muted">{model.phoneSubtitle}</p>
           </div>
@@ -117,6 +130,11 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
             {model.primary ? <PrimaryAction primary={model.primary} size="phone" /> : null}
           </div>
         ) : null}
+        {onDisconnect ? (
+          <CompactButton variant="discret" size="lg" block onClick={onDisconnect}>
+            Déconnecter
+          </CompactButton>
+        ) : null}
         {errorBanner}
         {model.connectForm ? <ConnectGithubForm variant="phone" /> : null}
       </Card>
@@ -124,12 +142,12 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
   }
 
   return (
-    <Card variant="tile" padding="xl" as="section" aria-labelledby="github-title" className="gap-4 border-[1.5px] border-accent">
+    <Card variant="tile" padding="xl" as="section" id={anchor} aria-labelledby={titleId} className="gap-4 border-[1.5px] border-accent">
       <div className="flex min-w-0 items-center gap-4">
         <Pastille icon="github" size={48} iconSize={20} />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h2 id="github-title" className="m-0 font-sans text-app-18 font-semibold text-text">
-            GitHub · import et synchronisation des dépôts
+          <h2 id={titleId} className="m-0 font-sans text-app-18 font-semibold text-text">
+            {githubTileTitle(github.label, several)}
           </h2>
           <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">{model.description}</p>
         </div>
@@ -159,6 +177,11 @@ export function GithubSection({ github, onChanged, variant }: GithubSectionProps
             </CompactButton>
           ) : null}
           {model.note ? <p className="m-0 min-w-0 flex-1 font-sans text-app-12 text-muted">{model.note}</p> : null}
+          {onDisconnect ? (
+            <CompactButton variant="discret" onClick={onDisconnect}>
+              Déconnecter
+            </CompactButton>
+          ) : null}
         </div>
       ) : null}
       {errorBanner}

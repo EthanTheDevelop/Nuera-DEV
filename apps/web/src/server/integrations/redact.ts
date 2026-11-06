@@ -6,7 +6,8 @@ import 'server-only';
  *  - exact-match replacement of the secrets currently known by the caller (and their base64 and
  *    `x-access-token:` forms);
  *  - patterns for GitHub tokens (incl. ~520-char stateless `ghs_` tokens with dots), fine-grained
- *    PATs, Coolify/Sanctum `<id>|<secret>` tokens, Authorization headers and PEM private keys.
+ *    PATs, Coolify/Sanctum `<id>|<secret>` tokens, server (runner) `nrt_` tokens, Authorization
+ *    headers and PEM private keys.
  */
 
 const MASK = '[masqué]';
@@ -17,6 +18,7 @@ const PATTERNS: RegExp[] = [
   /github_pat_[A-Za-z0-9_]{20,}/g,
   /\b\d+\|[A-Za-z0-9]{20,}\b/g,
   /x-access-token:[^@\s"']+/g,
+  /\bnrt_[A-Za-z0-9_-]{32,}/g, // runner (server) tokens
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT (app JWT, OAuth)
 ];
 

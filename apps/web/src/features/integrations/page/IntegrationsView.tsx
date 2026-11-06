@@ -2,13 +2,14 @@
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { PageHeader, useOptionalShellData } from '@/components/shell';
+import { PageHeader, useShellEnvironment } from '@/components/shell';
 import { Button, ErrorPanel } from '@/components/ui';
 import { useDeferLiveRefresh, useLiveEvent } from '@/hooks/useLiveEvents';
 import { AddMcpServerDialog } from '../add/AddMcpServerDialog';
 import { integrationsApi } from '../api';
-import { GithubSection } from '../github/GithubSection';
+import { GithubSources } from '../github/GithubSources';
 import { isPageJournal, JournalDialog } from '../journal/JournalDialog';
+import { encryptedPlace, serverLabel } from '../model';
 import { INTEGRATIONS_PATH, useIntegrationsRefresh } from '../refresh';
 import type { IntegrationsOverview, Loaded } from '../types';
 import { DiagnosticBanners, PhoneAlerts } from './Diagnostics';
@@ -32,15 +33,18 @@ function writeParam(key: string, value: string | null, mode: 'push' | 'replace')
 /**
  * Intégrations — D07 (desktop: GitHub tile, MCP grid, diagnostic banners, guardrails) and M07
  * (phone: condensed GitHub card, alert cards above the MCP list, guardrail footnote). URL state:
- * `?github=<code>` (return of the GitHub flows), `?journal=github|coolify`, `?ajout=1` (add form).
- * Live: integration notifications (T7 transitions) and `stream.reset` re-read the page data.
+ * `?github=<code>` (return of the GitHub flows, `&source=<id>`), `?journal=github|coolify`
+ * (`&source=<id>` for one GitHub source), `?ajout=1` (add form). One GitHub tile per source of the
+ * space (the Figma tile when there is one). Live: integration notifications (T7 transitions) and
+ * `stream.reset` re-read the page data.
  */
 export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<IntegrationsOverview>; loadedAt: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
   const refresh = useIntegrationsRefresh();
-  const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+  const environment = useShellEnvironment();
+  const serverName = serverLabel(environment);
   const [addOpen, setAddOpen] = useState(false);
   const onPage = pathname === INTEGRATIONS_PATH;
   // The MCP drawer (intercepted route) is shown over the page: the shell's refreshes wait for it to close.
@@ -48,6 +52,7 @@ export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<Inte
   const addParam = onPage && params.get('ajout') === '1';
   const journalParam = onPage ? params.get('journal') : null;
   const journal = isPageJournal(journalParam) ? journalParam : null;
+  const sourceParam = onPage ? params.get('source') : null;
 
   useLiveEvent('notification.created', (event) => {
     if (event.data.kind.startsWith('integration_')) refresh();
@@ -108,6 +113,8 @@ export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<Inte
   }
 
   const data = overview.data;
+  const noticeSource = sourceParam ? data.github.sources.find((source) => source.id === sourceParam) : undefined;
+  const noticeInstallUrl = data.github.mode !== 'app' ? null : (noticeSource?.installUrl ?? data.github.installUrl);
   const presets = data.mcp.servers.filter((server) => server.preset && server.projectCount === 0);
   const checkGithubFromNotice = () => {
     void integrationsApi
@@ -119,11 +126,11 @@ export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<Inte
   return (
     <div className="flex flex-col gap-4 nav:gap-6">
       {header}
-      <GithubNotice installUrl={data.github.mode === 'app' ? data.github.installUrl : null} onCheck={checkGithubFromNotice} />
+      <GithubNotice installUrl={noticeInstallUrl} onCheck={checkGithubFromNotice} />
 
       {/* D07 — desktop */}
       <div className="hidden flex-col gap-6 nav:flex">
-        <GithubSection github={data.github} onChanged={refresh} variant="desktop" />
+        <GithubSources github={data.github} onChanged={refresh} variant="desktop" />
         <McpGrid servers={data.mcp.servers} coolify={data.coolify} onAdd={openAdd} />
         <DiagnosticBanners diagnostics={data.diagnostics} overview={data} />
         <Guardrails guardrails={data.guardrails} />
@@ -131,14 +138,22 @@ export function IntegrationsView({ overview, loadedAt }: { overview: Loaded<Inte
 
       {/* M07 — phone */}
       <div className="flex flex-col gap-4 nav:hidden">
-        <GithubSection github={data.github} onChanged={refresh} variant="phone" />
+        <GithubSources github={data.github} onChanged={refresh} variant="phone" />
         <PhoneAlerts diagnostics={data.diagnostics} overview={data} />
         <McpList servers={data.mcp.servers} coolify={data.coolify} onAdd={openAdd} />
         <PhoneGuardrail />
       </div>
 
-      <AddMcpServerDialog open={addOpen || addParam} onOpenChange={setAdd} presets={presets} serverName={serverName} onCreated={refresh} />
-      <JournalDialog journal={journal} overview={data} onClose={() => writeParam('journal', null, 'replace')} />
+      <AddMcpServerDialog open={addOpen || addParam} onOpenChange={setAdd} presets={presets} secretsPlace={encryptedPlace(environment, true)} onCreated={refresh} />
+      <JournalDialog
+        journal={journal}
+        sourceId={sourceParam}
+        overview={data}
+        onClose={() => {
+          writeParam('journal', null, 'replace');
+          if (journal === 'github' && sourceParam && !params.get('github')) writeParam('source', null, 'replace');
+        }}
+      />
     </div>
   );
 }

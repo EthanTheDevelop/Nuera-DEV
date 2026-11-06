@@ -10,10 +10,13 @@ const ORG_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
  * « Connecter GitHub » (docs/INTEGRATIONS.md §2.1): a native form POST to
  * `/api/integrations/github/manifest`, which answers with the self-submitting page that sends the App
  * manifest to github.com (the CSP `form-action` allows the GitHub origin). No token is ever typed.
+ * Also « Ajouter une source GitHub » (one more GitHub App for the space): the app is created for the
+ * personal GitHub account, or for the organisation typed here, private unless switched to public.
  */
-export function ConnectGithubForm({ variant }: { variant: 'desktop' | 'phone' }) {
+export function ConnectGithubForm({ variant }: { variant: 'desktop' | 'phone' | 'dialog' }) {
   const [organization, setOrganization] = useState('');
-  const [isPublic, setIsPublic] = useState(true);
+  // New GitHub apps are private (MULTICOMPTE §7): public only when the owner switches it on.
+  const [isPublic, setIsPublic] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const publicId = useId();
   // Back from GitHub through the browser cache: the button must not stay in its loading state.
@@ -24,6 +27,8 @@ export function ConnectGithubForm({ variant }: { variant: 'desktop' | 'phone' })
   }, []);
   const orgInvalid = organization.trim() !== '' && !ORG_PATTERN.test(organization.trim());
   const phone = variant === 'phone';
+  // In the « Ajouter une source GitHub » dialog the fields are stacked (the dialog is narrow).
+  const stacked = variant !== 'desktop';
   return (
     <form
       method="post"
@@ -35,7 +40,7 @@ export function ConnectGithubForm({ variant }: { variant: 'desktop' | 'phone' })
         }
         setSubmitting(true);
       }}
-      className={cn('flex flex-col gap-3 rounded-md border border-border bg-surface-raised p-4', !phone && 'nav:flex-row nav:items-end nav:gap-4')}
+      className={cn('flex flex-col gap-3 rounded-md border border-border bg-surface-raised p-4', !stacked && 'nav:flex-row nav:items-end nav:gap-4')}
     >
       <Field
         label="Organisation GitHub (facultatif)"

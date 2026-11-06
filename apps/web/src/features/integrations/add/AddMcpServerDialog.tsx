@@ -44,7 +44,8 @@ export interface AddMcpServerDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Built-in servers enabled in no project: offered first (« Serveurs intégrés »). */
   presets: McpServerView[];
-  serverName: string;
+  /** « chiffrés sur VPS-3 » (default server) or « chiffrés par Nuera Dev ». */
+  secretsPlace: string;
   onCreated: () => void;
 }
 
@@ -54,7 +55,7 @@ export interface AddMcpServerDialogProps {
  * typed in a SecretField that is never pre-filled). `POST /api/integrations/mcp`, then the new
  * server's drawer opens so that it can be enabled project by project and tested.
  */
-export function AddMcpServerDialog({ open, onOpenChange, presets, serverName, onCreated }: AddMcpServerDialogProps) {
+export function AddMcpServerDialog({ open, onOpenChange, presets, secretsPlace, onCreated }: AddMcpServerDialogProps) {
   const router = useRouter();
   const formId = useId();
   const [label, setLabel] = useState('');
@@ -139,7 +140,7 @@ export function AddMcpServerDialog({ open, onOpenChange, presets, serverName, on
     >
       <DialogContent
         title="Ajouter un serveur MCP"
-        description={`Proposé aux sessions des seuls projets où vous l'activez. Les secrets sont chiffrés sur ${serverName} et ne sont plus jamais affichés.`}
+        description={`Proposé aux sessions des seuls projets où vous l'activez. Les secrets sont ${secretsPlace} et ne sont plus jamais affichés.`}
         dismissible={!pending}
         footer={
           <>

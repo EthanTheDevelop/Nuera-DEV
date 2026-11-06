@@ -1,8 +1,8 @@
 import 'server-only';
 import type { McpCliStatus, TerminalDto } from '@nuera/shared/runner';
-import { mcpServers } from '@nuera/db/schema';
-import type { McpStatus } from '@nuera/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { environments, mcpServers } from '@nuera/db/schema';
+import type { EnvironmentStatus, McpStatus } from '@nuera/db/schema';
+import { and, asc, desc, eq, inArray, isNotNull, ne, or } from 'drizzle-orm';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
 import { inferAbilitiesFromTools } from '@/server/coolify';
@@ -19,10 +19,12 @@ import {
 } from '@/server/integrations/model';
 import { sanitizeText } from '@/server/integrations/redact';
 import { applyHealthTransition, healthOfMcpStatus } from '@/server/integrations/transitions';
-import { runner } from '@/server/runner/client';
+import { getRunnerForEnvironment } from '@/server/runner/client';
 import { audit } from '@/server/security/audit';
+import type { EnvironmentRef, RequestContext } from '@/server/tenancy/context';
+import { auditIn } from '@/server/tenancy/scope';
 import { resolveDiagnosticHeaders } from './headers';
-import { presetOf } from './presets';
+import { presetOf, type PresetServerContext } from './presets';
 import { probeMcpServer, probeOAuthEndpoint, type McpProbeResult } from './probe';
 import {
   countActiveProjectsByServer,
@@ -31,8 +33,10 @@ import {
   getMcpServerRow,
   readDiagnostic,
   staticHeadersOf,
+  MCP_SERVER_NOT_FOUND,
   type McpDiagnosticRecord,
   type McpServerRow,
+  type McpServerScope,
   type McpServerView,
 } from './registry';
 
@@ -41,9 +45,25 @@ import {
  *  - HTTP servers with a Nuera credential (GitHub, Coolify, custom headers): `initialize` + `tools/list`
  *    with the same credential a session would get;
  *  - OAuth servers (Figma) and stdio servers (Playwright): `claude mcp get <name>` through the runner
- *    (Claude Code owns the OAuth grant; Nuera Dev never reads it), plus an unauthenticated
- *    reachability probe for OAuth endpoints.
+ *    of the space's server (Claude Code owns the OAuth grant; Nuera Dev never reads it), plus an
+ *    unauthenticated reachability probe for OAuth endpoints. The CLI state belongs to that server
+ *    (one server per space): a space without server keeps these servers « à tester ».
  */
+
+/** Same copy as NO_ENVIRONMENT_MESSAGE (server/tenancy/context, not imported: it loads the auth stack). */
+export const NO_SERVER_MESSAGE = "Aucun serveur ne vous est encore attribué : un administrateur doit vous en attribuer un.";
+
+/**
+ * Same copy as LOGIN_TERMINAL_OWNER_ONLY (server/terminals, not imported: it loads the session
+ * stack, which imports this module): a login terminal belongs to the owner of the space only.
+ */
+export const MCP_LOGIN_OWNER_ONLY = "Seul le propriétaire de l'espace peut connecter Claude Code sur son serveur.";
+
+/** Same copy as the runner's ENVIRONMENT_DISABLED refusal (apps/runner/src/environment.ts). */
+export const SERVER_DISABLED_MESSAGE = 'Ce serveur est désactivé : aucune nouvelle session, aucun clonage ni aucune commande ne peut démarrer.';
+
+/** `untouched` of a refused login terminal (same as server/terminals). */
+const LOGIN_UNTOUCHED = 'Aucun terminal ouvert.';
 
 /** Runner calls used here (injectable in tests). */
 export interface McpRunnerPort {
@@ -51,14 +71,41 @@ export interface McpRunnerPort {
   mcpSync(input: { upsert: Array<{ name: string; config: Record<string, unknown> }>; remove: string[] }): Promise<{
     results: Array<{ name: string; action: 'upsert' | 'remove'; ok: boolean; raw: string }>;
   }>;
-  createLoginTerminal(serverName: string): Promise<TerminalDto>;
+  createLoginTerminal(serverName: string, actorUserId?: string | null): Promise<TerminalDto>;
 }
 
-export const defaultRunnerPort: McpRunnerPort = {
-  mcpGet: (name) => runner.claudeMcpGet({ params: { name } }),
-  mcpSync: (input) => runner.claudeMcpSync({ body: input }),
-  createLoginTerminal: (serverName) => runner.createTerminal({ body: { kind: 'mcp-login', serverName } }),
-};
+/** Server (runner) of a space: the one that is not retired (one per space, MULTICOMPTE §3.1). */
+export interface SpaceServer extends PresetServerContext {
+  id: string;
+  status: EnvironmentStatus;
+}
+
+export async function serverOfSpace(spaceId: string): Promise<SpaceServer | null> {
+  const [row] = await db
+    .select({ id: environments.id, name: environments.name, isDefault: environments.isDefault, status: environments.status })
+    .from(environments)
+    .where(and(eq(environments.spaceId, spaceId), isNotNull(environments.spaceId), ne(environments.status, 'retired')))
+    .orderBy(desc(eq(environments.status, 'active')), asc(environments.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Runner calls on one server (the runner client of that environment). */
+export function runnerPortFor(environmentId: string): McpRunnerPort {
+  const client = getRunnerForEnvironment(environmentId);
+  return {
+    mcpGet: (name) => client.claudeMcpGet({ params: { name } }),
+    mcpSync: (input) => client.claudeMcpSync({ body: input }),
+    createLoginTerminal: (serverName, actorUserId) =>
+      client.createTerminal({ body: { kind: 'mcp-login', serverName, ...(actorUserId ? { actorUserId } : {}) } }),
+  };
+}
+
+/** Port of the server of the space, or null when the space has none. */
+export async function runnerPortOfSpace(spaceId: string): Promise<McpRunnerPort | null> {
+  const server = await serverOfSpace(spaceId);
+  return server ? runnerPortFor(server.id) : null;
+}
 
 const IMPACTS: Record<string, string> = {
   figma: "Les sessions n'ont plus accès aux maquettes Figma.",
@@ -83,21 +130,32 @@ export function cliConfigOf(row: McpServerRow): Record<string, unknown> | null {
   return null;
 }
 
-/** Writes/removes the user-scope entries of CLI-diagnosed servers (best effort, runner may be down). */
+/**
+ * Writes/removes the user-scope entries of CLI-diagnosed servers of the space on the space's server
+ * (best effort, runner may be down). `port` null: the space has no server (nothing written).
+ */
 export async function syncMcpServersToCli(
-  input: { upsert?: McpServerRow[]; remove?: string[] },
-  port: McpRunnerPort = defaultRunnerPort,
+  input: { spaceId: string; upsert?: McpServerRow[]; remove?: string[] },
+  port?: McpRunnerPort | null,
 ): Promise<{ ok: boolean; results: Array<{ name: string; ok: boolean; raw: string }>; error: string | null }> {
   const upsert = (input.upsert ?? [])
+    .filter((row) => row.spaceId === input.spaceId)
     .filter(usesCliDiagnostics)
     .map((row) => ({ name: row.name, config: cliConfigOf(row) }))
     .filter((item): item is { name: string; config: Record<string, unknown> } => item.config !== null);
   const remove = input.remove ?? [];
   if (upsert.length === 0 && remove.length === 0) return { ok: true, results: [], error: null };
+  const target = port === undefined ? await runnerPortOfSpace(input.spaceId) : port;
+  if (!target) return { ok: false, results: [], error: NO_SERVER_MESSAGE };
   try {
-    const result = await port.mcpSync({ upsert, remove });
+    const result = await target.mcpSync({ upsert, remove });
     const synced = result.results.filter((item) => item.ok && item.action === 'upsert').map((item) => item.name);
-    if (synced.length) await db.update(mcpServers).set({ syncedToCliAt: new Date() }).where(inArray(mcpServers.name, synced));
+    if (synced.length) {
+      await db
+        .update(mcpServers)
+        .set({ syncedToCliAt: new Date() })
+        .where(and(eq(mcpServers.spaceId, input.spaceId), inArray(mcpServers.name, synced)));
+    }
     return {
       ok: result.results.every((item) => item.ok),
       results: result.results.map((item) => ({ name: item.name, ok: item.ok, raw: sanitizeText(item.raw, 2_000) ?? '' })),
@@ -176,21 +234,42 @@ const lastManualChecks = globalThis as unknown as { __nueraMcpLastManual?: Map<s
 
 export interface CheckMcpOptions {
   trigger?: CheckTrigger;
-  port?: McpRunnerPort;
+  /** Runner calls (default: the server of the space; null: no server). */
+  port?: McpRunnerPort | null;
   fetchImpl?: typeof fetch;
   actorUserId?: string | null;
+  /** Scheduled run: skip a server checked less than this long ago. */
+  skipCheckedWithinMs?: number;
 }
 
-export async function checkMcpServer(idOrName: string, options: CheckMcpOptions = {}): Promise<McpServerView> {
+/** Forgets the manual-check throttles (tests). */
+export function resetMcpCheckState(): void {
+  lastManualChecks.__nueraMcpLastManual?.clear();
+}
+
+export async function checkMcpServer(scope: McpServerScope, options: CheckMcpOptions = {}): Promise<McpServerView> {
   const trigger = options.trigger ?? 'manual';
-  const port = options.port ?? defaultRunnerPort;
-  const row = await getMcpServerRow(idOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
+  const row = await getMcpServerRow(scope);
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
+  const server = await serverOfSpace(row.spaceId);
+  const port = options.port !== undefined ? options.port : server ? runnerPortFor(server.id) : null;
+  const viewOptions = { server };
   if (trigger === 'manual') {
     const map = (lastManualChecks.__nueraMcpLastManual ??= new Map());
     // A replaced secret or address resets the status to `unknown`: that test always runs.
-    if (row.status !== 'unknown' && Date.now() - (map.get(row.id) ?? 0) < 10_000) return getMcpServer(row.id);
+    if (row.status !== 'unknown' && Date.now() - (map.get(row.id) ?? 0) < 10_000) return getMcpServer({ spaceId: row.spaceId, idOrName: row.id }, viewOptions);
     map.set(row.id, Date.now());
+  }
+  if (options.skipCheckedWithinMs && row.lastCheckedAt && Date.now() - row.lastCheckedAt.getTime() < options.skipCheckedWithinMs) {
+    return getMcpServer({ spaceId: row.spaceId, idOrName: row.id }, viewOptions);
+  }
+  if (usesCliDiagnostics(row) && !port) {
+    // No server: Claude Code cannot be asked. The server stays « à tester », without notification.
+    await db
+      .update(mcpServers)
+      .set({ status: 'unknown', lastError: NO_SERVER_MESSAGE })
+      .where(and(eq(mcpServers.id, row.id), eq(mcpServers.spaceId, row.spaceId)));
+    return getMcpServer({ spaceId: row.spaceId, idOrName: row.id }, viewOptions);
   }
 
   const startedAt = new Date();
@@ -205,7 +284,7 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
   let tools = diagnostic.tools;
   let serverInfo = diagnostic.serverInfo;
   const preset = presetOf(row.name);
-  const coolify = preset?.id === 'coolify' ? await getStoredCoolify() : null;
+  const coolify = preset?.id === 'coolify' ? await getStoredCoolify(row.spaceId) : null;
   const url = preset?.id === 'coolify' ? (coolify ? `${coolify.config.baseUrl}/mcp` : null) : row.url;
 
   if (usesCliDiagnostics(row)) {
@@ -223,11 +302,11 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
     if (next !== 'error') {
       const timer = startTimer();
       try {
-        let cli = await port.mcpGet(row.name);
+        let cli = await port!.mcpGet(row.name);
         if (cli.state === 'not_configured') {
-          const sync = await syncMcpServersToCli({ upsert: [row] }, port);
+          const sync = await syncMcpServersToCli({ spaceId: row.spaceId, upsert: [row] }, port);
           steps.push({ name: `claude mcp add-json --scope user ${row.name}`, ok: sync.ok, ms: timer(), ...(sync.error ? { providerMessage: sync.error } : {}) });
-          if (sync.ok) cli = await port.mcpGet(row.name);
+          if (sync.ok) cli = await port!.mcpGet(row.name);
         }
         steps.push({
           name: `claude mcp get ${row.name}`,
@@ -252,7 +331,7 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
     next = 'needs_auth';
     reason = preset?.id === 'coolify' ? "Coolify n'est pas connecté." : 'Adresse absente.';
   } else {
-    const credential = await resolveDiagnosticHeaders(row.name);
+    const credential = await resolveDiagnosticHeaders(row);
     if (credential.missing) {
       next = 'needs_auth';
       reason = credential.missing;
@@ -282,7 +361,7 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
         // The Coolify MCP server only lists the tools the token may use: record the abilities read
         // here (they gate the headers helper, P4) and refuse a token that can write.
         const inferred = inferAbilitiesFromTools(probe.tools);
-        await updateCoolify((config) =>
+        await updateCoolify(row.spaceId, (config) =>
           config.connectedAt === coolify.config.connectedAt
             ? { ...config, abilities: inferred.abilities, abilitiesSource: 'mcp_tools', mcpEnabled: true, mcpToolCount: probe.tools.length }
             : config,
@@ -328,12 +407,13 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
       lastDiagnostic: record as unknown as Record<string, unknown>,
       ...(preset?.id === 'coolify' ? { expiresAt: coolify?.config.declaredExpiresAt ? new Date(coolify.config.declaredExpiresAt) : null } : {}),
     })
-    .where(eq(mcpServers.id, row.id));
+    .where(and(eq(mcpServers.id, row.id), eq(mcpServers.spaceId, row.spaceId)));
 
-  // Only servers used by at least one project raise notifications.
-  const counts = await countActiveProjectsByServer();
+  // Only servers used by at least one project raise notifications (to the members of the space).
+  const counts = await countActiveProjectsByServer(row.spaceId);
   if ((counts.get(row.id) ?? 0) > 0 && row.isEnabled) {
     await applyHealthTransition({
+      spaceId: row.spaceId,
       target: `mcp:${row.name}`,
       label: row.label,
       previous: healthOfMcpStatus(previous),
@@ -351,17 +431,22 @@ export async function checkMcpServer(idOrName: string, options: CheckMcpOptions 
       targetType: 'mcp_server',
       targetId: row.id,
       actorUserId: options.actorUserId,
+      spaceId: row.spaceId,
     });
   }
-  return getMcpServer(row.id);
+  return getMcpServer({ spaceId: row.spaceId, idOrName: row.id }, viewOptions);
 }
 
-/** Checks every server used by at least one project (scheduler, every 15 min). */
-export async function checkActiveMcpServers(options: CheckMcpOptions = {}): Promise<Array<{ name: string; status: McpStatus | 'failed'; error?: string }>> {
-  const counts = await countActiveProjectsByServer();
-  const rows = await db.select().from(mcpServers);
+/** Checks every server of the space used by at least one of its projects (scheduler, every 15 min). */
+export async function checkActiveMcpServers(
+  options: CheckMcpOptions & { spaceId: string },
+): Promise<Array<{ name: string; status: McpStatus | 'failed'; error?: string }>> {
+  const counts = await countActiveProjectsByServer(options.spaceId);
+  const rows = await db.select().from(mcpServers).where(eq(mcpServers.spaceId, options.spaceId));
   const active = rows.filter((row) => row.isEnabled && (counts.get(row.id) ?? 0) > 0);
-  const results = await Promise.allSettled(active.map((row) => checkMcpServer(row.id, { ...options, trigger: options.trigger ?? 'schedule' })));
+  const results = await Promise.allSettled(
+    active.map((row) => checkMcpServer({ spaceId: options.spaceId, idOrName: row.id }, { ...options, trigger: options.trigger ?? 'schedule' })),
+  );
   return results.map((result, index) =>
     result.status === 'fulfilled'
       ? { name: active[index]!.name, status: result.value.status }
@@ -370,29 +455,63 @@ export async function checkActiveMcpServers(options: CheckMcpOptions = {}): Prom
 }
 
 /**
+ * Server of the space for a `claude mcp login` terminal — the check of requireLoginTerminalServer
+ * (server/terminals), plus the server's state: AppError CONFLICT NO_ENVIRONMENT without a server,
+ * FORBIDDEN for anyone but the owner of the space (one server = one person = one Claude connection,
+ * MULTICOMPTE §1.2), FORBIDDEN ENVIRONMENT_DISABLED for a suspended (or retired) server.
+ */
+export function requireMcpLoginServer(ctx: Pick<RequestContext, 'space' | 'environment'>): EnvironmentRef {
+  const environment = ctx.environment;
+  if (!environment) throw new AppError('CONFLICT', NO_SERVER_MESSAGE, { reason: 'NO_ENVIRONMENT' });
+  if (ctx.space.role !== 'owner') throw new AppError('FORBIDDEN', MCP_LOGIN_OWNER_ONLY, { untouched: LOGIN_UNTOUCHED });
+  if (environment.status === 'suspended' || environment.status === 'retired') {
+    throw new AppError('FORBIDDEN', SERVER_DISABLED_MESSAGE, { reason: 'ENVIRONMENT_DISABLED', untouched: LOGIN_UNTOUCHED });
+  }
+  return environment;
+}
+
+/**
  * « Reconnecter » for OAuth servers (Figma): ephemeral web terminal running
- * `claude mcp login <name> --no-browser` (output never recorded, research §4.5). Nuera Dev stores
- * nothing: the grant stays in Claude Code.
+ * `claude mcp login <name> --no-browser` (output never recorded, research §4.5) on the server of
+ * the request's space, for its owner only ({@link requireMcpLoginServer}, checked before anything
+ * is read or sent). Nuera Dev stores nothing: the grant stays in Claude Code. An id of another
+ * space answers like an unknown one (NOT_FOUND).
  */
 export async function startMcpLogin(
+  ctx: Pick<RequestContext, 'user' | 'space' | 'environment'>,
   idOrName: string,
-  options: { actorUserId?: string | null; port?: McpRunnerPort } = {},
+  options: { port?: McpRunnerPort } = {},
 ): Promise<{ terminal: TerminalDto; streamUrl: string }> {
-  const port = options.port ?? defaultRunnerPort;
-  const row = await getMcpServerRow(idOrName);
-  if (!row) throw new AppError('NOT_FOUND', 'Serveur MCP introuvable.');
+  const environment = requireMcpLoginServer(ctx);
+  const row = await getMcpServerRow({ spaceId: ctx.space.id, idOrName });
+  if (!row) throw new AppError('NOT_FOUND', MCP_SERVER_NOT_FOUND);
   if (credentialSourceOf(row) !== 'claude_oauth') {
     throw new AppError('VALIDATION', 'Ce serveur ne se connecte pas par une autorisation OAuth.');
   }
-  const sync = await syncMcpServersToCli({ upsert: [row] }, port);
+  const port = options.port ?? runnerPortFor(environment.id);
+  const sync = await syncMcpServersToCli({ spaceId: row.spaceId, upsert: [row] }, port);
   if (!sync.ok && sync.error) throw new AppError('RUNNER_UNAVAILABLE', sync.error);
-  const terminal = await port.createLoginTerminal(row.name);
-  await audit({
+  const terminal = await port.createLoginTerminal(row.name, ctx.user.id);
+  await auditIn(ctx, {
     action: 'integration.mcp.login_started',
     summary: `connexion OAuth du serveur MCP « ${row.label} » ouverte dans un terminal`,
     targetType: 'mcp_server',
     targetId: row.id,
-    actorUserId: options.actorUserId ?? null,
+    environmentId: environment.id,
   });
   return { terminal, streamUrl: `/api/stream/terminals/${encodeURIComponent(terminal.id)}` };
+}
+
+/**
+ * The CLI state (user-scope entries, OAuth grants) lives on the space's server: when the server of
+ * a space is assigned, replaced or its token rotated, the CLI-diagnosed servers of the space go back
+ * to « à tester » and are synced again at their next check.
+ */
+export async function resetCliMcpState(spaceId: string): Promise<number> {
+  const rows = await db
+    .update(mcpServers)
+    .set({ status: 'unknown', syncedToCliAt: null, lastError: null })
+    .where(and(eq(mcpServers.spaceId, spaceId), or(eq(mcpServers.transport, 'stdio'), eq(mcpServers.authKind, 'oauth'))))
+    .returning({ id: mcpServers.id });
+  return rows.length;
 }

@@ -1,6 +1,6 @@
 import 'server-only';
 import { LOCALE, TIME_ZONE } from '@nuera/shared/format';
-import { createNotification, resolveNotifications } from '@/server/notifications';
+import { createNotification, resolveNotifications, spaceRecipients, type NotificationInput } from '@/server/notifications';
 
 /**
  * T7 « Autorisation expirée » — « Même logique pour GitHub, Figma ou Coolify : prévenir avant, dire
@@ -8,13 +8,20 @@ import { createNotification, resolveNotifications } from '@/server/notifications
  *
  * Called after every check with the previous and the new state; creates one notification on each
  * transition into « bientôt expirée », « expirée » or « injoignable », and resolves them when the
- * integration is healthy again.
+ * integration is healthy again. Integrations belong to a space (MULTICOMPTE §7): the notifications
+ * go to the members of that space only (one per recipient), and only that space's are resolved.
+ *
+ * Dedup keys (MULTICOMPTE §14.1): `integration:<target>:<état>` — `integration:github:<sourceId>:…`,
+ * `integration:github:fallback:…`, `integration:coolify:…`, `integration:mcp:<nom>:…`; unique per
+ * recipient.
  */
 
 export type HealthState = 'ok' | 'expiring' | 'expired' | 'error' | 'inactive';
 
 export interface TransitionInput {
-  /** 'github' | 'coolify' | `mcp:${name}` — also the dedup key prefix. */
+  /** Space of the integration (recipients: its members). */
+  spaceId: string;
+  /** `github:<sourceId>` | 'github:fallback' | 'coolify' | `mcp:${name}` — also the dedup key prefix. */
   target: string;
   /** « GitHub », « Coolify », « Figma »… */
   label: string;
@@ -65,16 +72,21 @@ export function paragraph(...parts: Array<string | null | undefined>): string {
 }
 
 export async function applyHealthTransition(input: TransitionInput): Promise<void> {
-  const { target, label } = input;
+  const { target, label, spaceId } = input;
   if (input.next === input.previous) return;
+  const scope = { spaceId };
+  const notify = async (notification: NotificationInput) => {
+    const userIds = await spaceRecipients(spaceId);
+    if (userIds.length) await createNotification(notification, { spaceId, userIds });
+  };
   try {
     if (input.next === 'ok' || input.next === 'inactive') {
-      await resolveNotifications(`integration:${target}:`);
+      await resolveNotifications(scope, `integration:${target}:`);
       return;
     }
     if (input.next === 'expiring') {
       const when = input.expiresAt ? ` avant le ${formatDayMonth(input.expiresAt)}` : '';
-      await createNotification({
+      await notify({
         kind: 'integration_expiring',
         severity: 'warning',
         title: `Autorisation ${label} bientôt expirée`,
@@ -86,9 +98,9 @@ export async function applyHealthTransition(input: TransitionInput): Promise<voi
     }
     if (input.next === 'expired') {
       // The new state supersedes « bientôt expirée » and « ne répond plus ».
-      await resolveNotifications(dedupKeyFor(target, 'expiring'));
-      await resolveNotifications(dedupKeyFor(target, 'error'));
-      await createNotification({
+      await resolveNotifications(scope, dedupKeyFor(target, 'expiring'));
+      await resolveNotifications(scope, dedupKeyFor(target, 'error'));
+      await notify({
         kind: 'integration_expired',
         severity: 'danger',
         title: `L'accès ${label} a été retiré`,
@@ -100,7 +112,7 @@ export async function applyHealthTransition(input: TransitionInput): Promise<voi
     }
     // error: provider unreachable after two failed checks (hysteresis applied by the caller).
     const since = input.failingSince ? ` depuis ${formatClock(input.failingSince)}` : '';
-    await createNotification({
+    await notify({
       kind: 'integration_error',
       severity: 'danger',
       title: `${label} ne répond plus${since}`,

@@ -17,6 +17,7 @@ import {
 import { applyHealthTransition, healthOfIntegrationStatus } from '@/server/integrations/transitions';
 import { probeMcpServer } from '@/server/mcp/probe';
 import { audit } from '@/server/security/audit';
+import { assertAllowedDestination } from '@/server/security/ssrf';
 import {
   CoolifyError,
   createCoolifyClient,
@@ -37,7 +38,8 @@ import {
 /**
  * Coolify integration (research §3): one read-only token (« Nuera Dev · Développement »), validated
  * with GETs only, stored ENCRYPTED, never echoed back. The same token authenticates Claude's Coolify
- * MCP server through the headers helper (no secret in session files).
+ * MCP server through the headers helper (no secret in session files). One Coolify per space
+ * (MULTICOMPTE §7): every function names its space and never touches another space's rows.
  */
 
 export { CoolifyError, createCoolifyClient, normalizeCoolifyBaseUrl } from './client';
@@ -88,8 +90,8 @@ function tokensUrl(baseUrl: string): string {
   return `${baseUrl}/security/api-tokens`;
 }
 
-export async function getCoolifySettings(): Promise<CoolifySettingsView> {
-  const stored = await getStoredCoolify();
+export async function getCoolifySettings(spaceId: string): Promise<CoolifySettingsView> {
+  const stored = await getStoredCoolify(spaceId);
   if (!stored) {
     return {
       configured: false,
@@ -143,9 +145,9 @@ export async function getCoolifySettings(): Promise<CoolifySettingsView> {
   };
 }
 
-/** Decrypted credential for server-side use only (MCP headers helper, API reads). */
-export async function getCoolifyCredential(): Promise<{ baseUrl: string; token: string } | null> {
-  const stored = await getStoredCoolify();
+/** Decrypted credential of the space, for server-side use only (MCP headers helper, API reads). */
+export async function getCoolifyCredential(spaceId: string): Promise<{ baseUrl: string; token: string } | null> {
+  const stored = await getStoredCoolify(spaceId);
   if (!stored) return null;
   return { baseUrl: stored.config.baseUrl, token: readCoolifyToken(stored.row) };
 }
@@ -358,16 +360,19 @@ export async function validateCoolifyToken(input: {
   return result;
 }
 
-/** D2 « Reconnecter »: validates (GET only), stores encrypted, audits; never returns the token. */
+/** D2 « Reconnecter » for a space: validates (GET only), stores encrypted, audits; never returns the token. */
 export async function reconnectCoolify(
+  spaceId: string,
   input: ReconnectCoolifyInput,
   options: { actorUserId?: string | null; fetchImpl?: typeof fetch } = {},
 ): Promise<{ settings: CoolifySettingsView; validation: Omit<CoolifyValidation, 'credentialRefused'> }> {
   const data = reconnectCoolifyInputSchema.parse(input);
-  const stored = await getStoredCoolify();
+  const stored = await getStoredCoolify(spaceId);
   const rawBase = data.baseUrl ?? stored?.config.baseUrl;
   if (!rawBase) throw new AppError('VALIDATION', 'Adresse de Coolify requise.', { detail: 'Exemple : https://coolify.nuera.studio' });
   const baseUrl = normalizeCoolifyBaseUrl(rawBase);
+  // Internal addresses (loopback, link-local, a server, the database) are refused before any request.
+  await assertAllowedDestination(baseUrl);
   const validation = await validateCoolifyToken({ baseUrl, token: data.token, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
   const { credentialRefused, ...publicValidation } = validation;
   if (!validation.ok) {
@@ -416,21 +421,23 @@ export async function reconnectCoolify(
   });
   const status = expiryStatus(declaredExpiresAt, now) ?? 'connected';
   const previous = (stored?.row.status as DbStatus | undefined) ?? 'connected';
-  await upsertCoolify({ config, token: data.token, status, checkedAt: now });
-  // The Coolify MCP server was marked « expiré » for the previous token: it is « à tester » again.
+  await upsertCoolify({ spaceId, config, token: data.token, status, checkedAt: now });
+  // The Coolify MCP server of this space was marked « expiré » for the previous token: « à tester » again.
   await db
     .update(mcpServers)
     .set({ status: 'unknown', lastError: null })
-    .where(and(eq(mcpServers.name, COOLIFY_MCP_SERVER), eq(mcpServers.status, 'expired')));
+    .where(and(eq(mcpServers.spaceId, spaceId), eq(mcpServers.name, COOLIFY_MCP_SERVER), eq(mcpServers.status, 'expired')));
   await audit({
     action: stored ? 'integration.coolify.reconnected' : 'integration.coolify.connected',
     summary: `${stored ? 'Coolify reconnecté' : 'Coolify connecté'} (${tokenFingerprint(prefix) ?? 'jeton'}, ${validation.scope === 'scoped' ? 'environnements choisis' : validation.scope === 'team' ? `équipe ${validation.teamName ?? ''}`.trim() : 'périmètre inconnu'})`,
     targetType: 'integration',
     targetId: 'coolify',
     actorUserId: options.actorUserId ?? null,
+    spaceId,
     metadata: { baseUrl, abilities: validation.abilities, scope: validation.scope, version: validation.version },
   });
   await applyHealthTransition({
+    spaceId,
     target: 'coolify',
     label: 'Coolify',
     previous: healthOfIntegrationStatus(previous),
@@ -439,7 +446,7 @@ export async function reconnectCoolify(
     impact: COOLIFY_IMPACT,
     href: '/integrations',
   });
-  return { settings: await getCoolifySettings(), validation: publicValidation };
+  return { settings: await getCoolifySettings(spaceId), validation: publicValidation };
 }
 
 function expiryStatus(declaredExpiresAt: string | null, now: Date): DbStatus | null {
@@ -458,18 +465,35 @@ function expiryStatus(declaredExpiresAt: string | null, now: Date): DbStatus | n
 /** Name of the Coolify MCP preset row in `mcp_servers` (same token). */
 const COOLIFY_MCP_SERVER = 'coolify';
 
-const lastManual = globalThis as unknown as { __nueraCoolifyLastManualCheck?: number };
+/** Last manual check per space. */
+const lastManual = globalThis as unknown as { __nueraCoolifyManualChecks?: Map<string, number> };
+const manualChecks = (lastManual.__nueraCoolifyManualChecks ??= new Map());
 
-export async function checkCoolify(
-  options: { trigger?: CheckTrigger; fetchImpl?: typeof fetch } = {},
-): Promise<CoolifySettingsView> {
+/** Forgets the manual-check throttles (tests). */
+export function resetCoolifyCheckState(): void {
+  manualChecks.clear();
+}
+
+export interface CheckCoolifyOptions {
+  spaceId: string;
+  trigger?: CheckTrigger;
+  fetchImpl?: typeof fetch;
+  /** Scheduled run: skip a token checked less than this long ago. */
+  skipCheckedWithinMs?: number;
+}
+
+export async function checkCoolify(options: CheckCoolifyOptions): Promise<CoolifySettingsView> {
+  const { spaceId } = options;
   const trigger = options.trigger ?? 'manual';
   if (trigger === 'manual') {
-    if (Date.now() - (lastManual.__nueraCoolifyLastManualCheck ?? 0) < CHECK_MIN_INTERVAL_MS) return getCoolifySettings();
-    lastManual.__nueraCoolifyLastManualCheck = Date.now();
+    if (Date.now() - (manualChecks.get(spaceId) ?? 0) < CHECK_MIN_INTERVAL_MS) return getCoolifySettings(spaceId);
+    manualChecks.set(spaceId, Date.now());
   }
-  const stored = await getStoredCoolify();
-  if (!stored) return getCoolifySettings();
+  const stored = await getStoredCoolify(spaceId);
+  if (!stored) return getCoolifySettings(spaceId);
+  if (options.skipCheckedWithinMs && stored.row.lastCheckedAt && Date.now() - stored.row.lastCheckedAt.getTime() < options.skipCheckedWithinMs) {
+    return getCoolifySettings(spaceId);
+  }
   const startedAt = new Date();
   const total = startTimer();
   const steps: CheckStep[] = [];
@@ -540,6 +564,7 @@ export async function checkCoolify(
     },
   };
   await updateCoolify(
+    spaceId,
     (config) => ({ ...config, consecutiveFailures, failingSince, lastCheck: check, history: pushHistory(config.history, check) }),
     {
       status,
@@ -555,9 +580,10 @@ export async function checkCoolify(
     await db
       .update(mcpServers)
       .set({ status: 'expired', lastError: reason ?? null, lastCheckedAt: startedAt })
-      .where(eq(mcpServers.name, COOLIFY_MCP_SERVER));
+      .where(and(eq(mcpServers.spaceId, spaceId), eq(mcpServers.name, COOLIFY_MCP_SERVER)));
   }
   await applyHealthTransition({
+    spaceId,
     target: 'coolify',
     label: 'Coolify',
     previous: healthOfIntegrationStatus(previous),
@@ -568,12 +594,13 @@ export async function checkCoolify(
     reason: reason ?? null,
     href: '/integrations',
   });
-  return getCoolifySettings();
+  return getCoolifySettings(spaceId);
 }
 
-export async function disconnectCoolify(options: { actorUserId?: string | null } = {}): Promise<boolean> {
-  const stored = await getStoredCoolify();
-  const deleted = await deleteCoolify();
+export async function disconnectCoolify(options: { spaceId: string; actorUserId?: string | null }): Promise<boolean> {
+  const { spaceId } = options;
+  const stored = await getStoredCoolify(spaceId);
+  const deleted = await deleteCoolify(spaceId);
   if (deleted) {
     await audit({
       action: 'integration.coolify.disconnected',
@@ -581,8 +608,9 @@ export async function disconnectCoolify(options: { actorUserId?: string | null }
       targetType: 'integration',
       targetId: 'coolify',
       actorUserId: options.actorUserId ?? null,
+      spaceId,
     });
-    await applyHealthTransition({ target: 'coolify', label: 'Coolify', previous: 'error', next: 'inactive', impact: COOLIFY_IMPACT, href: '/integrations' });
+    await applyHealthTransition({ spaceId, target: 'coolify', label: 'Coolify', previous: 'error', next: 'inactive', impact: COOLIFY_IMPACT, href: '/integrations' });
   }
   return deleted;
 }
@@ -591,8 +619,8 @@ export async function disconnectCoolify(options: { actorUserId?: string | null }
 // Reads (applications, deployments) and project mapping
 // ---------------------------------------------------------------------------------------------
 
-async function client(options: { fetchImpl?: typeof fetch } = {}) {
-  const credential = await getCoolifyCredential();
+async function client(spaceId: string, options: { fetchImpl?: typeof fetch } = {}) {
+  const credential = await getCoolifyCredential(spaceId);
   if (!credential) throw new AppError('CONFLICT', "Coolify n'est pas connecté.");
   return createCoolifyClient({ ...credential, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
 }
@@ -605,28 +633,29 @@ function toAppError(error: unknown, context: string): AppError {
   return new AppError('UPSTREAM', `Réponse inattendue de Coolify (${context}).`);
 }
 
-export async function listCoolifyApplications(options: { fetchImpl?: typeof fetch } = {}): Promise<CoolifyApplication[]> {
+export async function listCoolifyApplications(spaceId: string, options: { fetchImpl?: typeof fetch } = {}): Promise<CoolifyApplication[]> {
   try {
-    return (await (await client(options)).applications()).data;
+    return (await (await client(spaceId, options)).applications()).data;
   } catch (error) {
     throw toAppError(error, 'applications');
   }
 }
 
-export async function getCoolifyApplication(uuid: string, options: { fetchImpl?: typeof fetch } = {}): Promise<CoolifyApplication> {
+export async function getCoolifyApplication(spaceId: string, uuid: string, options: { fetchImpl?: typeof fetch } = {}): Promise<CoolifyApplication> {
   try {
-    return (await (await client(options)).application(uuid)).data;
+    return (await (await client(spaceId, options)).application(uuid)).data;
   } catch (error) {
     throw toAppError(error, 'application');
   }
 }
 
 export async function listCoolifyDeployments(
+  spaceId: string,
   uuid: string,
   options: { take?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<{ count: number; deployments: CoolifyDeployment[] }> {
   try {
-    return (await (await client(options)).deploymentsForApplication(uuid, { take: options.take ?? 5 })).data;
+    return (await (await client(spaceId, options)).deploymentsForApplication(uuid, { take: options.take ?? 5 })).data;
   } catch (error) {
     throw toAppError(error, 'déploiements');
   }
@@ -722,22 +751,28 @@ export function toPublicDeployment(deployment: CoolifyDeployment): PublicCoolify
   };
 }
 
-/** Coolify applications of one project with their latest deployments (browser-safe fields only). */
+/**
+ * Coolify applications of one project of the space with their latest deployments (browser-safe
+ * fields only). A project of another space answers like an unknown one (NOT_FOUND), before any call.
+ */
 export async function getProjectCoolifyApplications(
-  projectId: string,
+  input: { spaceId: string; projectId: string },
   options: { fetchImpl?: typeof fetch } = {},
 ): Promise<Array<{ application: PublicCoolifyApplication; deployments: PublicCoolifyDeployment[] }>> {
-  const [project] = await db
-    .select({ id: projects.id, githubFullName: projects.githubFullName, currentBranch: projects.currentBranch, defaultBranch: projects.defaultBranch })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .limit(1);
+  const { spaceId, projectId } = input;
+  const [project] = z.uuid().safeParse(projectId).success
+    ? await db
+        .select({ id: projects.id, githubFullName: projects.githubFullName, currentBranch: projects.currentBranch, defaultBranch: projects.defaultBranch })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), eq(projects.spaceId, spaceId)))
+        .limit(1)
+    : [];
   if (!project) throw new AppError('NOT_FOUND', 'Projet introuvable.');
-  const apps = await listCoolifyApplications(options);
+  const apps = await listCoolifyApplications(spaceId, options);
   const mapped = mapApplicationsToProjects(apps, [project]).get(project.id) ?? [];
   const out: Array<{ application: PublicCoolifyApplication; deployments: PublicCoolifyDeployment[] }> = [];
   for (const application of mapped.slice(0, 5)) {
-    const deployments = await listCoolifyDeployments(application.uuid, { take: 5, ...options }).catch(() => ({
+    const deployments = await listCoolifyDeployments(spaceId, application.uuid, { take: 5, ...options }).catch(() => ({
       count: 0,
       deployments: [] as CoolifyDeployment[],
     }));
@@ -746,12 +781,12 @@ export async function getProjectCoolifyApplications(
   return out;
 }
 
-/** Number of non-archived projects mapped to at least one Coolify application. */
-export async function countMappedProjects(options: { fetchImpl?: typeof fetch } = {}): Promise<number> {
+/** Number of non-archived projects of the space mapped to at least one Coolify application. */
+export async function countMappedProjects(spaceId: string, options: { fetchImpl?: typeof fetch } = {}): Promise<number> {
   const list = await db
     .select({ id: projects.id, githubFullName: projects.githubFullName, currentBranch: projects.currentBranch, defaultBranch: projects.defaultBranch })
     .from(projects)
-    .where(isNull(projects.archivedAt));
-  const apps = await listCoolifyApplications(options);
+    .where(and(eq(projects.spaceId, spaceId), isNull(projects.archivedAt)));
+  const apps = await listCoolifyApplications(spaceId, options);
   return mapApplicationsToProjects(apps, list).size;
 }
