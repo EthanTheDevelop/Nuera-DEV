@@ -23,6 +23,12 @@ export const CheckDestinationRequestSchema = z.object({
   path: z.string().min(1).max(4096),
   /** `owner/repo` being cloned, to recognise an existing clone of the same repository. */
   fullName: RepoFullNameSchema.optional(),
+  /**
+   * Account (personal space) the clone is for (contract 3): on a shared server, every account but the
+   * first one clones in its own folder (`<NUERA_PROJECTS_ROOT>/espaces/<spaceId>/`), where a relative
+   * path is resolved. Omitted: the server's root (first account).
+   */
+  spaceId: UuidSchema.optional(),
 });
 
 export const DestinationCheckSchema = z.object({

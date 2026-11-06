@@ -152,6 +152,12 @@ export const RUNNER_ERROR_REASONS = [
   'PERMISSION_NO_LISTENER',
   'BYPASS_BLOCKED',
   'CLAUDE_NOT_INSTALLED',
+  /** Shared server (contract 3): the request must name the account whose Claude connection it uses. */
+  'CLAUDE_ACCOUNT_REQUIRED',
+  /** The account still works on the server: its Claude config folder is kept. */
+  'CLAUDE_ACCOUNT_IN_USE',
+  /** The account's Claude config folder is a link or a file: refused, never followed. */
+  'CLAUDE_ACCOUNT_FOLDER',
   'FILE_TOO_LARGE',
   'BINARY_FILE',
   'TERMINAL_CLOSED',

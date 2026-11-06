@@ -100,6 +100,11 @@ export type CommonConfigPayload = z.infer<typeof CommonConfigPayloadSchema>;
 
 /** Runner → web: the skills it already holds (their files are then omitted). */
 export const CommonConfigRequestSchema = z.object({
+  /**
+   * Account (personal space) of the server whose configuration is asked (contract 3: one Claude config
+   * folder per account). Omitted: the server's first account. The web checks it works on the server.
+   */
+  spaceId: z.uuid().optional(),
   have: z
     .array(z.object({ name: z.string().regex(COMMON_SKILL_NAME), hash: z.string().regex(/^[0-9a-f]{64}$/) }))
     .max(200)
@@ -125,6 +130,8 @@ export type CommonConfigStatus = z.infer<typeof CommonConfigStatusSchema>;
 
 export const CommonConfigSyncRequestSchema = z.object({
   reason: z.enum(['changed', 'manual', 'launch', 'start']).default('changed'),
+  /** One account of the server only (contract 3); omitted: every account of the server. */
+  spaceId: z.uuid().optional(),
 });
 
 /** Launch options of a session: which common configuration it must start with. */

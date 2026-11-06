@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ClaudeStatusQuerySchema,
+  ClaudeStatusSchema,
   CreateRunRequestSchema,
   CreateTerminalRequestSchema,
   HealthResponseSchema,
@@ -10,6 +12,7 @@ import {
   RUNNER_ROUTES,
   RUNNER_STATES,
   SessionLaunchOptionsSchema,
+  SHARED_SERVER_CONTRACT_VERSION,
   StartSessionRequestSchema,
   TerminalDtoSchema,
   uptimeServiceKey,
@@ -54,7 +57,7 @@ const TERMINAL_V1 = {
 
 describe('contrat runner ⇄ web, version 2', () => {
   it('expose la version du contrat et la clé de disponibilité de chaque serveur', () => {
-    expect(RUNNER_CONTRACT_VERSION).toBe(2);
+    expect(RUNNER_CONTRACT_VERSION).toBe(3);
     expect(uptimeServiceKey({ id: ENV_ID, isDefault: true })).toBe('runner');
     expect(uptimeServiceKey({ id: ENV_ID, isDefault: false })).toBe(`runner:${ENV_ID}`);
   });
@@ -70,7 +73,7 @@ describe('contrat runner ⇄ web, version 2', () => {
       state: 'ready',
       contractVersion: RUNNER_CONTRACT_VERSION,
     });
-    expect(recent).toMatchObject({ environment: { id: ENV_ID, name: 'VPS-3' }, state: 'ready', contractVersion: 2 });
+    expect(recent).toMatchObject({ environment: { id: ENV_ID, name: 'VPS-3' }, state: 'ready', contractVersion: 3 });
     expect(HealthResponseSchema.parse({ ...HEALTH_V1, environment: null, state: 'unregistered', contractVersion: 2 }).environment).toBeNull();
     expect(RUNNER_STATES).toEqual(['ready', 'starting', 'unregistered', 'disabled']);
     expect(HealthResponseSchema.safeParse({ ...HEALTH_V1, state: 'sleeping' }).success).toBe(false);
@@ -144,5 +147,19 @@ describe('contrat runner ⇄ web, version 2', () => {
       denyRules: [],
       env: {},
     });
+  });
+
+  it('contrat 3 (serveurs partagés) : le compte voyage avec chaque appel Claude, facultatif pour un runner plus ancien', () => {
+    expect(SHARED_SERVER_CONTRACT_VERSION).toBe(3);
+    const SPACE = '6f1c0b39-0000-4000-8000-00000000000b';
+    expect(ClaudeStatusQuerySchema.parse({ refresh: '1', spaceId: SPACE })).toEqual({ refresh: true, spaceId: SPACE });
+    expect(ClaudeStatusQuerySchema.parse({})).toEqual({ refresh: false });
+    expect(ClaudeStatusQuerySchema.safeParse({ spaceId: '../autre' }).success).toBe(false);
+    expect(CreateTerminalRequestSchema.parse({ kind: 'claude-login', spaceId: SPACE })).toMatchObject({ spaceId: SPACE });
+    expect(TerminalDtoSchema.parse({ ...TERMINAL_V1, spaceId: SPACE }).spaceId).toBe(SPACE);
+    expect(TerminalDtoSchema.parse(TERMINAL_V1).spaceId).toBeUndefined();
+    expect(ClaudeStatusSchema.parse({ checkedAt: '2026-11-05T10:00:00.000Z', installed: true, version: null, auth: null, state: 'error', agents: null, error: null }).spaceId).toBeUndefined();
+    expect(RUNNER_ROUTES.claudeAccountForget.path).toBe('/v1/claude/accounts/:spaceId/forget');
+    expect(RUNNER_ERROR_REASONS).toEqual(expect.arrayContaining(['CLAUDE_ACCOUNT_REQUIRED', 'CLAUDE_ACCOUNT_IN_USE', 'CLAUDE_ACCOUNT_FOLDER']));
   });
 });

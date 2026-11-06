@@ -20,6 +20,12 @@ export const TerminalSizeSchema = z.object({
 
 /** Account opening the terminal (kept by the runner as `TerminalDto.ownerUserId`). Optional for older webs. */
 const actorUserId = z.string().trim().min(1).max(128).nullish();
+/**
+ * Account (personal space) whose Claude Code config folder a `claude-login`, `mcp-login` or
+ * `claude-status` terminal uses (contract 3). Omitted: the only account of the server (refused when
+ * it has several). Set by the web from the request context, never by a browser.
+ */
+const spaceId = UuidSchema.optional();
 
 export const CreateTerminalRequestSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -36,6 +42,7 @@ export const CreateTerminalRequestSchema = z.discriminatedUnion('kind', [
     cols: z.number().int().min(10).max(500).default(120),
     rows: z.number().int().min(4).max(300).default(32),
     actorUserId,
+    spaceId,
   }),
   z.object({
     kind: z.literal('mcp-login'),
@@ -43,12 +50,14 @@ export const CreateTerminalRequestSchema = z.discriminatedUnion('kind', [
     cols: z.number().int().min(10).max(500).default(120),
     rows: z.number().int().min(4).max(300).default(32),
     actorUserId,
+    spaceId,
   }),
   z.object({
     kind: z.literal('claude-status'),
     cols: z.number().int().min(10).max(500).default(120),
     rows: z.number().int().min(4).max(300).default(32),
     actorUserId,
+    spaceId,
   }),
 ]);
 export type CreateTerminalRequest = z.input<typeof CreateTerminalRequestSchema>;
@@ -71,6 +80,8 @@ export const TerminalDtoSchema = z.object({
   lastActivityAt: IsoDateSchema,
   /** Account that opened the terminal (null: unknown or opened by the runner). Absent from older runners. */
   ownerUserId: z.string().nullable().optional(),
+  /** Account (personal space) the terminal works for: its project's, or its Claude config folder's. Absent from older runners. */
+  spaceId: UuidSchema.nullable().optional(),
 });
 export type TerminalDto = z.infer<typeof TerminalDtoSchema>;
 
