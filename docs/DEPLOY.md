@@ -39,7 +39,9 @@ Garanties des compose (`deploy/docker-compose.yml`, `deploy/docker-compose.runne
   `cap_drop: ALL`, `no-new-privileges`, **aucun socket Docker**, aucun volume.
 - `runner` : non-root (`nuera`), `no-new-privileges`, limites CPU/mémoire/PID (`RUNNER_CPUS`, `RUNNER_MEMORY`,
   4096 PID), **aucun port publié** : joignable seulement sur les réseaux Docker internes (`nuera-internal`, où `web`
-  l'appelle en `http://runner:4100`, et le réseau prédéfini de Coolify quand l'option est activée), jeton
+  l'appelle par son alias `http://nuera-dev-runner:4100` et où il rappelle `http://nuera-dev-web:3000`, et le
+  réseau prédéfini de Coolify quand l'option est activée — jamais par les noms de service `runner` / `web`, que les
+  autres piles du serveur portent aussi sur ce réseau partagé), jeton
   `RUNNER_TOKEN` exigé sur chaque route (`401` sans lui). L'écoute des hooks du CLI (4101) reste sur `127.0.0.1` dans
   le conteneur. Quand `RUNNER_DATABASE_URL` est renseignée, son point d'entrée la substitue à `DATABASE_URL` avant de
   lancer `tini` et le runner (§14).
