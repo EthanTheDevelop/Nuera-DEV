@@ -13,7 +13,10 @@ if (!file) {
 }
 const config = JSON.parse(readFileSync(file, 'utf8')) as FakeGithubConfig;
 const front = await startFakeGithubFront(config);
-console.log(`[faux GitHub] prêt : API ${front.apiUrl} · pages ${front.url} · application ${config.slug} (${config.appId})`);
+console.log(`[faux GitHub] prêt : API ${front.apiUrl} · pages ${front.url}`);
+for (const app of config.apps) {
+  console.log(`[faux GitHub] application ${app.key} : ${app.slug} (${app.appId}) · propriétaire ${app.owner.login} · installations ${app.installations.map((item) => `${item.account}=${item.installationId}`).join(', ')}`);
+}
 
 let closing = false;
 const stop = (signal: string) => {

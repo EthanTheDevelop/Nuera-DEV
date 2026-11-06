@@ -5,7 +5,7 @@ import type { Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
 import { auditLog, projects } from '@nuera/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { E2E_DATABASE_URL, E2E_STACK_DIR, expect, hideNextDevIndicator, test, type StackState } from './fixtures';
+import { E2E_DATABASE_URL, E2E_STACK_DIR, expect, hideNextDevIndicator, normalizePath, samePath, test, type StackState } from './fixtures';
 
 /**
  * Parcours 1 (brief, flux obligatoire) — « GitHub connecté → choix du dépôt → clonage → projet →
@@ -30,8 +30,11 @@ const FULL_NAME = 'atelier-test/site-vitrine';
 const REPO = 'site-vitrine';
 const ACCOUNT = 'atelier-test';
 const BRANCH = 'refonte/accueil';
-/** Owner-edited install command: the default one, slowed down so that A2 is observable. */
-const INSTALL = 'sleep 15 && npm ci';
+/**
+ * Owner-edited install command: the default one, slowed down so that A2 is observable. A script of
+ * the repository (scripts/attendre.js) rather than `sleep`, which cmd.exe (Windows runner) lacks.
+ */
+const INSTALL = 'node scripts/attendre.js 15 && npm ci';
 const SHOTS = path.join(E2E_STACK_DIR, 'shots', 'parcours-1');
 
 const isMobile = () => test.info().project.name === 'mobile';
@@ -39,7 +42,7 @@ const device = () => (isMobile() ? 'mobile' : 'bureau');
 const visible = (page: Page, selector: string) => page.locator(selector).locator('visible=true');
 
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', ['-c', 'safe.directory=*', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } }).trim();
+  return execFileSync('git', ['-c', 'safe.directory=*', '-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } }).trim();
 }
 
 async function shot(page: Page, name: string) {
@@ -55,11 +58,21 @@ test.afterAll(async () => {
   await db.$client.end({ timeout: 5 });
 });
 
-/** Removes every trace of the repository in THIS stack (rows cascade: sessions, worktrees, runs). */
+/** Server of the owner's space (account A, the default server « VPS-3 »). */
+function ownerServer(stack: StackState): { id: string; name: string } {
+  const runner = stack.runners.find((item) => item.key === 'a')!;
+  expect(runner.environmentId, 'serveur par défaut inconnu (state.json)').toBeTruthy();
+  return { id: runner.environmentId!, name: runner.name };
+}
+
+/** The owner's rows of the repository (another account may track the same repository on its own server). */
+const ownerRows = (stack: StackState) => and(eq(projects.githubFullName, FULL_NAME), eq(projects.environmentId, ownerServer(stack).id));
+
+/** Removes every trace of the repository on the owner's server (rows cascade: sessions, worktrees, runs). */
 async function forgetRepository(stack: StackState) {
   const root = path.resolve(stack.paths.projects);
   const inside = (folder: string) => path.resolve(folder).startsWith(root + path.sep);
-  const rows = await db.select().from(projects).where(eq(projects.githubFullName, FULL_NAME));
+  const rows = await db.select().from(projects).where(ownerRows(stack));
   for (const row of rows) {
     await db.delete(projects).where(eq(projects.id, row.id));
     if (inside(row.path)) rmSync(row.path, { recursive: true, force: true });
@@ -75,6 +88,8 @@ async function forgetRepository(stack: StackState) {
 
 test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Workspace (avec A4)', async ({ page, stack, runnerApi, waitForSessionStatus, cli }) => {
   test.setTimeout(600_000);
+  const server = ownerServer(stack);
+  const owner = stack.accounts.find((account) => account.key === 'a')!;
   await forgetRepository(stack);
   const root = path.resolve(stack.paths.projects);
   const repo = stack.repos.find((item) => item.fullName === FULL_NAME)!;
@@ -136,7 +151,7 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     const projectName = `Site vitrine · ${device()}`;
     await name.fill(projectName);
     // Default destination = the leftover folder: the runner's live check says so before submitting.
-    const destination = flow.getByLabel('Destination sur VPS-3');
+    const destination = flow.getByLabel(`Destination sur ${server.name}`);
     await expect(destination).toHaveValue(leftover);
     await expect(flow.getByText('Ce dossier contient déjà 1 fichier.')).toBeVisible({ timeout: 30_000 });
     // Starting branch (Radix Select, read from the fake GitHub).
@@ -156,13 +171,13 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     await shot(page, '3-configuration');
 
     // ---------------------------------------------------------------- 4. A4: refused, nothing overwritten, free folder
-    await flow.getByRole('button', { name: 'Cloner sur VPS-3' }).click();
+    await flow.getByRole('button', { name: `Cloner sur ${server.name}` }).click();
     await expect(flow.getByText("Le dossier de destination n'est pas vide")).toBeVisible({ timeout: 30_000 });
     await expect(flow.getByText(`${leftover} contient déjà 1 fichier. Rien n'a été écrasé.`)).toBeVisible();
     await expect(flow.getByRole('button', { name: 'Réessayer' })).toBeVisible();
     await shot(page, '4-a4');
     expect(readdirSync(leftover)).toEqual(['brouillon.txt']);
-    expect(await db.select({ id: projects.id }).from(projects).where(eq(projects.githubFullName, FULL_NAME))).toHaveLength(0);
+    expect(await db.select({ id: projects.id }).from(projects).where(ownerRows(stack))).toHaveLength(0);
     const suggestion = flow.getByRole('button', { name: /^Utiliser .+ Dossier libre, proposé automatiquement$/ });
     const suggested = ((await suggestion.textContent()) ?? '').replace(/^Utiliser /, '').replace(/Dossier libre, proposé automatiquement$/, '').trim();
     expect(path.dirname(suggested)).toBe(root);
@@ -174,13 +189,13 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     await expect(name).toHaveValue(projectName);
 
     // ---------------------------------------------------------------- 5. A2 live progress → A3
-    await flow.getByRole('button', { name: 'Cloner sur VPS-3' }).click();
+    await flow.getByRole('button', { name: `Cloner sur ${server.name}` }).click();
     await expect(page).toHaveURL(/etape=clonage/, { timeout: 30_000 });
     await expect(flow.getByText(`Clonage de ${FULL_NAME}`)).toBeVisible({ timeout: 30_000 });
     await expect(flow.getByRole('progressbar', { name: `Clonage de ${FULL_NAME}` })).toBeVisible();
     await expect(flow.getByText(`(${INSTALL})`, { exact: false })).toBeVisible({ timeout: 30_000 });
     await expect(flow.getByRole('log', { name: 'Journal du clonage' })).toContainText(`$ ${INSTALL}`);
-    await expect(flow.getByText(/Vous pouvez fermer : le clonage continue sur VPS-3\./).first()).toBeVisible();
+    await expect(flow.getByText(`Vous pouvez fermer : le clonage continue sur ${server.name}.`, { exact: false }).first()).toBeVisible();
     await shot(page, '5-a2');
 
     await expect(flow.getByText(`${projectName} est prêt`)).toBeVisible({ timeout: 240_000 });
@@ -191,8 +206,12 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     await shot(page, '6-a3');
 
     // Real effect: the clone, the row, the audit entry; the leftover folder is untouched.
-    const [row] = await db.select().from(projects).where(eq(projects.githubFullName, FULL_NAME));
+    const [row] = await db.select().from(projects).where(ownerRows(stack));
     expect(row).toMatchObject({ name: projectName, status: 'ready', path: suggested, currentBranch: BRANCH });
+    // Created in the owner's space, on its server, bound to its GitHub source, by the owner.
+    expect(row).toMatchObject({ spaceId: owner.spaceId, environmentId: server.id, createdByUserId: owner.userId });
+    if (owner.github.sourceId) expect(row!.githubSourceId).toBe(owner.github.sourceId);
+    else expect(row!.githubSourceId).toBeTruthy();
     expect(row!.commands).toMatchObject({ install: INSTALL, dev: 'npm run dev', build: 'npm run build' });
     expect(git(suggested, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(BRANCH);
     expect(git(suggested, ['rev-parse', 'HEAD'])).toBe(git(repo.bare, ['rev-parse', `refs/heads/${BRANCH}`]));
@@ -268,9 +287,14 @@ test('parcours 1 · GitHub connecté → dépôt → clonage → projet → Work
     expect(session).toMatchObject({ projectId: row!.id, title, live: true });
     expect(session.worktree?.branch).toBe(sessionBranch);
     const worktreePath = session.worktree!.path;
-    expect(path.resolve(worktreePath).startsWith(path.join(root, '.worktrees') + path.sep)).toBe(true);
+    expect(normalizePath(worktreePath).startsWith(`${normalizePath(path.join(root, '.worktrees'))}/`)).toBe(true);
     expect(git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe(sessionBranch);
-    expect(git(suggested, ['worktree', 'list', '--porcelain'])).toContain(`worktree ${worktreePath}`);
+    // `git worktree list` prints `P:/…` where the DTO holds `P:\…` on Windows.
+    const listed = git(suggested, ['worktree', 'list', '--porcelain'])
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length));
+    expect(listed.some((item) => samePath(item, worktreePath))).toBe(true);
     const sessionAudit = await db.select().from(auditLog).where(and(eq(auditLog.action, 'session.create'), eq(auditLog.targetId, sessionId)));
     expect(sessionAudit).toHaveLength(1);
     expect(sessionAudit[0]!.createdAt.getTime()).toBeGreaterThanOrEqual(started.getTime() - 1000);

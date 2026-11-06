@@ -11,17 +11,40 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { CATALOGUE, DEVIS, GITIGNORE, LINT, NOTES, OUTILS, REPORTER, VITRINE, type FileMap } from './fixture-content';
+import { ATTENDRE, CARNET, CATALOGUE, DEVIS, GITIGNORE, LINT, NOTES, OUTILS, REPORTER, VITRINE, type FileMap } from './fixture-content';
 import { FIXTURES_CACHE } from './paths';
-import type { FixtureAccount, FixtureRepoState } from './state';
+import type { StackKey } from './config';
+import type { FixtureAccount, FixtureRepoState, StackGithubApp } from './state';
 
 /** Bump when the content or the history of a fixture repository changes. */
-export const FIXTURES_VERSION = 3;
+export const FIXTURES_VERSION = 4;
 
+/** GitHub accounts of the fake; `installationId` = installation of app `a` (the owner's source), 0 = none. */
 export const FIXTURE_ACCOUNTS: readonly FixtureAccount[] = [
   { login: 'atelier-test', id: 5101, type: 'Organization', installationId: 71001 },
   { login: 'dev-test', id: 5202, type: 'User', installationId: 71002 },
+  { login: 'hugo-test', id: 5303, type: 'User', installationId: 0 },
 ];
+
+/**
+ * GitHub Apps the fake GitHub serves (GitHub App names and ids are global): a source connected by the
+ * web binds the next unused app whose owner matches the manifest (organization or personal route).
+ *   a   owner atelier-test → atelier-test (71001), dev-test (71002)   source of account `a` (ids kept from v1)
+ *   a2  owner atelier-test → atelier-test (71101)                      spare app: second source of `a` (github-sources.spec)
+ *   b   owner hugo-test    → hugo-test (72003), atelier-test (72001)   source of account `b` (same organization repos)
+ */
+export function fixtureGithubApps(stackName: string, webPort: number, accountKeys: readonly StackKey[]): StackGithubApp[] {
+  const owner = (login: string) => {
+    const account = FIXTURE_ACCOUNTS.find((item) => item.login === login)!;
+    return { login: account.login, id: account.id, type: account.type };
+  };
+  const apps: StackGithubApp[] = [
+    { key: 'a', appId: 900_000 + webPort, slug: `nuera-dev-${stackName}`, owner: owner('atelier-test'), installations: [{ account: 'atelier-test', installationId: 71001 }, { account: 'dev-test', installationId: 71002 }], account: 'a' },
+    { key: 'a2', appId: 905_000 + webPort, slug: `nuera-dev-${stackName}-a2`, owner: owner('atelier-test'), installations: [{ account: 'atelier-test', installationId: 71101 }], account: null },
+    { key: 'b', appId: 910_000 + webPort, slug: `nuera-dev-${stackName}-b`, owner: owner('hugo-test'), installations: [{ account: 'hugo-test', installationId: 72003 }, { account: 'atelier-test', installationId: 72001 }], account: accountKeys.includes('b') ? 'b' : null },
+  ];
+  return apps;
+}
 
 const AUTHORS = {
   camille: { name: 'Camille Laurent', email: 'camille.laurent@atelier-test.example' },
@@ -154,7 +177,7 @@ export const FIXTURE_REPOS: readonly FixtureRepoSpec[] = [
         message: 'chore: premières pages du site',
         daysAgo: 40.3,
         author: 'camille',
-        files: { 'package.json': VITRINE.packageJson, 'package-lock.json': VITRINE.packageLock, '.gitignore': GITIGNORE, 'README.md': VITRINE.readme, 'index.html': VITRINE.index, 'styles.css': VITRINE.styles, 'scripts/dev.js': VITRINE.dev, 'scripts/build.js': VITRINE.build },
+        files: { 'package.json': VITRINE.packageJson, 'package-lock.json': VITRINE.packageLock, '.gitignore': GITIGNORE, 'README.md': VITRINE.readme, 'index.html': VITRINE.index, 'styles.css': VITRINE.styles, 'scripts/dev.js': VITRINE.dev, 'scripts/build.js': VITRINE.build, 'scripts/attendre.js': ATTENDRE },
       },
       { message: 'docs: consignes pour Claude', daysAgo: 19.6, author: 'camille', files: { 'CLAUDE.md': VITRINE.claudeMd } },
     ],
@@ -206,14 +229,57 @@ export const FIXTURE_REPOS: readonly FixtureRepoSpec[] = [
     ],
     branches: [],
   },
+  {
+    owner: 'hugo-test',
+    name: 'carnet-chantier',
+    id: 630_001,
+    displayName: 'Carnet de chantier',
+    description: 'Carnet de chantier : interventions, durées et matériaux.',
+    private: true,
+    language: 'JavaScript',
+    failingTests: false,
+    history: [
+      {
+        message: 'chore: initialisation du carnet',
+        daysAgo: 18.3,
+        author: 'hugo',
+        files: {
+          'package.json': CARNET.packageJson,
+          'package-lock.json': CARNET.packageLock,
+          '.gitignore': GITIGNORE,
+          'README.md': CARNET.readme,
+          'scripts/build.js': CARNET.build,
+          'scripts/lint.js': LINT,
+          'scripts/rapport-tests.js': REPORTER,
+        },
+      },
+      { message: 'feat: durées des interventions', daysAgo: 7.5, author: 'hugo', files: { 'src/durees.js': CARNET.durees, 'test/durees.test.js': CARNET.dureesTest } },
+      { message: 'docs: consignes pour Claude', daysAgo: 2.1, author: 'hugo', files: { 'CLAUDE.md': CARNET.claudeMd } },
+    ],
+    branches: [],
+  },
 ];
 
-/** Repositories cloned by `seed projects` (keys used in state.json `seeded.projects`). */
+/** Repositories cloned by `seed projects` for account `a` (keys used in state.json `seeded.projects`). */
 export const SEEDED_PROJECTS = [
   { key: 'devis', fullName: 'atelier-test/devis-express' },
   { key: 'catalogue', fullName: 'atelier-test/catalogue-produits' },
   { key: 'outils', fullName: 'dev-test/outils-cli' },
 ] as const;
+
+/**
+ * Projects seeded per account. Account `b` clones the SAME atelier-test/devis-express as `a` (two
+ * spaces tracking one repository on two servers) plus its personal hugo-test/carnet-chantier.
+ */
+export const SEEDED_PROJECTS_BY_ACCOUNT: Readonly<Record<StackKey, ReadonlyArray<{ key: string; fullName: string }>>> = {
+  a: SEEDED_PROJECTS,
+  b: [
+    { key: 'devis', fullName: 'atelier-test/devis-express' },
+    { key: 'carnet', fullName: 'hugo-test/carnet-chantier' },
+  ],
+  c: [{ key: 'devis', fullName: 'atelier-test/devis-express' }],
+  d: [{ key: 'devis', fullName: 'atelier-test/devis-express' }],
+};
 
 export type SeededProjectKey = (typeof SEEDED_PROJECTS)[number]['key'];
 
@@ -380,16 +446,22 @@ export function readBareContents(bare: string, rel: string, ref: string): BareCo
   return { type: 'file', name: path.posix.basename(clean), path: clean, sha, size: content.length, content };
 }
 
-export function fixtureRepoStates(remotes: string): FixtureRepoState[] {
+/** Every fixture repository with the installation of each app of the fake that reaches it. */
+export function fixtureRepoStates(remotes: string, apps: readonly Pick<StackGithubApp, 'key' | 'installations'>[]): FixtureRepoState[] {
   return FIXTURE_REPOS.map((spec) => {
-    const account = FIXTURE_ACCOUNTS.find((item) => item.login === spec.owner)!;
     const bare = path.join(remotes, spec.owner, `${spec.name}.git`);
+    const installations: Record<string, number> = {};
+    for (const app of apps) {
+      const installation = app.installations.find((item) => item.account === spec.owner);
+      if (installation) installations[app.key] = installation.installationId;
+    }
     return {
       fullName: `${spec.owner}/${spec.name}`,
       owner: spec.owner,
       name: spec.name,
       id: spec.id,
-      installationId: account.installationId,
+      installationId: installations.a ?? 0,
+      installations,
       defaultBranch: 'main',
       branches: ['main', ...spec.branches.map((branch) => branch.name)],
       private: spec.private,

@@ -1,13 +1,15 @@
 /**
- * TEST-ONLY — browser side of the stack launcher: owner setup and sign-in through the real pages
- * (same helpers as the e2e fixtures), signed-in request contexts, page warm-up, screenshots.
+ * TEST-ONLY — browser side of the stack launcher: owner setup, invitation acceptance and sign-in
+ * through the real pages (same helpers as the e2e fixtures), signed-in request contexts per account,
+ * page warm-up, screenshots.
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, devices, request as playwrightRequest, type APIRequestContext, type Browser, type BrowserContextOptions, type Page } from '@playwright/test';
-import { completeOwnerSetup, ensureBackupCodes, readOwnerState, signIn, type OwnerState } from '../fixtures/owner';
+import { acceptInvitation, completeOwnerSetup, ensureBackupCodes, readOwnerState, signIn, type AccountState, type OwnerState } from '../fixtures/owner';
 import { chromiumLaunchOptions } from './chromium';
-import type { StackState } from './state';
+import type { StackKey } from './config';
+import { accountOf, type StackState } from './state';
 
 export const DESKTOP_VIEWPORT = { width: 1440, height: 1000 };
 export const MOBILE_VIEWPORT = { width: 390, height: 844 };
@@ -36,40 +38,60 @@ export async function withBrowser<T>(fn: (browser: Browser) => Promise<T>): Prom
   }
 }
 
-/** First-run setup through /configuration (token, account, TOTP, backup codes). */
-export async function createOwner(state: StackState): Promise<OwnerState> {
+async function withPage<T>(state: StackState, fn: (page: Page, save: (file: string) => Promise<void>) => Promise<T>): Promise<T> {
   return withBrowser(async (browser) => {
     const context = await browser.newContext(contextOptions(state.urls.web));
     context.setDefaultNavigationTimeout(300_000);
     context.setDefaultTimeout(120_000);
     const page = await context.newPage();
-    const owner = await completeOwnerSetup(page, { name: state.owner.name, email: state.owner.email, password: state.owner.password }, { setupToken: state.secrets.setupToken, stateFile: state.paths.ownerFile });
-    await context.storageState({ path: state.paths.storageState });
-    await context.close();
+    try {
+      return await fn(page, async (file) => {
+        mkdirSync(path.dirname(file), { recursive: true });
+        await context.storageState({ path: file });
+      });
+    } finally {
+      await context.close().catch(() => undefined);
+    }
+  });
+}
+
+/** First-run setup through /configuration (token, account, TOTP, backup codes): account `a`. */
+export async function createOwner(state: StackState): Promise<OwnerState> {
+  const account = accountOf(state, 'a');
+  return withPage(state, async (page, save) => {
+    const owner = await completeOwnerSetup(page, { name: account.name, email: account.email, password: account.password }, { setupToken: state.secrets.setupToken, stateFile: account.stateFile });
+    await save(account.storageState);
     return owner;
   });
 }
 
-/** Password + TOTP through /connexion; writes the storage state of the stack (or `out`). */
-export async function signInToFile(state: StackState, out = state.paths.storageState): Promise<string> {
-  const owner = readOwnerState(state.paths.ownerFile);
-  if (!owner) throw new Error(`Propriétaire inconnu pour la pile ${state.name} (owner.json absent) : relancez \`up\`.`);
-  await withBrowser(async (browser) => {
-    const context = await browser.newContext(contextOptions(state.urls.web));
-    context.setDefaultNavigationTimeout(300_000);
-    context.setDefaultTimeout(120_000);
-    const page = await context.newPage();
-    await signIn(page, owner, { stateFile: state.paths.ownerFile });
-    mkdirSync(path.dirname(out), { recursive: true });
-    await context.storageState({ path: out });
-    await context.close();
+/** Account `key` accepts its invitation in a fresh browser (real /invitation/<jeton> page + mandatory 2FA). */
+export async function acceptInvitationInBrowser(state: StackState, key: StackKey, inviteUrl: string): Promise<AccountState> {
+  const account = accountOf(state, key);
+  return withPage(state, async (page, save) => {
+    const created = await acceptInvitation(page, inviteUrl, { name: account.name, email: account.email, password: account.password }, { stateFile: account.stateFile });
+    await save(account.storageState);
+    return created;
   });
-  return out;
 }
 
-async function storageIsValid(state: StackState): Promise<boolean> {
-  if (!existsSync(state.paths.storageState)) return false;
-  const request = await playwrightRequest.newContext({ baseURL: state.urls.web, storageState: state.paths.storageState });
+/** Password + TOTP through /connexion for account `key`; writes its storage state (or `out`). */
+export async function signInToFile(state: StackState, key: StackKey = 'a', out?: string): Promise<string> {
+  const account = accountOf(state, key);
+  const stored = readOwnerState(account.stateFile);
+  if (!stored) throw new Error(`Compte « ${key} » inconnu pour la pile ${state.name} (${path.basename(account.stateFile)} absent) : relancez \`up\`.`);
+  const file = out ?? account.storageState;
+  await withPage(state, async (page, save) => {
+    await signIn(page, stored, { stateFile: account.stateFile });
+    await save(file);
+  });
+  return file;
+}
+
+async function storageIsValid(state: StackState, key: StackKey): Promise<boolean> {
+  const file = accountOf(state, key).storageState;
+  if (!existsSync(file)) return false;
+  const request = await playwrightRequest.newContext({ baseURL: state.urls.web, storageState: file });
   try {
     const response = await request.get('/api/notifications/counts', { timeout: 300_000 });
     return response.status() === 200;
@@ -80,33 +102,34 @@ async function storageIsValid(state: StackState): Promise<boolean> {
   }
 }
 
-/** Signed-in API context (cookies of the stack's storage state, re-signing in when it expired). */
-export async function signedInRequest(state: StackState): Promise<APIRequestContext> {
-  if (!(await storageIsValid(state))) await signInToFile(state);
-  return playwrightRequest.newContext({ baseURL: state.urls.web, storageState: state.paths.storageState, timeout: 300_000 });
+/** Signed-in API context of account `key` (cookies of its storage state, re-signing in when it expired). */
+export async function signedInRequest(state: StackState, key: StackKey = 'a'): Promise<APIRequestContext> {
+  if (!(await storageIsValid(state, key))) await signInToFile(state, key);
+  return playwrightRequest.newContext({ baseURL: state.urls.web, storageState: accountOf(state, key).storageState, timeout: 300_000 });
 }
 
-/** Keeps at least `min` unused backup codes in owner.json (the backup-code e2e journey consumes one per run). */
-export async function topUpBackupCodes(state: StackState, min = 3): Promise<number> {
-  const owner = readOwnerState(state.paths.ownerFile);
-  if (!owner || owner.backupCodes.length >= min) return owner?.backupCodes.length ?? 0;
-  const request = await signedInRequest(state);
+/** Keeps at least `min` unused backup codes in the account's file (the backup-code journeys consume one per run). */
+export async function topUpBackupCodes(state: StackState, key: StackKey = 'a', min = 3): Promise<number> {
+  const file = accountOf(state, key).stateFile;
+  const stored = readOwnerState(file);
+  if (!stored || stored.backupCodes.length >= min) return stored?.backupCodes.length ?? 0;
+  const request = await signedInRequest(state, key);
   try {
-    return await ensureBackupCodes(request, state.urls.web, { stateFile: state.paths.ownerFile, min });
+    return await ensureBackupCodes(request, state.urls.web, { stateFile: file, min });
   } finally {
     await request.dispose();
   }
 }
 
 /** Requests each path once so that `next dev` compiles it before the first test (cold compiles take minutes). */
-export async function warmPages(state: StackState, paths: string[], log: (line: string) => void, signedIn = true): Promise<void> {
-  const request = signedIn ? await signedInRequest(state) : await playwrightRequest.newContext({ baseURL: state.urls.web });
+export async function warmPages(state: StackState, paths: string[], log: (line: string) => void, signedIn: false | StackKey = 'a'): Promise<void> {
+  const request = signedIn ? await signedInRequest(state, signedIn) : await playwrightRequest.newContext({ baseURL: state.urls.web });
   try {
     for (const pathname of paths) {
       const started = Date.now();
       try {
         const response = await request.get(pathname, { maxRedirects: 0, timeout: 600_000 });
-        log(`  préchauffage ${pathname} → ${response.status()} (${Math.round((Date.now() - started) / 1000)} s)`);
+        log(`  préchauffage ${pathname}${signedIn && signedIn !== 'a' ? ` (compte ${signedIn})` : ''} → ${response.status()} (${Math.round((Date.now() - started) / 1000)} s)`);
       } catch (error) {
         log(`  préchauffage ${pathname} : ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
       }
@@ -138,6 +161,8 @@ export interface ShotOptions {
   selector?: string;
   /** Colour scheme of the browser. */
   dark?: boolean;
+  /** Account signed in (default `a`). */
+  account?: StackKey;
 }
 
 /**
@@ -145,10 +170,11 @@ export interface ShotOptions {
  * Playwright's fullPage capture: `full` scrolls, then captures with a clip (CLAUDE.md).
  */
 export async function screenshot(state: StackState, options: ShotOptions): Promise<string> {
-  if (!(await storageIsValid(state))) await signInToFile(state);
+  const key = options.account ?? 'a';
+  if (!(await storageIsValid(state, key))) await signInToFile(state, key);
   mkdirSync(path.dirname(options.out), { recursive: true });
   await withBrowser(async (browser) => {
-    const context = await browser.newContext({ ...contextOptions(state.urls.web, options.mobile), storageState: state.paths.storageState, colorScheme: options.dark ? 'dark' : 'light' });
+    const context = await browser.newContext({ ...contextOptions(state.urls.web, options.mobile), storageState: accountOf(state, key).storageState, colorScheme: options.dark ? 'dark' : 'light' });
     context.setDefaultNavigationTimeout(300_000);
     const page = await context.newPage();
     await page.goto(options.path, { waitUntil: 'load' });

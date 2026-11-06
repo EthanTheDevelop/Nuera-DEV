@@ -1,5 +1,5 @@
 import { request as playwrightRequest, type Locator, type Page } from '@playwright/test';
-import { E2E_BASE_URL, expect, test } from './fixtures';
+import { E2E_BASE_URL, expect, test, type StackState } from './fixtures';
 
 /**
  * Lot HOME — Accueil (D01 desktop / M01 phone) and the global search of the command palette, against
@@ -23,18 +23,27 @@ async function openHome(page: Page) {
   await page.waitForFunction(() => document.readyState === 'complete');
 }
 
+/** Name of the owner's server (the default server keeps « VPS-3 », the Figma copy). */
+function serverOf(stack: StackState): string {
+  const server = stack.runners.find((runner) => runner.key === 'a')!;
+  // MULTICOMPTE §1 invariant 4: the default server keeps its Figma name for the owner.
+  if (server.isDefault) expect(server.name).toBe('VPS-3');
+  return server.name;
+}
+
 test('Accueil : en-tête, serveur et Claude Code lus du runner et du CLI', async ({ page, stack }) => {
+  const serverName = serverOf(stack);
   await openHome(page);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(`Bonjour ${stack.owner.name.split(' ')[0]}`);
   if (isMobile()) {
     await expect(page.getByText(/^[A-Z][a-zé]+\. \d{1,2} [a-zéû]+\.? · tout est disponible$/)).toBeVisible();
-    await expect(page.getByText('VPS-3 en ligne')).toBeVisible();
+    await expect(page.getByText(`${serverName} en ligne`)).toBeVisible();
     await expect(page.getByText('Claude Code connecté', { exact: true }).filter({ visible: true })).toBeVisible();
     // No horizontal page scroll at 390 px (the rail scrolls inside itself).
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   } else {
-    await expect(page.getByText(/ · VPS-3 et Claude Code sont disponibles$/)).toBeVisible();
-    const server = page.getByRole('region', { name: 'Serveur VPS-3' });
+    await expect(page.getByText(new RegExp(` · ${serverName} et Claude Code sont disponibles$`))).toBeVisible();
+    const server = page.getByRole('region', { name: `Serveur ${serverName}` });
     await expect(server.getByText('En ligne', { exact: true })).toBeVisible();
     await expect(server.getByRole('meter')).toHaveCount(3);
     await expect(server.getByRole('meter', { name: 'Mémoire' })).toHaveAttribute('aria-valuetext', /^\d+(,\d)? \/ \d+(,\d)? Go$/);
@@ -70,6 +79,13 @@ test("Accueil : la demande d'autorisation mène à la session, sur la demande", 
 
 test('Accueil : sessions actives, reprise rapide, projets récents, dernières modifications', async ({ page, stack }) => {
   const seeded = stack.seeded;
+  // « Projets récents » follows the latest activity of the space: specs that ran before this one
+  // (terminal, projects…) opened or created other projects. Opening the three seeded ones puts them
+  // back on top, whatever the order of the run.
+  for (const key of ['outils', 'catalogue', 'devis'] as const) {
+    await page.goto(`/projets/${seeded.projects![key]!.id}`);
+    await expect(page.getByRole('heading', { level: 1, name: seeded.projects![key]!.name }).locator('visible=true')).toBeVisible({ timeout: 60_000 });
+  }
   await openHome(page);
   const running = visible(page, `[data-session-card="${seeded.sessions!.running!.id}"]`);
   await expect(running).toContainText('En cours');
@@ -86,8 +102,10 @@ test('Accueil : sessions actives, reprise rapide, projets récents, dernières m
   await expect(projects.getByText('À jour').first()).toBeVisible();
 
   const changes = page.getByRole('region', { name: /^Dernières modifications$/i });
-  const sha = seeded.changes!.commitSha.slice(0, 7);
-  await expect(changes).toContainText(sha);
+  // Only the latest commits are listed: the specs that ran before (parcours, workspace…) may have
+  // committed on Devis Express since the seed, pushing the seeded commit out of the list. Real
+  // commits of a seeded project, linked to GitHub, either way.
+  await expect(changes).toContainText(/[0-9a-f]{7}(?: · )?[^·]*?(Devis Express|Catalogue produits|Outils CLI) ·/);
   if (!isMobile()) {
     await expect(changes).toContainText('par Claude Code');
     await expect(changes.getByRole('link', { name: 'Ouvrir sur GitHub' })).toHaveAttribute('href', /\/commits\//);
@@ -159,6 +177,10 @@ test('Recherche globale : ⌘K / Ctrl K trouve projets et sessions partout', asy
   expect(api.status()).toBe(200);
   const body = (await api.json()) as { projects: Array<{ id: string }>; sessions: Array<{ id: string }>; actions: unknown[] };
   expect(body.projects.map((p) => p.id)).toContain(seeded.projects!.devis!.id);
+  // Account B tracks the same repository (« Devis Express ») in its own space: never found here.
+  const other = stack.accounts.find((account) => account.key === 'b')?.seeded;
+  for (const project of Object.values(other?.projects ?? {})) expect(body.projects.map((p) => p.id)).not.toContain(project.id);
+  for (const session of Object.values(other?.sessions ?? {})) expect(body.sessions.map((s) => s.id)).not.toContain(session.id);
   expect((await page.request.get('/api/search?q=')).status()).toBe(422);
   const stranger = await playwrightRequest.newContext({ baseURL: E2E_BASE_URL, storageState: { cookies: [], origins: [] } });
   try {
@@ -174,7 +196,8 @@ test('Recherche globale : ⌘K / Ctrl K trouve projets et sessions partout', asy
   const palette = page.getByRole('dialog', { name: 'Recherche' });
   await expect(palette).toBeVisible();
   await palette.getByRole('combobox').fill('catalogue');
-  const option = palette.getByRole('option', { name: /Catalogue produits/ });
+  // A session of the project (« Parcours 3 catalogue… ») may match too on a stack already used.
+  const option = palette.getByRole('option', { name: /^Catalogue produits/ });
   await expect(option).toBeVisible({ timeout: 15_000 });
   await option.click();
   await expect(page).toHaveURL(new RegExp(`/projets/${seeded.projects!.catalogue!.id}$`), { timeout: 120_000 });

@@ -1,9 +1,10 @@
 import { createECDH, randomBytes, randomUUID } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
 import { createDb } from '@nuera/db';
-import { appSettings, auditLog, worktrees } from '@nuera/db/schema';
+import { auditLog, environments, spaceSettings, userPreferences, worktrees } from '@nuera/db/schema';
 import { and, desc, eq, like } from 'drizzle-orm';
-import { E2E_BASE_URL, E2E_DATABASE_URL, expect, readOwnerState, signIn, test, writeOwnerState } from './fixtures';
+import { readState } from './harness/state';
+import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STATE_FILE, deviceLabelOf, expect, readOwnerState, requireAccounts, signIn, test, writeOwnerState } from './fixtures';
 
 /**
  * Lot PARAMÈTRES — D08 (desktop tabs) / M08 (phone groups + drill-downs) against the real test
@@ -38,17 +39,40 @@ async function patchSettings(page: Page, patch: Record<string, unknown>) {
   expect(response.status(), await response.text()).toBe(200);
 }
 
+/** Account A (owner) and the server of its space, as the stack recorded them. */
+function ownerAccount() {
+  const state = readState(E2E_STATE_FILE);
+  const account = state?.accounts.find((item) => item.key === 'a');
+  const server = state?.runners.find((item) => item.key === 'a');
+  if (!account?.userId || !account.spaceId || !server?.environmentId) throw new Error('Compte propriétaire inconnu (state.json) : relancez la pile.');
+  return { ...account, server: { id: server.environmentId, name: server.name } };
+}
+
+/**
+ * The owner's settings, each read from its scope (MULTICOMPTE §8): permission mode and bypass block
+ * from its space, « Sessions parallèles » from its server, the theme from its own preferences.
+ */
 async function readSettings() {
-  const [row] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
-  return row!;
+  const owner = ownerAccount();
+  const [space] = await database.select().from(spaceSettings).where(eq(spaceSettings.spaceId, owner.spaceId!));
+  const [server] = await database.select({ maxConcurrentSessions: environments.maxConcurrentSessions }).from(environments).where(eq(environments.id, owner.server.id));
+  const [preferences] = await database.select({ theme: userPreferences.theme }).from(userPreferences).where(eq(userPreferences.userId, owner.userId!));
+  return {
+    defaultPermissionMode: space!.defaultPermissionMode,
+    blockBypassPermissions: space!.blockBypassPermissions,
+    maxConcurrentSessions: server!.maxConcurrentSessions,
+    theme: preferences?.theme ?? 'light',
+  };
 }
 
 test.describe("vue d'ensemble", () => {
   test('montre les vraies données du CLI, du compte et du serveur', async ({ page }) => {
+    const owner = ownerAccount();
     await openSettings(page);
+    // Several accounts now: the « one owner, no other account » copy is gone (MULTICOMPTE §10).
+    await expect(page.getByText(/Un seul propriétaire|aucun autre compte/)).toHaveCount(0);
     if (isMobile()) {
-      await expect(page.getByText('Un seul propriétaire : Camille', { exact: true })).toBeVisible();
-      for (const group of ['Claude Code', 'Sécurité', 'Serveur VPS-3', 'Préférences']) {
+      for (const group of ['Claude Code', 'Sécurité', `Serveur ${owner.server.name}`, 'Préférences']) {
         await expect(page.getByRole('heading', { name: group, exact: true })).toBeVisible();
       }
       await expect(page.getByRole('button', { name: /Compte Claude.*Connecté · Max/ })).toBeVisible();
@@ -60,7 +84,8 @@ test.describe("vue d'ensemble", () => {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       return;
     }
-    await expect(page.getByText('Compte, sécurité, Claude Code et serveur. Un seul propriétaire, aucun autre compte.', { exact: true })).toBeVisible();
+    // The owner keeps the Figma user card.
+    await expect(page.getByText('Propriétaire · double facteur actif', { exact: false }).filter({ visible: true }).first()).toBeVisible();
     const claude = page.getByRole('region', { name: 'Claude Code · compte Claude' });
     await expect(claude.getByText('Connecté · formule Max', { exact: true })).toBeVisible();
     await expect(claude.getByRole('combobox', { name: 'Modèle par défaut' })).toHaveText(/Défaut du CLI/);
@@ -71,7 +96,7 @@ test.describe("vue d'ensemble", () => {
     await expect(security.getByText(/codes? de secours restants?/)).toBeVisible();
     await expect(security.getByText('Cet appareil', { exact: true })).toBeVisible();
     await expect(security.getByText("Un accès expire après 12 h d'inactivité, et au plus tard après 30 jours.", { exact: true })).toBeVisible();
-    const server = page.getByRole('region', { name: 'Serveur VPS-3' });
+    const server = page.getByRole('region', { name: `Serveur ${owner.server.name}` });
     await expect(server.getByText('En ligne', { exact: true })).toBeVisible();
     await expect(server.getByText(/processus PTY|processus tmux/)).toBeVisible();
     await expect(page.getByRole('region', { name: 'Maintenance' }).getByRole('button', { name: 'Consulter' })).toBeVisible();
@@ -127,8 +152,9 @@ test.describe('Claude Code', () => {
       }
       await expect(toast(page, 'Mode de permission par défaut : accepter les modifications')).toBeVisible();
       await expect.poll(async () => (await readSettings()).defaultPermissionMode).toBe('acceptEdits');
-      const [audit] = await database.select().from(auditLog).where(eq(auditLog.action, 'settings.updated')).orderBy(desc(auditLog.id)).limit(1);
-      expect(audit!.summary).toBe('réglages modifiés : mode de permission');
+      const [audit] = await database.select().from(auditLog).where(and(eq(auditLog.action, 'settings.updated'), eq(auditLog.actorUserId, ownerAccount().userId!))).orderBy(desc(auditLog.id)).limit(1);
+      // The default permission mode belongs to the space (MULTICOMPTE §8).
+      expect(audit!.summary).toBe("réglages de l'espace modifiés : mode de permission");
       await page.reload();
       if (isMobile()) await expect(page.getByRole('button', { name: /Mode de permission.*Accepter/ })).toBeVisible();
       else await expect(page.getByRole('combobox', { name: 'Mode de permission' })).toHaveText(/Accepter les modifications/);
@@ -180,7 +206,7 @@ test.describe('Claude Code', () => {
       await dialog.getByRole('button', { name: 'Fermer' }).first().click();
       if (isMobile()) await expect(page.getByRole('region', { name: 'État du CLI' }).getByText('oui', { exact: true })).toBeVisible({ timeout: 30_000 });
       else await expect(page.getByRole('region', { name: 'Claude Code · compte Claude' }).getByText('Connecté · formule Max', { exact: true })).toBeVisible({ timeout: 30_000 });
-      const [audit] = await database.select().from(auditLog).where(like(auditLog.action, 'terminal.%')).orderBy(desc(auditLog.id)).limit(1);
+      const [audit] = await database.select().from(auditLog).where(and(like(auditLog.action, 'terminal.%'), eq(auditLog.actorUserId, ownerAccount().userId!))).orderBy(desc(auditLog.id)).limit(1);
       expect(audit).toBeTruthy();
     } finally {
       await cli.setLoggedIn(true);
@@ -260,7 +286,7 @@ test.describe('Compte et sécurité', () => {
     writeOwnerState(owner);
     await page.getByRole('button', { name: "J'ai conservé mes codes" }).click();
     await expect(page.getByRole('region', { name: 'Double facteur' }).getByText('8 codes de secours restants')).toBeVisible();
-    const [audit] = await database.select().from(auditLog).where(eq(auditLog.action, 'auth.backup_codes_regenerated')).orderBy(desc(auditLog.id)).limit(1);
+    const [audit] = await database.select().from(auditLog).where(and(eq(auditLog.action, 'auth.backup_codes_regenerated'), eq(auditLog.actorUserId, ownerAccount().userId!))).orderBy(desc(auditLog.id)).limit(1);
     expect(audit).toBeTruthy();
   });
 
@@ -275,8 +301,10 @@ test.describe('Compte et sécurité', () => {
       await openSettings(page, '?onglet=compte-et-securite');
       const tile = page.getByRole('region', { name: "Clés d'accès" });
       await tile.getByRole('button', { name: "Ajouter une clé d'accès" }).click();
-      await expect(toast(page, "Clé d'accès enregistrée : PC Linux · Chrome")).toBeVisible({ timeout: 30_000 });
-      await tile.getByRole('button', { name: 'Renommer PC Linux · Chrome' }).click();
+      // Named after this browser's device (« PC Windows · Chrome », « PC Linux · Chrome »…).
+      const label = await deviceLabelOf(page);
+      await expect(toast(page, `Clé d'accès enregistrée : ${label}`)).toBeVisible({ timeout: 30_000 });
+      await tile.getByRole('button', { name: `Renommer ${label}` }).click();
       const rename = page.getByRole('dialog', { name: "Renommer la clé d'accès" });
       await rename.getByLabel('Nom').fill('Poste de test');
       await rename.getByRole('button', { name: 'Renommer' }).click();
@@ -372,7 +400,25 @@ test.describe('Préférences', () => {
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
       await expect.poll(async () => (await readSettings()).theme).toBe('light');
     } finally {
-      await database.update(appSettings).set({ theme: 'light' }).where(eq(appSettings.id, 1));
+      await database.update(userPreferences).set({ theme: 'light' }).where(eq(userPreferences.userId, ownerAccount().userId!));
+    }
+  });
+
+  test("@comptes le thème est propre à chaque compte : le sombre de A laisse B en clair", async ({ page, as }) => {
+    test.skip(isMobile(), 'liste du bureau');
+    requireAccounts(2);
+    await openSettings(page, '?onglet=preferences');
+    const b = await as('b');
+    try {
+      await page.getByRole('combobox', { name: 'Thème' }).click();
+      await page.getByRole('option', { name: 'Sombre' }).click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+      await expect.poll(async () => (await readSettings()).theme).toBe('dark');
+      await b.page.goto('/parametres?onglet=preferences');
+      await expect(b.page.getByRole('combobox', { name: 'Thème' })).toHaveText(/Clair/, { timeout: 120_000 });
+      await expect(b.page.locator('html')).not.toHaveAttribute('data-theme', 'dark');
+    } finally {
+      await database.update(userPreferences).set({ theme: 'light' }).where(eq(userPreferences.userId, ownerAccount().userId!));
     }
   });
 

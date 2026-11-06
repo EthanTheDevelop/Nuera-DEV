@@ -1,5 +1,23 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { DEFAULT_WEB_PORTS, TEST_SETUP_TOKEN, assertStackName, defaultDatabaseName, layoutFor, ownerIdentity, portsFor, urlsFor, type StackPorts } from '../harness/config';
+import {
+  DEFAULT_WEB_PORTS,
+  MAX_ACCOUNTS,
+  TEST_SETUP_TOKEN,
+  accountFiles,
+  accountIdentity,
+  assertStackName,
+  defaultAccountCount,
+  defaultDatabaseName,
+  layoutFor,
+  ownerIdentity,
+  portsFor,
+  runnerPortsFor,
+  stackKeys,
+  urlsFor,
+  type AccountIdentity,
+  type StackKey,
+  type StackPorts,
+} from '../harness/config';
 import { REPO_ROOT as HARNESS_REPO_ROOT, WEB_ROOT as HARNESS_WEB_ROOT } from '../harness/paths';
 
 /**
@@ -9,17 +27,22 @@ import { REPO_ROOT as HARNESS_REPO_ROOT, WEB_ROOT as HARNESS_WEB_ROOT } from '..
  *   E2E_STACK         stack name (default `e2e`) → `.data/stacks/<name>/`
  *   E2E_WEB_PORT      web port (alias: E2E_PORT; default: the stack's state.json, else 3102 for `e2e`)
  *   E2E_RUNNER_PORT / E2E_HOOK_PORT / E2E_GITHUB_PORT   default: web + 1000 / + 1001 / + 1002
+ *                     (runner B: web + 1010 / + 1011, runner C: + 1020 / + 1021)
  *   E2E_DATABASE      database (default `nuera_<stack>`)
  *   E2E_PG_URL        PostgreSQL server without database (default postgres://nuera:nuera@127.0.0.1:54329)
- *   E2E_RESET=1       recreate the stack (database, clones, owner) before the run
+ *   E2E_ACCOUNTS      accounts (= servers) of the stack: 2 by default for `e2e` (owner A on « VPS-3 » +
+ *                     invited member B on « VPS-4 »), 1 for any other stack (alias E2E_RUNNERS)
+ *   E2E_RESET=1       recreate the stack (database, clones, accounts) before the run
  *   E2E_PRISTINE=1    with a (re)created stack: no owner, the `configuration` project creates it
- *   E2E_SEED          seed scenarios run by the global setup (default `all`; `none` to skip)
+ *   E2E_SEED          seed scenarios of account A run by the setup (default `all`; `none` to skip)
+ *   E2E_SEED_B        seed scenarios of account B (default `projects,sessions,notifications`; `none`)
  *   E2E_DOWN=1        stop the stack after the run (it is kept running by default)
  */
 
 interface RecordedStack {
   ports?: StackPorts;
   database?: { name?: string };
+  accountCount?: number;
 }
 
 export const E2E_STACK = assertStackName(process.env.E2E_STACK?.trim() || 'e2e');
@@ -39,6 +62,20 @@ function envPort(name: string): number | undefined {
   return value ? Number(value) : undefined;
 }
 
+function resolveAccountCount(): number {
+  const raw = (process.env.E2E_ACCOUNTS ?? process.env.E2E_RUNNERS)?.trim();
+  if (raw) {
+    const count = Number(raw);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_ACCOUNTS) throw new Error(`E2E_ACCOUNTS invalide : ${raw} (1 à ${MAX_ACCOUNTS}).`);
+    return count;
+  }
+  return recordedStack()?.accountCount ?? defaultAccountCount(E2E_STACK);
+}
+
+/** Accounts (= servers) of the stack under test. */
+export const E2E_ACCOUNTS = resolveAccountCount();
+export const E2E_ACCOUNT_KEYS: readonly StackKey[] = stackKeys(E2E_ACCOUNTS);
+
 function resolvePorts(): StackPorts {
   const recorded = recordedStack()?.ports;
   const explicitWeb = envPort('E2E_WEB_PORT') ?? envPort('E2E_PORT');
@@ -49,11 +86,15 @@ function resolvePorts(): StackPorts {
   if (!web) {
     throw new Error(`Pile « ${E2E_STACK} » inconnue : précisez E2E_WEB_PORT (ou lancez d'abord stack.mjs up --name ${E2E_STACK} --web-port <port>).`);
   }
-  return portsFor(web, {
-    runner: overrides.runner ?? (explicitWeb === undefined ? recorded?.runner : undefined),
-    hook: overrides.hook ?? (explicitWeb === undefined ? recorded?.hook : undefined),
-    github: overrides.github ?? (explicitWeb === undefined ? recorded?.github : undefined),
-  });
+  return portsFor(
+    web,
+    {
+      runner: overrides.runner ?? (explicitWeb === undefined ? recorded?.runner : undefined),
+      hook: overrides.hook ?? (explicitWeb === undefined ? recorded?.hook : undefined),
+      github: overrides.github ?? (explicitWeb === undefined ? recorded?.github : undefined),
+    },
+    E2E_ACCOUNTS,
+  );
 }
 
 export const E2E_PORTS = resolvePorts();
@@ -61,6 +102,8 @@ export const E2E_URLS = urlsFor(E2E_PORTS);
 /** Port of the web app under test. */
 export const E2E_PORT = E2E_PORTS.web;
 export const E2E_BASE_URL = E2E_URLS.web;
+/** Runner / hook ports of each server of the stack (`a` = default server). */
+export const E2E_RUNNER_PORTS: Readonly<Record<string, { runner: number; hook: number }>> = Object.fromEntries(E2E_ACCOUNT_KEYS.map((key) => [key, runnerPortsFor(E2E_PORTS, key)]));
 export const E2E_DATABASE = process.env.E2E_DATABASE?.trim() || recordedStack()?.database?.name || defaultDatabaseName(E2E_STACK);
 export const E2E_PG_URL = (process.env.E2E_PG_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329').replace(/\/+$/, '');
 export const E2E_DATABASE_URL = `${E2E_PG_URL}/${E2E_DATABASE}`;
@@ -68,17 +111,29 @@ export const E2E_DATABASE_URL = `${E2E_PG_URL}/${E2E_DATABASE}`;
 export const E2E_RESET = process.env.E2E_RESET === '1';
 export const E2E_PRISTINE = process.env.E2E_PRISTINE === '1';
 export const E2E_DOWN = process.env.E2E_DOWN === '1';
-/** Seed scenarios of the global setup (`all` by default, `none` = nothing). */
-export const E2E_SEED = (process.env.E2E_SEED?.trim() || 'all')
-  .split(/[\s,]+/)
-  .filter(Boolean)
-  .filter((item) => item !== 'none');
+
+function scenarioList(raw: string | undefined, fallback: string): string[] {
+  return (raw?.trim() || fallback)
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .filter((item) => item !== 'none');
+}
+
+/** Seed scenarios of account A run by the setup (`all` by default, `none` = nothing). */
+export const E2E_SEED = scenarioList(process.env.E2E_SEED, 'all');
+/** Seed scenarios of account B (light: projects, one live session, notifications). */
+export const E2E_SEED_B = scenarioList(process.env.E2E_SEED_B, 'projects,sessions,notifications');
 
 /** SETUP_TOKEN given to the server under test (test-only value). */
 export const E2E_SETUP_TOKEN = TEST_SETUP_TOKEN;
 
 /** Owner created on the stack (test-only credentials; the TOTP secret is read during the setup). */
 export const E2E_OWNER = ownerIdentity(E2E_STACK);
+
+/** Identity of every account of the stack (`a` = owner, `b` = invited member…). */
+export function e2eAccount(key: StackKey): AccountIdentity {
+  return accountIdentity(E2E_STACK, key);
+}
 
 export const WEB_ROOT = HARNESS_WEB_ROOT;
 export const REPO_ROOT = HARNESS_REPO_ROOT;
@@ -89,3 +144,8 @@ export const E2E_STATE_FILE = layout.stateFile;
 export const E2E_STATE_DIR = layout.playwright;
 /** Owner credentials, TOTP secret and unused backup codes of the stack. */
 export const OWNER_STATE_FILE = layout.ownerFile;
+
+/** Credentials file of account `key` (owner.json for `a`, accounts/<key>.json otherwise). */
+export function accountStateFile(key: StackKey): string {
+  return accountFiles(layout, key).stateFile;
+}

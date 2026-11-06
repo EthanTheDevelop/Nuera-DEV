@@ -169,8 +169,15 @@ test('Parcours 4 (bureau puis contexte téléphone) : navigateur fermé, session
 
   // --- 7. Interrupted (runner restarted: the PTY is gone) then resumed from the phone.
   runnerRestarted = true;
+  // A second server's live session (account B, « VPS-4 ») must survive the restart of the owner's runner.
+  const other = stack.accounts.find((account) => account.key === 'b' && account.created)?.seeded?.sessions?.running;
+  const otherBefore = other ? await (await stackRunnerApi('b'))('getSession', { params: { sessionId: other.id } }).catch(() => null) : null;
   await restartRunner();
   await waitForSessionStatus(session.id, 'interrupted', { timeoutMs: 60_000 });
+  if (other && otherBefore?.live) {
+    const otherAfter = await (await stackRunnerApi('b'))('getSession', { params: { sessionId: other.id } });
+    expect(otherAfter).toMatchObject({ live: true, status: otherBefore.status });
+  }
   await expect(badge(page, 'Interrompue')).toBeVisible({ timeout: 90_000 });
   await page.getByRole('button', { name: 'Actions de session' }).click();
   await page.getByRole('dialog', { name: 'Actions de session' }).getByRole('button', { name: 'Reprendre la session' }).click();

@@ -7,7 +7,8 @@ import { auditLog, mcpServers, notifications, projectMcpServers } from '@nuera/d
 import { and, eq } from 'drizzle-orm';
 import { startFakeCoolify, type FakeCoolify } from '../src/server/coolify/test/fake-coolify';
 import { startFakeMcp } from '../src/server/mcp/test/fake-mcp';
-import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STACK_DIR, expect, hideNextDevIndicator, stackRunnerApi, test } from './fixtures';
+import { readState } from './harness/state';
+import { E2E_BASE_URL, E2E_DATABASE_URL, E2E_STATE_FILE, expect, hideNextDevIndicator, stackRunnerApi, test } from './fixtures';
 
 /**
  * PARCOURS 5 — « Configuration MCP / secret → vraie connexion ou « connexion requise » →
@@ -28,6 +29,15 @@ const unique = () => `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4
 const toast = (page: Page, message: string) => page.getByText(message, { exact: true }).first();
 const mutate = (page: Page, method: 'DELETE' | 'POST', url: string) => page.request.fetch(url, { method, headers: { origin: E2E_BASE_URL } });
 const CONNECT = fileURLToPath(new URL('./harness/mcp-connect.mjs', import.meta.url));
+
+/** Account A (owner): the MCP registry and the notifications read here are its own (per space / per recipient). */
+function ownerAccount() {
+  const account = readState(E2E_STATE_FILE)?.accounts.find((item) => item.key === 'a');
+  if (!account?.spaceId || !account.userId) throw new Error('Compte propriétaire inconnu (state.json) : relancez la pile.');
+  return account;
+}
+
+const inOwnerSpace = (name: string) => and(eq(mcpServers.spaceId, ownerAccount().spaceId!), eq(mcpServers.name, name));
 
 let coolify: FakeCoolify;
 
@@ -88,7 +98,7 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
   const secret = `p5-secret-${u}-0123456789`;
   const rotated = `p5-rotated-${u}-0123456789`;
   const fake = await startFakeMcp({ expectedAuthorization: `Bearer ${secret}`, tools: ['search_docs', 'read_doc'], serverName: 'Docs P5' });
-  await database.delete(mcpServers).where(eq(mcpServers.name, name));
+  await database.delete(mcpServers).where(inOwnerSpace(name));
   await mutate(page, 'DELETE', '/api/integrations/coolify');
   const apiBodies = recordApiBodies(page);
   try {
@@ -110,7 +120,7 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     await expect(drawer).toBeVisible({ timeout: 60_000 });
     await expect(drawer.getByText('en-têtes chiffrés · Authorization')).toBeVisible();
     // Real effect: stored encrypted, only the header name in clear.
-    const [row] = await database.select().from(mcpServers).where(eq(mcpServers.name, name));
+    const [row] = await database.select().from(mcpServers).where(inOwnerSpace(name));
     expect(row).toMatchObject({ transport: 'http', url: fake.url, authKind: 'bearer', secretKeys: ['Authorization'] });
     expect(row!.secretsEncrypted).toBeTruthy();
     expect(JSON.stringify(row)).not.toContain(secret);
@@ -121,7 +131,7 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     // Enabled in no project yet: the badge says « Désactivé », the test line gives the real result.
     await expect(drawer.getByText('manuelle (aucun projet) · OK')).toBeVisible();
     await expect(drawer.getByText('2 outils', { exact: false })).toBeVisible();
-    expect((await database.select().from(mcpServers).where(eq(mcpServers.name, name)))[0]!.status).toBe('connected');
+    expect((await database.select().from(mcpServers).where(inOwnerSpace(name)))[0]!.status).toBe('connected');
     expect(fake.state.methods).toEqual(expect.arrayContaining(['initialize', 'tools/list']));
     expect(fake.state.receivedHeaders.at(-1)?.authorization).toBe(`Bearer ${secret}`);
     expect(await page.content()).not.toContain(secret);
@@ -165,7 +175,7 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     await page.waitForURL(/\/workspace\/[0-9a-f-]{36}/, { timeout: 120_000 });
     const sessionId = page.url().split('/workspace/')[1]!.split(/[?#]/)[0]!;
     created.push(sessionId);
-    const mcpFile = path.join(E2E_STACK_DIR, 'runner-data', 'sessions', sessionId, 'mcp.json');
+    const mcpFile = path.join(readState(E2E_STATE_FILE)!.runners.find((runner) => runner.key === 'a')!.paths.runnerData, 'sessions', sessionId, 'mcp.json');
     await expect.poll(() => existsSync(mcpFile), { timeout: 60_000 }).toBe(true);
     const mcpText = readFileSync(mcpFile, 'utf8');
     const config = JSON.parse(mcpText) as { mcpServers: Record<string, { type: string; url: string; headers?: unknown; headersHelper?: string }> };
@@ -209,9 +219,9 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     await expect(drawer.getByText('Test de connexion : Autorisation expirée')).toBeVisible();
     await expect(drawer.getByText("Aucun réglage n'a été modifié : les projets gardent leur activation.")).toBeVisible();
     await expect
-      .poll(async () => (await database.select().from(notifications).where(eq(notifications.dedupKey, `integration:mcp:${name}:expired`))).map((item) => item.title))
+      .poll(async () => (await database.select().from(notifications).where(and(eq(notifications.userId, ownerAccount().userId!), eq(notifications.dedupKey, `integration:mcp:${name}:expired`)))).map((item) => item.title))
       .toEqual([`L'accès ${label} a été retiré`]);
-    const [expired] = await database.select().from(mcpServers).where(eq(mcpServers.name, name));
+    const [expired] = await database.select().from(mcpServers).where(inOwnerSpace(name));
     expect(expired!.status).toBe('expired');
 
     // --- 7. « Reconnecter » with a new secret (D2) → back to « Connecté », notification resolved.
@@ -222,7 +232,7 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     await expect(toast(page, `${label} reconnecté`)).toBeVisible({ timeout: 30_000 });
     await expect(drawer.getByText('Connecté', { exact: true }).first()).toBeVisible();
     expect(fake.state.receivedHeaders.at(-1)?.authorization).toBe(`Bearer ${rotated}`);
-    const [fixed] = await database.select().from(mcpServers).where(eq(mcpServers.name, name));
+    const [fixed] = await database.select().from(mcpServers).where(inOwnerSpace(name));
     expect(fixed!.status).toBe('connected');
     expect(await page.content()).not.toContain(rotated);
     const audits = (await database.select().from(auditLog).where(eq(auditLog.targetId, row!.id))).map((item) => item.action);
@@ -247,6 +257,6 @@ test('Serveur MCP à jeton : connexion réelle, session sans secret, autorisatio
     coolify.mcp.forceStatus = null;
     await mutate(page, 'DELETE', '/api/integrations/coolify').catch(() => undefined);
     await database.delete(projectMcpServers).where(eq(projectMcpServers.projectId, project.id));
-    await database.delete(mcpServers).where(eq(mcpServers.name, name));
+    await database.delete(mcpServers).where(inOwnerSpace(name));
   }
 });
