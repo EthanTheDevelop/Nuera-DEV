@@ -105,6 +105,13 @@ signé à usage unique `POST /api/previews`, cookie `nuera_apercu` propre à l'h
 `server/preview/preview.test.ts`, `lib/preview.test.ts`, `proxy.test.ts`, e2e `apercu.spec.ts` (bureau + téléphone).
 Sécurité : `docs/SECURITY.md` §8 bis ; déploiement : `docs/DEPLOY.md` (domaine d'aperçu par environnement).
 
+Correctif (vrai `next dev`, cadre blanc sur iPhone) : l'hôte d'aperçu n'est plus relayé par un route handler mais par
+une réécriture externe de Next vers le runner (`server/preview/gate.ts`) : le Next de Nuera Dev ne traite plus les
+requêtes RSC du site prévisualisé (boucle de redirections `?_rsc=`, `x-nextjs-rewritten-path` faux), le WebSocket de
+rechargement à chaud traverse la chaîne (sans lui `next dev` 16 ne s'hydrate pas et recharge la page en boucle), le
+runner écrit les pages d'erreur et le script de position ; la barre d'outils signale un cadre resté sans page 15 s.
+Tests : e2e « un vrai next dev » (`apercu.spec.ts`), runner « direct mode » et WebSocket, `gate` (web).
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :

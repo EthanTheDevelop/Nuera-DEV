@@ -42,6 +42,15 @@ const nextConfig: NextConfig = {
   transpilePackages: ['@nuera/db', '@nuera/shared'],
   serverExternalPackages: ['postgres', 'web-push', 'shiki'],
   outputFileTracingRoot: repoRoot,
+  // src/proxy.ts sees each request as the browser sent it: the preview host hands it to the runner
+  // with its exact query (an RSC request's `?_rsc=`, even empty) and its RSC headers.
+  skipProxyUrlNormalize: true,
+  experimental: {
+    // « Aperçu »: the preview host is an external rewrite to the runner (src/proxy.ts); Next's proxy
+    // would cut it after 30 s of silence (a first `next dev` compile can take longer). The runner
+    // cuts at 60 s itself, with its own page: 70 s here.
+    proxyTimeout: 70_000,
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

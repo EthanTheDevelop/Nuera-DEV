@@ -1,8 +1,8 @@
 import { getSessionCookie } from 'better-auth/cookies';
 import { NextResponse, type NextRequest } from 'next/server';
 import {
+  PREVIEW_COOKIE,
   PREVIEW_ENTRY_PATH,
-  PREVIEW_PATH_HEADER,
   PREVIEW_RESERVED_PREFIX,
   PREVIEW_ROUTES,
   isPreviewRequest,
@@ -17,9 +17,11 @@ import { appContentSecurityPolicy, githubWebOrigin } from '@/lib/security-header
  * preview host must see the previewed site's static files too).
  *
  * 1. Preview host (`PREVIEW_HOST`, « Aperçu »): nothing of the application is reachable. Every
- *    request is rewritten to the relay route handler (`/api/apercu/proxy`, original path + query in
- *    `x-nuera-apercu-path`), except `/__nuera/entree` (handoff → cookie) and the rest of `/__nuera/*`
- *    (404). Its responses may only be framed by the application (`frame-ancestors <APP_URL>`).
+ *    request goes to the runner of the run's server by an EXTERNAL rewrite once the preview cookie
+ *    and the access are checked (`server/preview/gate.ts`: Next streams it, WebSocket upgrades
+ *    included, and never handles it as one of its own RSC requests), except `/__nuera/entree`
+ *    (handoff → cookie) and the rest of `/__nuera/*` (404). Its responses may only be framed by the
+ *    application (`frame-ancestors <APP_URL>`).
  * 2. Application host: the relay routes answer 404; static assets pass untouched; then the optimistic
  *    session gate — it only checks that a session cookie is PRESENT. It never proves a session is
  *    valid: every page, route handler and server action re-checks it with requireUser() /
@@ -44,7 +46,7 @@ const BROWSER_API_ROUTES = /^\/api\/integrations\/github\/(callback|setup|instal
 const PUBLIC_API_ROUTES = /^\/api\/push\/subscription\/renew$/;
 /** What the former matcher left out: auth, health and runner callbacks (own checks), static assets. */
 const UNGATED = /^\/(?:api\/auth|api\/health|api\/internal|_next\/static|_next\/image|favicon\.ico|icon|apple-icon|manifest\.webmanifest|sw\.js|robots\.txt)(?:\/|$)|\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|txt|xml|woff2?|map)$/;
-/** Relay routes of the preview host: never served on the application host. */
+/** Route handlers of the preview host: never served on the application host. */
 const PREVIEW_ONLY = /^\/api\/apercu(?:\/|$)/;
 /** Development gallery (/kit): public only with NUERA_KIT_PUBLIC=1 in development (the (dev) layout agrees). */
 const kitIsPublic = process.env.NODE_ENV === 'development' && process.env.NUERA_KIT_PUBLIC === '1';
@@ -60,11 +62,10 @@ function rawPathAndQuery(request: NextRequest): string {
   return `${url.pathname}${url.search}`;
 }
 
-function previewHost(request: NextRequest, config: Extract<PreviewConfig, { enabled: true }>): NextResponse {
+async function previewHost(request: NextRequest, config: Extract<PreviewConfig, { enabled: true }>): Promise<Response> {
   const { pathname } = request.nextUrl;
   const headers = previewResponseHeaders(config);
   const forwarded = new Headers(request.headers);
-  forwarded.delete(PREVIEW_PATH_HEADER);
   forwarded.delete(REQUEST_PATH_HEADER);
   if (pathname === PREVIEW_ENTRY_PATH) {
     const target = new URL(PREVIEW_ROUTES.entry, request.url);
@@ -75,12 +76,27 @@ function previewHost(request: NextRequest, config: Extract<PreviewConfig, { enab
   if (pathname === PREVIEW_RESERVED_PREFIX.slice(0, -1) || pathname.startsWith(PREVIEW_RESERVED_PREFIX)) {
     return new NextResponse('Introuvable.', { status: 404, headers: { ...headers, 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
   }
-  forwarded.set(PREVIEW_PATH_HEADER, rawPathAndQuery(request));
-  return NextResponse.rewrite(new URL(PREVIEW_ROUTES.relay, request.url), { request: { headers: forwarded }, headers });
+  // Loaded on the preview host only (database access): the application's requests never pay for it.
+  const { previewGate } = await import('@/server/preview/gate');
+  const decision = await previewGate({ headers: request.headers, cookie: request.cookies.get(PREVIEW_COOKIE)?.value }, rawPathAndQuery(request), config);
+  if (decision.kind === 'response') {
+    for (const [name, value] of Object.entries(headers)) decision.response.headers.set(name, value);
+    return decision.response;
+  }
+  return NextResponse.rewrite(decision.url, { request: { headers: decision.headers }, headers });
 }
 
-export function proxy(request: NextRequest) {
-  const { pathname, search } = request.nextUrl;
+/** Query of an application request without Next's RSC cache-busting marker (`skipProxyUrlNormalize`). */
+function searchOf(request: NextRequest): string {
+  const params = new URLSearchParams(request.nextUrl.search);
+  if (!params.has('_rsc')) return request.nextUrl.search;
+  params.delete('_rsc');
+  const rest = params.toString();
+  return rest ? `?${rest}` : '';
+}
+
+export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
   const preview = readPreviewConfig();
   if (preview.enabled && isPreviewRequest(request.headers, preview)) return previewHost(request, preview);
 
@@ -88,10 +104,10 @@ export function proxy(request: NextRequest) {
     return NextResponse.json({ error: { code: 'NOT_FOUND', message: 'Route inconnue.' } }, { status: 404, headers: { 'cache-control': 'no-store' } });
   }
   if (UNGATED.test(pathname)) return NextResponse.next();
+  const search = searchOf(request);
 
   const forwarded = new Headers(request.headers);
   forwarded.delete(REQUEST_PATH_HEADER);
-  forwarded.delete(PREVIEW_PATH_HEADER);
   // Pages may frame the preview origin, and nothing else (next.config's CSP is fixed at build time).
   const responseHeaders: Record<string, string> = preview.enabled
     ? { 'content-security-policy': appContentSecurityPolicy({ isProd: process.env.NODE_ENV === 'production', githubOrigin: githubWebOrigin(), frameOrigin: preview.origin }) }

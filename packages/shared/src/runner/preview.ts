@@ -11,6 +11,12 @@ import { RunParamsSchema } from './runs';
  * loopback port detected for THAT run (`command_runs.port`, `kind = 'dev'`, process alive): no host,
  * port or scheme comes from the request. It answers either the dev server's own response, marked
  * with {@link PREVIEW_HEADERS.upstream}, or a runner error body (`{ error: { code, message, reason } }`).
+ *
+ * « Direct » mode ({@link PREVIEW_HEADERS.appOrigin} on the request): the web's proxy hands the
+ * browser's request to the runner as it is (Next.js external rewrite, WebSocket upgrades included)
+ * and the answer goes back to the browser untouched. The runner then answers its errors as the
+ * short French page of {@link previewMessageHtml} (never JSON), adds {@link previewPositionScript}
+ * after the `<head>` of an HTML page and leaves out the `x-nuera-preview` marker.
  */
 export const PREVIEW_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
 export type PreviewMethod = (typeof PREVIEW_METHODS)[number];
@@ -30,6 +36,8 @@ export const PREVIEW_HEADERS = {
   contentLength: 'x-nuera-preview-content-length',
   /** Origin of the preview host (`https://nuera-dev-apercu…`): Origin / Referer are rewritten to the dev server's. */
   origin: 'x-nuera-preview-origin',
+  /** Origin of APP_URL (the only page that may frame the preview): its presence selects the « direct » mode. */
+  appOrigin: 'x-nuera-preview-app-origin',
 } as const;
 
 export const PREVIEW_LIMITS = {
@@ -43,7 +51,52 @@ export const PREVIEW_LIMITS = {
   totalMs: 10 * 60_000,
   /** Longest path + query relayed. */
   pathLength: 8192,
+  /** Longest WebSocket (hot reload of the dev server): the page reconnects by itself afterwards. */
+  websocketMs: 60 * 60_000,
 } as const;
+
+/** Message posted by {@link previewPositionScript} (read by the Workspace). */
+export const PREVIEW_POSITION_MESSAGE = 'nuera-apercu:position';
+
+/**
+ * Added to the dev server's HTML pages, after `<head>`: posts `location` (path + query + hash) to
+ * the application — and to it only (`targetOrigin`) — at load and on every client-side navigation,
+ * so the path field and « Recharger » follow the page actually shown. Inert outside a frame.
+ */
+export function previewPositionScript(appOrigin: string): string {
+  const target = JSON.stringify(appOrigin).replace(/</g, '\\u003c');
+  return (
+    `<script data-nuera-apercu>(function(){if(window.parent===window)return;var o=${target};` +
+    `function s(){try{window.parent.postMessage({type:${JSON.stringify(PREVIEW_POSITION_MESSAGE)},path:location.pathname+location.search+location.hash},o)}catch(e){}}` +
+    `s();addEventListener("popstate",s);addEventListener("hashchange",s);` +
+    `["pushState","replaceState"].forEach(function(m){var f=history[m];history[m]=function(){var r=f.apply(this,arguments);s();return r}})})();</script>`
+  );
+}
+
+const HEAD_TAG = /<head(?:\s[^>]*)?>/i;
+const BODY_TAG = /<body(?:\s[^>]*)?>/i;
+/** Bytes of an HTML page looked at for its `<head>` (then the page passes unchanged). */
+export const PREVIEW_SCAN_LIMIT = 64 * 1024;
+
+/**
+ * Offset right after the first `<head …>` (else `<body …>`) of the start of an HTML page read as
+ * latin1 (1 byte = 1 char, so the offset is a byte offset); -1 when neither is there yet.
+ */
+export function previewInsertionOffset(latin1: string): number {
+  const match = HEAD_TAG.exec(latin1) ?? BODY_TAG.exec(latin1);
+  return match ? match.index + match[0].length : -1;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c);
+}
+
+/** Small page shown in the frame (or the tab) when the preview cannot be served. */
+export function previewMessageHtml(title: string, message: string): string {
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;padding:16px;box-sizing:border-box}main{max-width:28rem}h1{font-size:17px;margin:0 0 6px}p{margin:0;opacity:.75}</style></head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+}
 
 /**
  * Path (+ query) of the previewed site: absolute (`/…`), never protocol-relative (`//host`), no

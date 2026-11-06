@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { RunDto } from '@nuera/shared/runner';
@@ -35,6 +35,11 @@ function startDevServer(): Promise<{ server: Server; port: number }> {
         });
         return response.end('<p>cadre</p>');
       }
+      if (url === '/page') {
+        const page = '<!doctype html><html lang="fr"><head><title>Devis</title></head><body>é</body></html>';
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(page) });
+        return response.end(page);
+      }
       if (url === '/stream') {
         response.writeHead(200, { 'content-type': 'text/plain' });
         response.write('un;');
@@ -47,7 +52,41 @@ function startDevServer(): Promise<{ server: Server; port: number }> {
       response.end(JSON.stringify(echo));
     });
   });
+  // Hot reload socket: answers the handshake, then echoes every byte prefixed with the path asked.
+  server.on('upgrade', (request: IncomingMessage, socket: net.Socket) => {
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Origin: ${request.headers.origin ?? ''}\r\n\r\n`);
+    socket.on('data', (chunk: Buffer) => socket.write(`${request.url}:${chunk.toString('utf8')}`));
+  });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, port: (server.address() as AddressInfo).port })));
+}
+
+/** Raw WebSocket handshake to the runner; resolves with the status line and what follows `ping`. */
+function upgrade(port: number, target: string, headers: Record<string, string>): Promise<{ head: string; echo: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    let data = '';
+    let head = '';
+    socket.on('error', reject);
+    socket.on('data', (chunk: Buffer) => {
+      data += chunk.toString('utf8');
+      if (!head && data.includes('\r\n\r\n')) {
+        head = data.slice(0, data.indexOf('\r\n\r\n'));
+        data = data.slice(head.length + 4);
+        if (head.startsWith('HTTP/1.1 101')) socket.write('ping');
+        else {
+          socket.destroy();
+          resolve({ head, echo: '' });
+        }
+      }
+      if (head.startsWith('HTTP/1.1 101') && data.includes('ping')) {
+        socket.destroy();
+        resolve({ head, echo: data });
+      }
+    });
+    socket.on('close', () => resolve({ head, echo: data }));
+    const lines = [`GET ${target} HTTP/1.1`, `Host: 127.0.0.1:${port}`, 'Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`)];
+    socket.write(`${lines.join('\r\n')}\r\n\r\n`);
+  });
 }
 
 describe('preview relay headers (pure)', () => {
@@ -206,6 +245,49 @@ describe.skipIf(!dbReady)('preview relay (/v1/runs/:runId/preview)', () => {
     expect(unknown.status).toBe(404);
     const anonymous = await fetch(`${env.apiUrl}/v1/runs/${devRun.id}/preview/`);
     expect(anonymous.status).toBe(401);
+  });
+
+  const DIRECT = { 'x-nuera-preview-app-origin': 'https://dev.example.test', 'x-nuera-preview-origin': 'https://apercu.example.test' };
+
+  it('direct mode: an HTML page keeps its type, gets the position script, loses its length and the markers', async () => {
+    const res = await preview(devRun.id, '/page', { headers: DIRECT });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(res.headers.get('content-disposition')).toBeNull();
+    expect(res.headers.get('content-length')).toBeNull();
+    expect(res.headers.get('x-nuera-preview')).toBeNull();
+    expect(res.headers.get('x-middleware-rewrite')).toBe('/page');
+    const html = await res.text();
+    expect(html).toMatch(/^<!doctype html><html lang="fr"><head><script data-nuera-apercu>.*"https:\/\/dev\.example\.test".*<\/script><title>Devis<\/title>/);
+    expect(html).toContain('<body>é</body>');
+    // Not an HTML page: untouched.
+    const json = await preview(devRun.id, '/api/x', { headers: DIRECT });
+    expect(json.headers.get('content-type')).toBe('application/json');
+    expect(((await json.json()) as Echo).url).toBe('/api/x');
+  });
+
+  it('direct mode: the runner refusals are the short French page, never JSON', async () => {
+    const custom = await preview(customRun.id, '/', { headers: DIRECT });
+    expect(custom.status).toBe(409);
+    expect(custom.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(await custom.text()).toContain('Aperçu indisponible');
+    const anonymous = await fetch(`${env.apiUrl}/v1/runs/${devRun.id}/preview/`, { headers: DIRECT });
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(anonymous.headers.get('x-middleware-rewrite')).toBe('/');
+  });
+
+  it('relays the WebSocket of the dev server (hot reload), with the runner token only', async () => {
+    const port = Number(new URL(env.apiUrl).port);
+    const target = `/v1/runs/${devRun.id}/preview/_next/hmr?id=1`;
+    const ok = await upgrade(port, target, { authorization: auth.authorization, origin: 'https://apercu.example.test', ...DIRECT });
+    expect(ok.head).toMatch(/^HTTP\/1\.1 101 /);
+    // Origin of the preview host becomes the dev server's own (Next / Vite refuse another one).
+    expect(ok.head).toContain(`x-origin: http://localhost:${dev.port}`);
+    expect(ok.echo).toBe('/_next/hmr?id=1:ping');
+    expect((await upgrade(port, target, {})).head).toMatch(/^HTTP\/1\.1 401 /);
+    expect((await upgrade(port, `/v1/runs/${customRun.id}/preview/`, { authorization: auth.authorization })).head).toMatch(/^HTTP\/1\.1 409 /);
+    expect((await upgrade(port, '/v1/sessions', { authorization: auth.authorization })).head).toMatch(/^HTTP\/1\.1 404 /);
   });
 
   it('refuses a stopped dev server, and a port where nothing listens', async () => {

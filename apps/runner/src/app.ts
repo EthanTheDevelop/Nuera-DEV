@@ -60,7 +60,7 @@ export async function buildRunner(config: RunnerConfig, options: BuildRunnerOpti
   installEnvironmentGuard(api, environment);
   registerRoutes(api, services);
   // « Aperçu »: raw relay to the dev server of a live `dev` run (any method, streamed bodies).
-  registerPreviewProxy(api, { runs: services.runs, logger });
+  registerPreviewProxy(api, { runs: services.runs, logger, token: config.token, environment });
 
   const hooks = buildHookServer(services.sessions, logger);
 
