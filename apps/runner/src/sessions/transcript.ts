@@ -15,6 +15,11 @@ export interface TranscriptText {
   key: string;
   text: string;
   at: string;
+  /**
+   * Written by the CLI itself, not by the model (`isApiErrorMessage`, model `<synthetic>`): the
+   * usage-limit message, an API error. Only such a block may stand for a usage-limit stop.
+   */
+  cliMessage?: boolean;
 }
 
 type Json = Record<string, unknown>;
@@ -63,9 +68,10 @@ export function extractAssistantTexts(line: string): TranscriptText[] {
   if (!id) return [];
   const at = typeof entry.timestamp === 'string' ? entry.timestamp : new Date().toISOString();
   const out: TranscriptText[] = [];
+  const cliMessage = entry.isApiErrorMessage === true || message.model === '<synthetic>';
   message.content.forEach((block, index) => {
     if (isObj(block) && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-      out.push({ key: `assistant:${id}:${index}`, text: block.text.trim(), at });
+      out.push({ key: `assistant:${id}:${index}`, text: block.text.trim(), at, ...(cliMessage ? { cliMessage: true } : {}) });
     }
   });
   return out;

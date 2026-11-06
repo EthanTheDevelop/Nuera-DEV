@@ -52,6 +52,7 @@ import {
 } from './git';
 import { OperationSnapshotSchema } from './operations';
 import {
+  AutoResumeRequestSchema,
   CreateSessionRequestSchema,
   InstructionRequestSchema,
   InstructionResultSchema,
@@ -323,6 +324,14 @@ export const RUNNER_ROUTES = {
   interruptSession: { method: 'POST', path: '/v1/sessions/:sessionId/interrupt', params: SessionParamsSchema, response: SessionDtoSchema },
   /** Re-publishes `session.status` from the stored row after a web-side change (archive, rename). */
   announceSession: { method: 'POST', path: '/v1/sessions/:sessionId/announce', params: SessionParamsSchema, response: SessionDtoSchema },
+  /** « Reprise automatique après la limite d'utilisation » of one session (effective value from the web): schedules or cancels. */
+  setSessionAutoResume: {
+    method: 'POST',
+    path: '/v1/sessions/:sessionId/auto-resume',
+    params: SessionParamsSchema,
+    body: AutoResumeRequestSchema,
+    response: SessionDtoSchema,
+  },
   stopSession: {
     method: 'POST',
     path: '/v1/sessions/:sessionId/stop',

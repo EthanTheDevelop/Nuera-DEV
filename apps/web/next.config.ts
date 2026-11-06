@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { loadEnvConfig } from '@next/env';
 import type { NextConfig } from 'next';
-import { appContentSecurityPolicy, githubWebOrigin } from './src/lib/security-headers';
+import { APP_PERMISSIONS_POLICY, appContentSecurityPolicy, githubWebOrigin } from './src/lib/security-headers';
 
 // Monorepo: the single .env lives at the repository root (see .env.example).
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -23,7 +23,8 @@ const securityHeaders = [
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+  // Microphone for the app origin only (dictation); the preview host replaces it (src/lib/preview.ts).
+  { key: 'Permissions-Policy', value: APP_PERMISSIONS_POLICY },
   { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
   ...(isProd
     ? [{ key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' }]

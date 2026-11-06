@@ -66,6 +66,16 @@ export const sessions = pgTable(
     planTotal: integer('plan_total'),
     /** Latest status-line JSON published by the CLI (model, context %, rate limits) — never estimated. */
     cliStatus: jsonb('cli_status').$type<Record<string, unknown>>(),
+    /**
+     * Stopped on the subscription usage limit and the schedule of its automatic resumption
+     * (`UsageLimit` of @nuera/shared/runner), written by the runner; null = no limit in play.
+     */
+    usageLimit: jsonb('usage_limit').$type<Record<string, unknown>>(),
+    /**
+     * « Reprise automatique après la limite d'utilisation » for this session only (written by the
+     * web); null = the space default (`space_settings.auto_resume_after_limit`).
+     */
+    autoResume: boolean('auto_resume'),
     resumeCount: integer('resume_count').notNull().default(0),
     exitCode: integer('exit_code'),
     errorCode: text('error_code'),

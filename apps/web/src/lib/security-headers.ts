@@ -5,6 +5,16 @@
  * Scripts/styles are self-hosted (next/font self-hosts Google fonts); 'unsafe-inline' for styles is
  * required by Next.js style injection and Radix positioning.
  */
+/**
+ * Permissions-Policy of the application: the microphone for its own origin only (dictation of an
+ * instruction with the browser's speech recognition, `components/dev/composer/dictation.ts`); a
+ * cross-origin frame never gets it. Everything else stays off.
+ */
+export const APP_PERMISSIONS_POLICY = 'camera=(), microphone=(self), geolocation=(), payment=()';
+
+/** Permissions-Policy of the preview host (« Aperçu »): a previewed site never gets the microphone. */
+export const PREVIEW_PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()';
+
 export function githubWebOrigin(env: Record<string, string | undefined> = process.env): string {
   try {
     return new URL(env.GITHUB_WEB_URL?.trim() || 'https://github.com').origin;

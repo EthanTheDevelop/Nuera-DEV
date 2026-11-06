@@ -4,7 +4,20 @@ import os from 'node:os';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import pidusage from 'pidusage';
 import { permissionRequests, projects, sessionEvents, sessions, worktrees, type Database } from '@nuera/db';
-import { LIVE_SESSION_STATUSES, type CliStatus, type PermissionRequestDto, type SessionDto, type SessionLaunchOptions } from '@nuera/shared/runner';
+import {
+  CliStatusSchema,
+  DEFAULT_AUTO_RESUME_INSTRUCTION,
+  LIVE_SESSION_STATUSES,
+  UsageLimitSchema,
+  type AutoResumeOptions,
+  type CliStatus,
+  type PermissionRequestDto,
+  type SessionDto,
+  type SessionLaunchOptions,
+  type UsageLimit,
+  type UsageLimitSource,
+} from '@nuera/shared/runner';
+import { formatClockDay } from '@nuera/shared/format';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
@@ -43,8 +56,18 @@ import {
 } from './runtime-files';
 import { sanitizeStatusLine, statusFingerprint } from './statusline';
 import { planFromTodoWrite, toolOutcome, toolSummary, toolTarget } from './tool-meta';
-import { TranscriptTailer, transcriptsRoot, validateTranscriptPath } from './transcript';
+import { TranscriptTailer, transcriptsRoot, validateTranscriptPath, type TranscriptText } from './transcript';
 import { startupScreenAction } from './startup-screens';
+import {
+  buildUsageLimit,
+  DEFAULT_AUTO_RESUME_POLICY,
+  detectLimitText,
+  resetFromStatus,
+  resolveReset,
+  scheduleAutoResume,
+  type AutoResumePolicy,
+  type LimitText,
+} from './usage-limit';
 
 type SessionRow = typeof sessions.$inferSelect;
 type PermissionRow = typeof permissionRequests.$inferSelect;
@@ -127,10 +150,42 @@ export interface SessionManagerDeps {
   hookBaseUrl: () => string;
   /** A session reported an authentication problem: refresh `claude auth status`. */
   onAuthProblem: () => void;
+  /** Automatic resumption after the usage limit: margin, retries (NUERA_AUTO_RESUME_*; tests shorten them). */
+  autoResume?: Partial<AutoResumePolicy>;
 }
 
+/** Stored usage-limit record of a row (unknown shapes count as none). */
+export function parseUsageLimit(value: unknown): UsageLimit | null {
+  if (!value) return null;
+  const parsed = UsageLimitSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseCli(value: unknown): CliStatus | null {
+  if (!value) return null;
+  const parsed = CliStatusSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** French copy of a usage-limit stop (session error line, notifications). */
+export function usageLimitMessage(limit: UsageLimit, now: number = Date.now()): string {
+  const resume = limit.autoResume;
+  if (resume?.outcome === 'scheduled' && resume.nextAttemptAt) {
+    return `Limite d'utilisation atteinte : reprise automatique à ${formatClockDay(resume.nextAttemptAt, now)}.`;
+  }
+  if (limit.resetsAt) return `Limite d'utilisation atteinte : levée à ${formatClockDay(limit.resetsAt, now)}.`;
+  return "Limite d'utilisation atteinte.";
+}
+
+/** Delay before a new try when the automatic resumption could not run (capacity reached, permission pending). */
+const AUTO_RESUME_BUSY_RETRY_MS = 5 * 60_000;
+/** Refusals after which an automatic resumption is not tried again. */
+const AUTO_RESUME_FINAL_REASONS = new Set(['SESSION_NOT_RESUMABLE', 'WORKTREE_MISSING', 'CLAUDE_NOT_INSTALLED', 'BYPASS_BLOCKED']);
+/** Longest single timer; a later attempt is re-armed on wake-up. */
+const MAX_TIMER_MS = 60 * 60_000;
+
 const STOP_FAILURE_MESSAGES: Record<string, string> = {
-  rate_limit: "Limite d'utilisation atteinte : la session reprendra quand la limite sera levée.",
+  rate_limit: "Limite d'utilisation atteinte.",
   authentication_failed: "Claude Code n'est plus connecté à votre compte Claude.",
   oauth_org_not_allowed: "Ce compte Claude n'est pas autorisé pour Claude Code.",
   account_on_hold: 'Le compte Claude est suspendu.',
@@ -226,8 +281,15 @@ export class SessionManager {
   /** Launches in progress: a second start/resume/instruction joins the same run (never two CLIs). */
   private readonly launching = new Map<string, Promise<void>>();
   private watchdog: ReturnType<typeof setInterval> | null = null;
+  /** Automatic resumptions waiting for their time (rebuilt from `sessions.usage_limit` at start-up). */
+  private readonly resumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Instruction typed by an automatic resumption: its UserPromptSubmit does not cancel the schedule. */
+  private readonly autoPrompts = new Map<string, string>();
+  private readonly policy: AutoResumePolicy;
 
-  constructor(private readonly deps: SessionManagerDeps) {}
+  constructor(private readonly deps: SessionManagerDeps) {
+    this.policy = { ...DEFAULT_AUTO_RESUME_POLICY, ...Object.fromEntries(Object.entries(deps.autoResume ?? {}).filter(([, v]) => v !== undefined)) };
+  }
 
   /** Id of this runner's server (throws while it does not serve). */
   private get envId(): string {
@@ -333,6 +395,7 @@ export class SessionManager {
       queuedInstructions: live?.queue.length ?? 0,
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
+      limit: parseUsageLimit(row.usageLimit),
       exitCode: row.exitCode,
       resumeCount: row.resumeCount,
       startedAt: row.startedAt ? row.startedAt.toISOString() : null,
@@ -411,6 +474,7 @@ export class SessionManager {
       pendingPermissionId: pending?.id ?? null,
       remoteControlUrl: row.remoteControlUrl,
       queuedInstructions: live?.queue.length ?? 0,
+      limit: parseUsageLimit(row.usageLimit),
     };
     this.deps.bus.publish('session.status', data, { channels: [GLOBAL, sessionChannel(row.id)] });
   }
@@ -503,6 +567,7 @@ export class SessionManager {
       hookToken: null,
       ...(input.launch.blockBypassPermissions !== undefined ? { blockBypassPermissions: input.launch.blockBypassPermissions } : {}),
       gitIdentity: input.launch.gitIdentity ?? null,
+      autoResume: input.launch.autoResume ?? null,
     });
     if (input.start) await this.launch(id, { resume: false, queue: [] });
     return this.dto(id);
@@ -621,6 +686,7 @@ export class SessionManager {
       ...(blockBypass !== undefined ? { blockBypassPermissions: blockBypass } : {}),
       // The account resuming the session signs Claude's next commits (null clears, absent keeps).
       gitIdentity: launch.gitIdentity === undefined ? (current?.gitIdentity ?? null) : launch.gitIdentity,
+      autoResume: launch.autoResume === undefined ? (current?.autoResume ?? null) : launch.autoResume,
     });
   }
 
@@ -704,6 +770,7 @@ export class SessionManager {
       hookToken: isTmux ? token : null,
       ...(launchFile.blockBypassPermissions !== undefined ? { blockBypassPermissions: launchFile.blockBypassPermissions } : {}),
       gitIdentity: launchFile.gitIdentity ?? null,
+      autoResume: launchFile.autoResume ?? null,
     });
     const mcpFile = launchFile.hasMcp ? `${sessionDir(this.deps.dataDir, sessionId)}/mcp.json` : null;
 
@@ -981,6 +1048,8 @@ export class SessionManager {
   async sendInstruction(sessionId: string, text: string): Promise<{ delivered: boolean; queued: boolean; started: boolean; resumed: boolean; session: SessionDto }> {
     const clean = sanitizeInstruction(text);
     if (!clean.trim()) throw new RunnerError('VALIDATION', 'Instruction vide.');
+    // The owner takes over: a scheduled automatic resumption is cancelled.
+    await this.clearUsageLimit(sessionId);
     let live = this.live.get(sessionId);
     let started = false;
     let resumed = false;
@@ -1132,6 +1201,8 @@ export class SessionManager {
 
   async stop(sessionId: string, options: { force: boolean }): Promise<SessionDto> {
     const live = this.live.get(sessionId);
+    // Stopped by its owner: no automatic resumption any more.
+    await this.clearUsageLimit(sessionId);
     if (!live) {
       const row = await this.row(sessionId);
       if (LIVE.includes(row.status)) {
@@ -1322,12 +1393,17 @@ export class SessionManager {
     await live.tailer?.drain().catch(() => undefined);
   }
 
-  private async onTranscriptText(live: LiveSession, item: { key: string; text: string; at: string }): Promise<void> {
+  private async onTranscriptText(live: LiveSession, item: TranscriptText): Promise<void> {
     if (await this.deps.store.find(live.id, item.key)) return;
     const recent = await this.deps.store.recent(live.id, 'assistant', 5);
     const text = redactSecrets(item.text);
     if (recent.some((r) => r.kind === 'assistant' && normalizeText(r.payload.text) === normalizeText(text))) return;
     await this.deps.store.append(live.id, 'assistant', { text, at: item.at, source: 'transcript', final: false }, item.key);
+    // The CLI's own message (not the model's): « 5-hour limit reached ∙ resets 3pm ».
+    if (item.cliMessage) {
+      const found = detectLimitText(item.text);
+      if (found) await this.recordLimit(live, 'transcript', found);
+    }
   }
 
   private async onSessionStart(live: LiveSession, p: Json): Promise<void> {
@@ -1370,13 +1446,26 @@ export class SessionManager {
     const fromNuera = live.pasted.findIndex((x) => normalizeText(x.text) === normalized);
     if (fromNuera !== -1) live.pasted.splice(fromNuera, 1);
     const promptId = str(p.prompt_id);
+    // Typed by an automatic resumption: the limit record stays (attempts count); any other prompt
+    // (Nuera Dev, raw terminal) is the owner taking over and cancels the schedule.
+    const auto = this.autoPrompts.get(live.id);
+    const isAuto = auto !== undefined && normalizeText(auto) === normalized;
+    if (isAuto) this.autoPrompts.delete(live.id);
+    else this.clearResumeTimer(live.id);
     await this.deps.store.append(
       live.id,
       'instruction',
       { text: redactSecrets(prompt).slice(0, 100_000), source: fromNuera !== -1 ? 'nuera' : 'terminal', at: nowIso() },
       promptId ? `instruction:${promptId}` : null,
     );
-    await this.setSession(live.id, { status: 'running', lastInstruction: prompt.slice(0, 2000), currentActivity: null, errorCode: null, errorMessage: null });
+    await this.setSession(live.id, {
+      status: 'running',
+      lastInstruction: prompt.slice(0, 2000),
+      currentActivity: null,
+      errorCode: null,
+      errorMessage: null,
+      ...(isAuto ? {} : { usageLimit: null }),
+    });
   }
 
   private toolKey(live: LiveSession, p: Json): string {
@@ -1506,6 +1595,10 @@ export class SessionManager {
   private async onStop(live: LiveSession, p: Json): Promise<void> {
     await this.drainTranscript(live);
     const message = str(p.last_assistant_message);
+    // Some CLI versions end the turn with the limit message itself (no StopFailure): only a message
+    // that IS the limit notice counts, never a reply that merely talks about limits.
+    const limitText = message && message.trim().length < 400 ? detectLimitText(message) : null;
+    const limitStop = limitText && message!.trim().toLowerCase().startsWith(limitText.message.slice(0, 12).toLowerCase()) ? limitText : null;
     if (message?.trim()) {
       const text = redactSecrets(message.trim());
       const recent = await this.deps.store.recent(live.id, 'assistant', 5);
@@ -1518,7 +1611,15 @@ export class SessionManager {
     }
     // Claude finished responding: no tool of this turn is still running.
     await this.closeRunningTools(live, 'turn_end');
-    const row = await this.setSession(live.id, { status: 'waiting_input', currentActivity: null });
+    if (limitStop) {
+      await this.setSession(live.id, { status: 'waiting_input', currentActivity: null });
+      await this.recordLimit(live, 'hook', limitStop);
+      return;
+    }
+    const before = parseUsageLimit((await this.row(live.id)).usageLimit);
+    // A turn that ended normally after an automatic resumption: the limit is behind us.
+    const clear = before && !before.active ? { usageLimit: null } : {};
+    const row = await this.setSession(live.id, { status: 'waiting_input', currentActivity: null, ...clear });
     void this.notify(live, {
       kind: 'session_finished',
       severity: 'success',
@@ -1535,6 +1636,18 @@ export class SessionManager {
     const message = STOP_FAILURE_MESSAGES[code] ?? STOP_FAILURE_MESSAGES.unknown!;
     await this.deps.store.append(live.id, 'error', { code, message, detail: detail ? redactSecrets(detail).slice(0, 4000) : null, at: nowIso() });
     await this.closeRunningTools(live, 'turn_end');
+    if (code === 'rate_limit') {
+      await this.drainTranscript(live);
+      await this.setSession(live.id, { status: 'waiting_input', currentActivity: null });
+      // The reset time: the hook's details, else what the CLI printed on screen (status line first, in recordLimit).
+      const found = detectLimitText(detail) ?? detectLimitText(live.terminal?.screenText() ?? null);
+      await this.recordLimit(live, 'hook', {
+        message: found?.message ?? (detail ? redactSecrets(detail).slice(0, 300) : null) ?? '',
+        resetsAt: found?.resetsAt ?? null,
+        window: found?.window ?? null,
+      });
+      return;
+    }
     const row = await this.setSession(live.id, { status: 'waiting_input', currentActivity: null, errorCode: code, errorMessage: message });
     if (AUTH_ERRORS.has(code)) {
       this.deps.onAuthProblem();
@@ -1663,6 +1776,230 @@ export class SessionManager {
   }
 
   // -------------------------------------------------------------------------------------------
+  // Usage limit of the subscription and automatic resumption
+  // -------------------------------------------------------------------------------------------
+
+  /** « Reprise automatique » of a session, from its launch options (absent: off). */
+  private async autoResumeOptions(sessionId: string): Promise<Required<AutoResumeOptions>> {
+    const launch = await readLaunchFile(this.deps.dataDir, sessionId);
+    return {
+      enabled: launch?.autoResume?.enabled ?? false,
+      instruction: launch?.autoResume?.instruction?.trim() || DEFAULT_AUTO_RESUME_INSTRUCTION,
+    };
+  }
+
+  /**
+   * The session stopped on the usage limit (caller holds the session queue). Reset time: the status
+   * line's when it is ahead (exact), else the one written in the CLI's message, else unknown.
+   */
+  private async recordLimit(live: LiveSession, source: UsageLimitSource, found: LimitText): Promise<void> {
+    const row = await this.row(live.id);
+    const previous = parseUsageLimit(row.usageLimit);
+    const options = await this.autoResumeOptions(live.id);
+    const cli = live.pendingCli ?? parseCli(row.cliStatus);
+    const resetsAt = resolveReset(cli, found);
+    const limit = buildUsageLimit({
+      previous,
+      source,
+      message: found.message ? redactSecrets(found.message).slice(0, 300) : null,
+      resetsAt,
+      window: found.window,
+      autoResumeEnabled: options.enabled,
+      policy: this.policy,
+    });
+    const message = usageLimitMessage(limit);
+    const updated = await this.setSession(live.id, {
+      usageLimit: limit as unknown as Record<string, unknown>,
+      errorCode: 'rate_limit',
+      errorMessage: message,
+      currentActivity: null,
+    });
+    this.armAutoResume(live.id, limit);
+    if (!previous?.active) {
+      void this.notify(live, {
+        kind: 'session_usage_limit',
+        severity: 'warning',
+        title: `${updated.title} : limite d'utilisation atteinte`,
+        body: message,
+        dedupKey: `session:${live.id}:limit:${limit.detectedAt}`,
+      });
+    }
+  }
+
+  private clearResumeTimer(sessionId: string): void {
+    const timer = this.resumeTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.resumeTimers.delete(sessionId);
+  }
+
+  /** No limit in play any more (the owner took over, stopped the session): record and timer dropped. */
+  private async clearUsageLimit(sessionId: string): Promise<void> {
+    this.clearResumeTimer(sessionId);
+    this.autoPrompts.delete(sessionId);
+    const [row] = await this.deps.db
+      .update(sessions)
+      .set({
+        usageLimit: null,
+        // The limit line goes with it; any other error stays.
+        errorCode: sql`case when ${sessions.errorCode} = 'rate_limit' then null else ${sessions.errorCode} end`,
+        errorMessage: sql`case when ${sessions.errorCode} = 'rate_limit' then null else ${sessions.errorMessage} end`,
+      })
+      .where(and(this.ownSession(sessionId), sql`${sessions.usageLimit} is not null`))
+      .returning();
+    if (row) await this.publishStatus(row);
+  }
+
+  /** Arms (or re-arms) the timer of a scheduled resumption; anything else clears it. */
+  private armAutoResume(sessionId: string, limit: UsageLimit | null): void {
+    this.clearResumeTimer(sessionId);
+    const next = limit?.active && limit.autoResume?.outcome === 'scheduled' ? limit.autoResume.nextAttemptAt : null;
+    if (!next) return;
+    const delay = Math.min(Math.max(0, Date.parse(next) - Date.now()), MAX_TIMER_MS);
+    const timer = setTimeout(() => {
+      this.resumeTimers.delete(sessionId);
+      void this.fireAutoResume(sessionId).catch((error: unknown) => this.deps.logger.warn({ err: error, sessionId }, 'reprise automatique impossible'));
+    }, delay);
+    timer.unref?.();
+    this.resumeTimers.set(sessionId, timer);
+  }
+
+  private async writeLimit(sessionId: string, limit: UsageLimit | null, extra: Partial<typeof sessions.$inferInsert> = {}): Promise<SessionRow> {
+    return this.deps.store.queue.run(sessionId, () =>
+      this.setSession(sessionId, { usageLimit: limit as unknown as Record<string, unknown> | null, ...extra }),
+    );
+  }
+
+  /**
+   * Time of a scheduled resumption: types the instruction into the live CLI, or resumes the
+   * conversation (`claude --resume`) when the CLI is gone. Nothing happens if the owner took over,
+   * stopped or archived the session, or turned the option off meanwhile.
+   */
+  async fireAutoResume(sessionId: string): Promise<void> {
+    let row: SessionRow;
+    try {
+      row = await this.row(sessionId);
+    } catch {
+      return;
+    }
+    const limit = parseUsageLimit(row.usageLimit);
+    const resume = limit?.autoResume;
+    if (!limit?.active || !resume || resume.outcome !== 'scheduled' || !resume.nextAttemptAt) return;
+    if (Date.parse(resume.nextAttemptAt) - Date.now() > 1000) {
+      this.armAutoResume(sessionId, limit);
+      return;
+    }
+    if (row.status === 'archived' || row.archivedAt) {
+      await this.writeLimit(sessionId, null);
+      return;
+    }
+    const options = await this.autoResumeOptions(sessionId);
+    if (!options.enabled) {
+      await this.writeLimit(sessionId, { ...limit, autoResume: { ...resume, enabled: false, nextAttemptAt: null, outcome: 'off' } });
+      return;
+    }
+    const live = this.live.get(sessionId);
+    const retryLater = async (reason: string) => {
+      const next = { ...resume, nextAttemptAt: new Date(Date.now() + AUTO_RESUME_BUSY_RETRY_MS).toISOString(), lastError: reason };
+      const updated = { ...limit, autoResume: next };
+      await this.writeLimit(sessionId, updated, { errorMessage: usageLimitMessage(updated) });
+      this.armAutoResume(sessionId, updated);
+    };
+    if (live && (live.pending.size > 0 || row.status === 'waiting_permission')) {
+      await retryLater("Une demande d'autorisation attend une réponse.");
+      return;
+    }
+    const attempt = resume.attempts + 1;
+    const fired: UsageLimit = {
+      ...limit,
+      active: false,
+      autoResume: { ...resume, attempts: attempt, lastAttemptAt: nowIso(), nextAttemptAt: null, outcome: 'fired', lastError: null },
+    };
+    // Written before typing: a restart in between never fires twice.
+    await this.deps.store.queue.run(sessionId, async () => {
+      await this.deps.store.append(sessionId, 'system', {
+        message: `Reprise automatique après la limite d'utilisation (tentative ${attempt} sur ${resume.maxAttempts})`,
+        at: nowIso(),
+      });
+      await this.setSession(sessionId, { usageLimit: fired as unknown as Record<string, unknown>, errorCode: null, errorMessage: null });
+    });
+    this.autoPrompts.set(sessionId, options.instruction);
+    try {
+      if (this.isActive(sessionId)) await this.launch(sessionId, { resume: false, queue: [options.instruction] });
+      else await this.resume(sessionId, undefined, [options.instruction]);
+    } catch (error) {
+      this.autoPrompts.delete(sessionId);
+      const reason = error instanceof RunnerError ? error.message : 'La session ne peut pas reprendre.';
+      // Capacity reached, a permission pending, the server suspended, a database hiccup: later.
+      // A session that can no longer resume (worktree or conversation gone, CLI missing): never.
+      const busy = !(error instanceof RunnerError) || !(error.code === 'NOT_FOUND' || (error.reason && AUTO_RESUME_FINAL_REASONS.has(error.reason)));
+      const back: UsageLimit = {
+        ...limit,
+        autoResume: busy
+          ? { ...resume, nextAttemptAt: new Date(Date.now() + AUTO_RESUME_BUSY_RETRY_MS).toISOString(), lastError: reason }
+          : { ...resume, attempts: attempt, lastAttemptAt: nowIso(), nextAttemptAt: null, outcome: 'exhausted', lastError: reason },
+      };
+      await this.writeLimit(sessionId, back, { errorCode: 'rate_limit', errorMessage: usageLimitMessage(back) }).catch(() => undefined);
+      this.armAutoResume(sessionId, back);
+      this.deps.logger.warn({ err: error, sessionId }, 'reprise automatique non lancée');
+      return;
+    }
+    const target = this.live.get(sessionId);
+    const title = (await this.row(sessionId).catch(() => row)).title;
+    const payload = {
+      kind: 'session_auto_resumed' as const,
+      severity: 'success' as const,
+      title: 'Session reprise automatiquement',
+      body: `${title} · après la limite d'utilisation`,
+      dedupKey: `session:${sessionId}:auto-resume:${limit.detectedAt}:${attempt}`,
+    };
+    if (target) void this.notify(target, payload);
+  }
+
+  /**
+   * « Reprise automatique après la limite d'utilisation » changed for this session (effective
+   * value computed by the web): kept in its launch options, and a limit in play is (re)scheduled or
+   * its resumption cancelled.
+   */
+  async setAutoResume(sessionId: string, input: AutoResumeOptions): Promise<SessionDto> {
+    const row = await this.row(sessionId);
+    const current = await readLaunchFile(this.deps.dataDir, sessionId);
+    const next: AutoResumeOptions = { enabled: input.enabled, ...(input.instruction?.trim() ? { instruction: input.instruction.trim() } : current?.autoResume?.instruction ? { instruction: current.autoResume.instruction } : {}) };
+    if (current) await updateLaunchFile(this.deps.dataDir, sessionId, { autoResume: next });
+    const limit = parseUsageLimit(row.usageLimit);
+    if (limit?.active) {
+      const turnedOn = input.enabled && !limit.autoResume?.enabled;
+      const autoResume = scheduleAutoResume({
+        enabled: input.enabled,
+        resetsAt: limit.resetsAt,
+        // Turned on by the owner: a fresh count (and a fresh 6-hour window when the reset is unknown).
+        detectedAt: turnedOn ? nowIso() : limit.detectedAt,
+        carried: turnedOn || !limit.autoResume ? null : { attempts: limit.autoResume.attempts, lastAttemptAt: limit.autoResume.lastAttemptAt, giveUpAt: limit.autoResume.giveUpAt },
+        policy: this.policy,
+      });
+      const updated: UsageLimit = { ...limit, autoResume };
+      await this.writeLimit(sessionId, updated, { errorMessage: usageLimitMessage(updated) });
+      this.armAutoResume(sessionId, updated);
+    }
+    return this.dto(sessionId);
+  }
+
+  /** Runner start: timers of the resumptions still scheduled on this server. */
+  private async restoreAutoResume(): Promise<number> {
+    const rows = await this.deps.db
+      .select({ id: sessions.id, usageLimit: sessions.usageLimit, status: sessions.status })
+      .from(sessions)
+      .where(and(eq(sessions.environmentId, this.envId), sql`${sessions.usageLimit} is not null`));
+    let armed = 0;
+    for (const row of rows) {
+      const limit = parseUsageLimit(row.usageLimit);
+      if (row.status === 'archived' || !limit?.active || limit.autoResume?.outcome !== 'scheduled') continue;
+      this.armAutoResume(row.id, limit);
+      armed += 1;
+    }
+    return armed;
+  }
+
+  // -------------------------------------------------------------------------------------------
   // Status line, MCP headers
   // -------------------------------------------------------------------------------------------
 
@@ -1690,7 +2027,15 @@ export class SessionManager {
       .set({ cliStatus: status as unknown as Record<string, unknown> })
       .where(this.ownSession(live.id))
       .returning();
-    if (row) await this.publishStatus(row);
+    if (!row) return;
+    // A limit recorded before the status line told its exact reset time: complete it.
+    const limit = parseUsageLimit(row.usageLimit);
+    const reset = limit?.active ? resetFromStatus(status, limit.window, Date.now(), { full: true }) : null;
+    if (limit && reset && reset !== limit.resetsAt) {
+      await this.recordLimit(live, limit.source, { message: limit.message ?? '', resetsAt: reset, window: limit.window });
+      return;
+    }
+    await this.publishStatus(row);
   }
 
   async mcpHeaders(live: LiveSession, input: { serverName: string; serverUrl: string | null }): Promise<Record<string, string>> {
@@ -1844,6 +2189,7 @@ export class SessionManager {
       }
     }
     if (reattached || adopted) this.ensureWatchdog();
+    await this.restoreAutoResume().catch((error: unknown) => this.deps.logger.warn({ err: error }, 'reprises automatiques non relues'));
     return { reattached, interrupted, adopted, orphans };
   }
 
@@ -1938,6 +2284,8 @@ export class SessionManager {
   /** Runner shutdown: tmux sessions stay alive (attach clients detached), direct PTYs are interrupted. */
   async shutdown(): Promise<void> {
     if (this.watchdog) clearInterval(this.watchdog);
+    // Scheduled resumptions stay in the database: the next runner process re-arms them.
+    for (const id of [...this.resumeTimers.keys()]) this.clearResumeTimer(id);
     // eslint-disable-next-line unicorn/no-useless-spread -- snapshot: stopping a session deletes it from this.live
     for (const live of [...this.live.values()]) {
       for (const p of live.pending.values()) {

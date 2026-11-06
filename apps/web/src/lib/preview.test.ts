@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { normalizePreviewPath, readPreviewConfig, sameSiteHosts } from './preview';
+import { normalizePreviewPath, previewResponseHeaders, readPreviewConfig, sameSiteHosts } from './preview';
+import { APP_PERMISSIONS_POLICY } from './security-headers';
 
 describe('preview configuration', () => {
   it('is off, with its reason, without a valid PREVIEW_HOST distinct from the application', () => {
@@ -37,5 +38,13 @@ describe('preview configuration', () => {
     expect(normalizePreviewPath('')).toBe('/');
     expect(normalizePreviewPath('devis?id=3')).toBe('/devis?id=3');
     for (const bad of ['//evil.test/', '/a b', '/__nuera/entree', '/a\\b']) expect(normalizePreviewPath(bad), bad).toBeNull();
+  });
+
+  it('gives the microphone to the application origin only, never to the preview host', () => {
+    expect(APP_PERMISSIONS_POLICY).toContain('microphone=(self)');
+    expect(APP_PERMISSIONS_POLICY).toContain('camera=()');
+    const config = readPreviewConfig({ APP_URL: 'http://localhost:3610', PREVIEW_HOST: '127.0.0.1:3610' });
+    if (!config.enabled) throw new Error('preview expected');
+    expect(previewResponseHeaders(config)['permissions-policy']).toBe('camera=(), microphone=(), geolocation=(), payment=()');
   });
 });

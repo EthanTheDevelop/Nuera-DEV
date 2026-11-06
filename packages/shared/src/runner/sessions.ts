@@ -44,6 +44,65 @@ export const CliStatusSchema = z.object({
 export type CliStatus = z.infer<typeof CliStatusSchema>;
 
 // ---------------------------------------------------------------------------------------------
+// Usage limit of the Claude subscription (sessions.usage_limit, written by the runner)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Where the runner learnt that the session stopped on the subscription usage limit: the
+ * `StopFailure` hook (`error: rate_limit`), the limit message the CLI wrote in its transcript or
+ * printed on screen (« 5-hour limit reached ∙ resets 3pm »). The reset time itself comes from the
+ * status line (`rate_limits.*.resets_at`) when it is known, else from the message.
+ */
+export const USAGE_LIMIT_SOURCES = ['hook', 'transcript', 'screen', 'status_line'] as const;
+export const UsageLimitSourceSchema = z.enum(USAGE_LIMIT_SOURCES);
+export type UsageLimitSource = z.infer<typeof UsageLimitSourceSchema>;
+
+/** Optional automatic resumption scheduled by the runner once the limit is lifted. */
+export const AutoResumeStateSchema = z.object({
+  /** Effective value for this session (space default or session override, computed by the web). */
+  enabled: z.boolean(),
+  /** Next attempt (reset + margin, or the next retry); null = nothing scheduled. */
+  nextAttemptAt: IsoDateSchema.nullable(),
+  /** `reset`: at the reset time the CLI gave; `retry`: reset unknown, a try every 30 min (6 h at most). */
+  mode: z.enum(['reset', 'retry']).nullable(),
+  attempts: z.number().int(),
+  maxAttempts: z.number().int(),
+  lastAttemptAt: IsoDateSchema.nullable(),
+  /** Retry mode only: no attempt after this date. */
+  giveUpAt: IsoDateSchema.nullable(),
+  /** `exhausted`: attempts used up (or 6 h without a reset time), nothing more is scheduled. */
+  outcome: z.enum(['scheduled', 'fired', 'exhausted', 'off']).nullable(),
+  /** Why the last attempt could not be made (« 4 sessions actives sur 4 autorisées… »), in French. */
+  lastError: z.string().nullable().optional(),
+});
+export type AutoResumeState = z.infer<typeof AutoResumeStateSchema>;
+
+export const UsageLimitSchema = z.object({
+  /** The session is stopped by the limit right now (false once an automatic resumption was typed). */
+  active: z.boolean(),
+  detectedAt: IsoDateSchema,
+  /** When the CLI says the limit is lifted (status line or message); null = not given by the CLI. */
+  resetsAt: IsoDateSchema.nullable(),
+  source: UsageLimitSourceSchema,
+  /** Window named by the CLI (`five_hour`: « session limit », `seven_day`: weekly), null when unknown. */
+  window: z.enum(['five_hour', 'seven_day']).nullable(),
+  /** The CLI's own message, as printed (redacted, capped). */
+  message: z.string().nullable(),
+  autoResume: AutoResumeStateSchema.nullable(),
+});
+export type UsageLimit = z.infer<typeof UsageLimitSchema>;
+
+/** Default instruction typed into the session when it resumes after the limit. */
+export const DEFAULT_AUTO_RESUME_INSTRUCTION = "Continue là où tu t'es arrêté.";
+
+/** Launch option and request of `POST /v1/sessions/:id/auto-resume`. */
+export const AutoResumeOptionsSchema = z.object({
+  enabled: z.boolean(),
+  instruction: z.string().trim().min(1).max(2000).optional(),
+});
+export type AutoResumeOptions = z.infer<typeof AutoResumeOptionsSchema>;
+
+// ---------------------------------------------------------------------------------------------
 // Conversation items (session_events.payload by kind)
 // ---------------------------------------------------------------------------------------------
 
@@ -294,6 +353,11 @@ export const SessionLaunchOptionsSchema = z.object({
    * refused in `env`). Absent: the Git configuration of the server.
    */
   gitIdentity: GitIdentitySchema.nullish(),
+  /**
+   * « Reprise automatique après la limite d'utilisation » (space default or session override) and
+   * the instruction typed then. Absent (older web, older launch file): off.
+   */
+  autoResume: AutoResumeOptionsSchema.optional(),
 });
 export type SessionLaunchOptions = z.input<typeof SessionLaunchOptionsSchema>;
 
@@ -364,6 +428,8 @@ export const SessionDtoSchema = z.object({
   queuedInstructions: z.number().int(),
   errorCode: z.string().nullable(),
   errorMessage: z.string().nullable(),
+  /** Stopped on the subscription usage limit (and its automatic resumption). Absent from older runners. */
+  limit: UsageLimitSchema.nullable().optional(),
   exitCode: z.number().int().nullable(),
   resumeCount: z.number().int(),
   startedAt: IsoDateSchema.nullable(),
@@ -397,6 +463,8 @@ export const InstructionResultSchema = z.object({
   resumed: z.boolean(),
   session: SessionDtoSchema,
 });
+
+export const AutoResumeRequestSchema = AutoResumeOptionsSchema;
 
 export const StopSessionRequestSchema = z.object({
   /** Kill without trying `/exit` first. */

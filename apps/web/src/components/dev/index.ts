@@ -27,6 +27,10 @@ export {
 // Composer (Workspace · décisions et saisie)
 export { Composer, COMPOSER_PLACEHOLDER, type ComposerProps } from './composer/Composer';
 export { PhoneComposer, PHONE_COMPOSER_PLACEHOLDER, type PhoneComposerProps } from './composer/PhoneComposer';
+export { DictatedTextarea, type DictatedTextareaProps } from './composer/DictatedTextarea';
+export { DictationButton, DictationStatus, type DictationButtonProps, type DictationStatusProps } from './composer/DictationButton';
+export { DICTATION_COPY } from './composer/dictation';
+export { useDictation, useComposerDictation, type Dictation, type UseDictationOptions } from './composer/use-dictation';
 export {
   SessionPersistenceLine,
   persistenceText,

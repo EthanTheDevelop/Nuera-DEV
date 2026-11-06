@@ -10,6 +10,8 @@
  * and the Workspace says why.
  */
 
+import { PREVIEW_PERMISSIONS_POLICY } from './security-headers';
+
 export const PREVIEW_COOKIE = 'nuera_apercu';
 /** Entry point of a handoff on the preview host (`?jeton=`): sets the cookie, then redirects. */
 export const PREVIEW_ENTRY_PATH = '/__nuera/entree';
@@ -134,6 +136,8 @@ export function previewResponseHeaders(config: Extract<PreviewConfig, { enabled:
     'content-security-policy': `frame-ancestors ${config.appOrigin}`,
     'x-frame-options': `ALLOW-FROM ${config.appOrigin}`,
     'x-robots-tag': 'noindex, nofollow',
+    // Replaces next.config's (microphone for the app origin): nothing for a previewed site.
+    'permissions-policy': PREVIEW_PERMISSIONS_POLICY,
   };
 }
 

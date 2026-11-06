@@ -17,6 +17,14 @@
 //   Échap —, fail, final). Edits really change the worktree, so diffs exist;
 // - `/status` and `/usage` print a status block (claude-status terminals), `mcp login` waits for a code;
 // - the process exits when its terminal closes or its parent disappears (no orphan after a kill).
+//
+// Usage limit (runner tests and test stack): `scenario:limit` (optionally `scenario:limit:<seconds>`,
+// default 3600) or a scripted `{ fail: { error: 'rate_limit', resetInSeconds } }` starts a limit that
+// resets after that delay. Until then EVERY prompt stops like the real CLI: the limit notice
+// (« 5-hour limit reached ∙ resets 3:45pm (Europe/Paris) ») printed and written in the transcript as
+// a CLI message (`isApiErrorMessage`), `StopFailure` (`error: rate_limit`) and a status line whose
+// five-hour window is used at 100 % with its `resets_at`. The reset time is kept in
+// `<CLAUDE_CONFIG_DIR>/nuera-fake-limit/<session>.json`, so a resumed conversation still hits it.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -118,6 +126,26 @@ async function interactive() {
   }
   const base = { session_id: sessionId, transcript_path: transcript, cwd, permission_mode: flag('--permission-mode') ?? 'default' };
 
+  // Usage limit of this conversation (see the header): epoch ms of its reset, 0 = none.
+  const limitFile = path.join(configDir, 'nuera-fake-limit', `${sessionId}.json`);
+  const readLimit = () => {
+    try {
+      return Number(JSON.parse(readFileSync(limitFile, 'utf8')).resetsAt) || 0;
+    } catch {
+      return 0;
+    }
+  };
+  const startLimit = (seconds) => {
+    mkdirSync(path.dirname(limitFile), { recursive: true });
+    writeFileSync(limitFile, JSON.stringify({ resetsAt: Date.now() + Math.max(1, seconds) * 1000 }));
+  };
+  const limitActive = () => readLimit() > Date.now();
+  const resetClock = (ms) => {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const clock = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: zone }).format(new Date(ms)).replace(/\s+/g, '').toLowerCase();
+    return `${clock} (${zone})`;
+  };
+
   const writeTranscript = (entry) => appendFileSync(transcript, `${JSON.stringify({ sessionId, timestamp: new Date().toISOString(), uuid: randomUUID(), ...entry })}\n`);
   const assistantText = (text) => writeTranscript({ type: 'assistant', message: { id: `msg_${randomUUID()}`, role: 'assistant', content: [{ type: 'text', text }] } });
 
@@ -162,7 +190,9 @@ async function interactive() {
       model: { id: 'claude-fake-1', display_name: 'Fake Opus' },
       version: '2.1.999',
       context_window: { used_percentage: 23, context_window_size: 200000 },
-      rate_limits: { five_hour: { used_percentage: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
+      rate_limits: limitActive()
+        ? { five_hour: { used_percentage: 100, resets_at: Math.floor(readLimit() / 1000) } }
+        : { five_hour: { used_percentage: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
       cost: { total_cost_usd: 1.23, total_duration_ms: 4200, total_lines_added: 3, total_lines_removed: 1 },
     }, 5);
     statusText = r.stdout.trim();
@@ -375,6 +405,16 @@ async function interactive() {
       ? [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: `${value.split(/\s+/).slice(0, 3).join(' ')}:*` }], behavior: 'allow', destination: 'localSettings' }]
       : [{ type: 'addRules', rules: [{ toolName: 'Edit', ruleContent: `${value.split('/')[0]}/**` }], behavior: 'allow', destination: 'localSettings' }];
 
+  /** The turn stops on the usage limit, as the real CLI does. */
+  async function hitLimit() {
+    const notice = `5-hour limit reached ∙ resets ${resetClock(readLimit())}`;
+    writeTranscript({ type: 'assistant', isApiErrorMessage: true, message: { id: `msg_${randomUUID()}`, role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: notice }] } });
+    out(`\r\n⎿  ${notice}\r\n     /upgrade to increase your usage limit.\r\n`);
+    // The failed request refreshed the status line (five-hour window at 100 %) before the turn ended.
+    await statusLine();
+    await hook('StopFailure', { error: 'rate_limit', error_details: notice });
+  }
+
   async function finish(text) {
     assistantText(text);
     await hook('Stop', { last_assistant_message: text, stop_hook_active: false });
@@ -506,6 +546,11 @@ async function interactive() {
         if (cancelled) return;
         await hook('PostToolUse', { tool_name: 'Bash', tool_input: input, tool_response: { stdout: printed.slice(-200).join('\n'), stderr: '', interrupted: false, isImage: false }, tool_use_id: id, duration_ms: (spec.seconds ?? 120) * 1000 }, 'Bash');
       } else if (step.fail) {
+        if (step.fail.error === 'rate_limit' && typeof step.fail.resetInSeconds === 'number') {
+          startLimit(step.fail.resetInSeconds);
+          await hitLimit();
+          return;
+        }
         await hook('StopFailure', { error: step.fail.error, error_details: step.fail.details ?? null });
         return;
       } else if (step.final) {
@@ -643,6 +688,13 @@ async function interactive() {
     }
     await hook('UserPromptSubmit', { prompt: text, prompt_id: randomUUID() });
     writeTranscript({ type: 'user', message: { role: 'user', content: text } });
+    const limitStart = /scenario:limit(?::(\d{1,6}))?(?![a-z0-9-])/.exec(text);
+    if (limitStart) startLimit(limitStart[1] ? Number(limitStart[1]) : 3600);
+    if (limitActive()) {
+      await hitLimit();
+      prompt();
+      return;
+    }
     const script = scriptFor(text);
     if (script) await runScript(script);
     else if (text.includes('scenario:full')) await scenarioFull(text);

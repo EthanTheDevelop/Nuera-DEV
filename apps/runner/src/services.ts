@@ -163,6 +163,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     dataDir: paths.dataDir,
     claudeBin: config.claudeBin,
     claudeConfigDir: config.claudeConfigDir,
+    autoResume: config.autoResume,
     hookBaseUrl: () => `http://127.0.0.1:${hookPort.value}`,
     onAuthProblem: () => {
       claude.invalidate();

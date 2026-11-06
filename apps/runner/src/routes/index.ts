@@ -158,6 +158,7 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
   defineRoute(app, 'sendInstruction', async ({ params, body }) => s.sessions.sendInstruction(params.sessionId, body.text));
   defineRoute(app, 'interruptSession', async ({ params }) => s.sessions.interrupt(params.sessionId));
   defineRoute(app, 'announceSession', async ({ params }) => s.sessions.announce(params.sessionId));
+  defineRoute(app, 'setSessionAutoResume', async ({ params, body }) => s.sessions.setAutoResume(params.sessionId, body));
   defineRoute(app, 'stopSession', async ({ params, body }) => s.sessions.stop(params.sessionId, body));
   defineRoute(app, 'sessionEvents', async ({ params, query }) => {
     await s.sessions.dto(params.sessionId);

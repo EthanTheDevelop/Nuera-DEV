@@ -5,8 +5,10 @@ import { Badge, CompactButton, IconButton } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { useAutoGrow } from '../hooks/use-auto-grow';
 import { permissionModeText } from '../lib/permission';
+import { DictationButton, DictationStatus } from './DictationButton';
 import { SessionPersistenceLine, type PersistenceText } from './SessionPersistenceLine';
 import { useComposer, type ComposerState } from './use-composer';
+import { useComposerDictation } from './use-dictation';
 
 /** Placeholders of `Dev · Compositeur` (203:497) and W7, verbatim. */
 export const COMPOSER_PLACEHOLDER: Record<ComposerState, string> = {
@@ -91,6 +93,7 @@ export function Composer({
     textareaRef,
   });
   useAutoGrow(composer.innerRef, composer.value, maxHeight);
+  const { dictation, submit, onKeyDown } = useComposerDictation(composer, { focusOnStart: true });
 
   const blocked = !composer.accepts;
   const stateText = (state === 'unavailable' && disabledReason) || COMPOSER_PLACEHOLDER[state];
@@ -99,7 +102,7 @@ export function Composer({
   const blockedText = disabledReason ?? stateText;
 
   return (
-    <div className={cn('flex w-full min-w-0 flex-col gap-2', className)}>
+    <div className={cn('flex w-full min-w-0 flex-col gap-2', className)} onBlur={dictation.onBlur}>
       <div
         className={cn(
           'flex w-full min-w-0 flex-col gap-2.5 rounded-lg border border-border bg-bg py-3 pr-3 pl-4',
@@ -113,7 +116,7 @@ export function Composer({
           // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
           value={composer.value}
           onChange={composer.onChange}
-          onKeyDown={composer.onKeyDown}
+          onKeyDown={onKeyDown}
           placeholder={shownPlaceholder}
           readOnly={blocked}
           aria-disabled={blocked || undefined}
@@ -130,6 +133,7 @@ export function Composer({
         {blocked && composer.value.trim() !== '' ? (
           <p className="m-0 font-sans text-app-12 text-muted">{blockedText}</p>
         ) : null}
+        <DictationStatus dictation={dictation} />
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {onAttach ? (
             <IconButton
@@ -179,6 +183,7 @@ export function Composer({
                 Interrompre · Échap
               </CompactButton>
             ) : null}
+            <DictationButton dictation={dictation} size="sm" shortcut />
             <IconButton
               icon="send"
               label="Envoyer"
@@ -188,7 +193,7 @@ export function Composer({
               loading={composer.busy}
               // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
               disabled={!composer.canSend}
-              onClick={() => void composer.submit()}
+              onClick={() => void submit()}
               className={SEND_DISABLED_CLASSES}
             />
           </div>

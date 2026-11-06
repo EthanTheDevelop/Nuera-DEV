@@ -7,6 +7,7 @@ import {
   CliStatusSchema,
   PermissionRequestDtoSchema,
   SessionEventItemSchema,
+  UsageLimitSchema,
 } from '../runner/sessions';
 import { IsoDateSchema, SessionStatusSchema, UuidSchema } from '../runner/common';
 
@@ -45,6 +46,8 @@ export const SessionStatusEventSchema = z.object({
   pendingPermissionId: UuidSchema.nullable(),
   remoteControlUrl: z.string().nullable(),
   queuedInstructions: z.number().int(),
+  /** Usage limit of the subscription and its automatic resumption; absent from older runners. */
+  limit: UsageLimitSchema.nullable().optional(),
 });
 export type SessionStatusEvent = z.infer<typeof SessionStatusEventSchema>;
 

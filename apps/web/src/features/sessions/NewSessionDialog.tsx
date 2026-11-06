@@ -20,8 +20,8 @@ import {
   Skeleton,
   SlotMeter,
   Switch,
-  Textarea,
 } from '@/components/ui';
+import { DictatedTextarea } from '@/components/dev';
 import { useOptionalShellData } from '@/components/shell';
 import { useIsDesktopNav } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
@@ -414,7 +414,7 @@ function NewSessionForm({ serverName: shellServerName, layout, defaultProjectId,
           }
         />
         <Field label="Première instruction">
-          <Textarea value={form.instruction} onChange={(e) => set('instruction', e.target.value)} rows={4} />
+          <DictatedTextarea value={form.instruction} onValueChange={(next) => set('instruction', next)} rows={4} />
         </Field>
       </div>
     );
@@ -612,7 +612,7 @@ function NewSessionForm({ serverName: shellServerName, layout, defaultProjectId,
         labelAside={<span className="font-sans text-app-12 text-muted">facultatif</span>}
         hint="Envoyée dès la création : Claude Code démarre aussitôt. Sinon il démarre au premier envoi depuis le Workspace."
       >
-        <Textarea value={form.instruction} onChange={(e) => set('instruction', e.target.value)} rows={3} placeholder="Écrire une instruction à Claude…" />
+        <DictatedTextarea value={form.instruction} onValueChange={(next) => set('instruction', next)} rows={3} placeholder="Écrire une instruction à Claude…" />
       </Field>
 
       {failure ? (
