@@ -54,6 +54,9 @@ services:
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       # Traefik (Coolify) writes the client address in X-Real-IP: the only IP header trusted.
+      # « Mot de passe oublié » : SMTP (secret) et expéditeur ; sans eux, la page le signale.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
       TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-real-ip}
       NUERA_SERVER_STATUS_URL: ${NUERA_SERVER_STATUS_URL:-}
       # Optional fallback PAT: only for the default server's space, never served to an MCP server.
