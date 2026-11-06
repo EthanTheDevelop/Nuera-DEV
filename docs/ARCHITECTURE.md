@@ -170,7 +170,7 @@ lancement ; plafonds lus dans sa ligne `environments`.
 | Fichiers | `GET /worktrees/:id/tree?path=`, `GET /worktrees/:id/file?path=` (lecture, taille max, binaire détecté), `PUT /projects/:id/claude-md` (écriture contrôlée de CLAUDE.md + commit) |
 | Terminaux | `POST /terminals` (shell dans un worktree, ou `claude auth login`, ou `claude mcp login`), `GET /terminals/:id/stream` (SSE : `snapshot` sérialisé puis `data`), `POST /terminals/:id/input`, `POST /terminals/:id/resize`, `DELETE /terminals/:id` |
 | Sessions Claude | `POST /sessions` (worktree + tmux + `claude`), `POST /sessions/:id/resume`, `POST /sessions/:id/instruction` (collage entre crochets + Entrée), `POST /sessions/:id/interrupt` (Échap), `POST /sessions/:id/stop`, `GET /sessions/:id/stream` (SSE conversation + statut), `GET /sessions/:id/terminal` (= terminal de la session), `POST /permissions/:id/decision` |
-| Processus projet | `POST /runs` (install/dev/build/test dans un worktree), `GET /runs/:id/stream`, `DELETE /runs/:id`, `<toute méthode> /runs/:id/preview/*` (Aperçu : relais vers le port détecté d'un `dev` vivant) |
+| Processus projet | `POST /runs` (install/dev/build/test dans un worktree), `GET /runs/:id/stream`, `DELETE /runs/:id`, `<toute méthode> /runs/:id/preview/*` (Aperçu : relais vers le port détecté d'un `dev` vivant, WebSocket compris) |
 | Claude CLI | `GET /claude/status` (`claude --version`, `claude auth status --json`, `claude agents --json`), `POST /claude/mcp/sync` (`claude mcp add-json/remove --scope user`), `GET /claude/mcp/:name` (`claude mcp get`) |
 | Hooks (écoute 127.0.0.1 uniquement) | `POST /internal/hooks/:sessionId`, `POST /internal/statusline/:sessionId`, `POST /internal/mcp-headers/:sessionId` — appelés par `bin/nuera-*.mjs` avec le jeton de la session en **en-tête Bearer** (jamais dans l'URL ni l'argv) |
 
@@ -272,10 +272,11 @@ Référence complète : `docs/SECURITY.md` (dont les risques résiduels, §11).
   (Paramètres) et journal d'instance (Administration).
 * **En-têtes** : CSP stricte, `frame-ancestors 'none'`, HSTS en prod, `Referrer-Policy`, `Permissions-Policy`.
 * **Aperçu** : le site en développement d'un worktree s'affiche depuis une **origine séparée** (`PREVIEW_HOST`, même
-  conteneur web : `src/proxy.ts` envoie tout cet hôte au relais `/api/apercu/proxy`, qui ne rend jamais de page de
-  l'application), après un passage de main signé à usage unique (`POST /api/previews`) et un cookie propre à cet hôte ;
-  le relais revérifie compte, accès web et portée à chaque requête et passe par le runner du serveur du lancement
-  (`docs/SECURITY.md` §8 bis).
+  conteneur web : `src/proxy.ts` envoie tout cet hôte, par une réécriture externe de Next, au runner du serveur du
+  lancement — jamais à une page ou une route de l'application), après un passage de main signé à usage unique
+  (`POST /api/previews`) et un cookie propre à cet hôte ; la porte du proxy (`server/preview/gate.ts`) revérifie
+  compte, accès web et portée à chaque requête ; le runner ajoute le script de position et rend ses erreurs en page
+  française (`docs/SECURITY.md` §8 bis).
 
 ## 10. Temps réel
 
