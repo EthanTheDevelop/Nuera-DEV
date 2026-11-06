@@ -273,8 +273,9 @@ des notifications, thème. Les décisions d'autorisation prises **dans le termin
   (`requireMcpLoginServer`, même copie) sont réservés au propriétaire de l'espace sur un serveur attribué ;
   `mcp-login` est aussi refusé sur un serveur suspendu ou retiré (`ENVIRONMENT_DISABLED`), avant toute lecture et tout
   appel au runner.
-- **Contrat** : `RUNNER_CONTRACT_VERSION = 2` exposé par `/v1/health` ; le web refuse poliment une route plus récente
-  que le contrat du runner (`RUNNER_OUTDATED`). Chaque route est déclarée dans `@nuera/shared/runner` et validée par
+- **Contrat** : `RUNNER_CONTRACT_VERSION = 3` exposé par `/v1/health` ; le web refuse poliment une route plus récente
+  que le contrat du runner (`RUNNER_OUTDATED`), et **tout appel sauf la santé** à un runner de contrat < 3 sur un
+  serveur partagé (il donnerait une seule connexion Claude à tous ses comptes ; contrat lu dans le dernier battement). Chaque route est déclarée dans `@nuera/shared/runner` et validée par
   Zod (corps ≤ 2 Mio).
 - **Processus** : `execFile` avec tableau d'arguments (exception documentée : les commandes du projet), chemins
   `realpath` confinés à `NUERA_PROJECTS_ROOT` / `NUERA_DATA_DIR`, références Git libres passées par `refExists()`
@@ -285,6 +286,25 @@ des notifications, thème. Les décisions d'autorisation prises **dans le termin
   `RUNNER_TOKEN`, `DATABASE_URL`, `RUNNER_DATABASE_URL`, `BETTER_AUTH_SECRET`, `APP_ENCRYPTION_KEY*`, `SETUP_TOKEN`,
   `VAPID_*`, `GITHUB_*`, `GIT_*`…) ; seules valeurs de confiance injectées : `CLAUDE_CONFIG_DIR` (dev/tests) et
   l'identité Git du compte (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`).
+- **Serveurs partagés (lot P1)** : un serveur peut travailler pour plusieurs comptes (`environment_spaces`, RLS par
+  serveur, lecture seule pour le rôle restreint). Chaque compte a **son** dossier de configuration du CLI
+  (`apps/runner/src/claude/accounts.ts`) : le premier compte garde le dossier existant (pointé, jamais déplacé ni lu,
+  épinglé une fois pour toutes dans `<NUERA_DATA_DIR>/claude-compte-principal.json` : un changement ultérieur de
+  `environments.space_id` ne lui donne jamais la connexion d'un autre) ; les autres
+  `<NUERA_CLAUDE_ACCOUNTS_DIR | ~/claude-comptes>/<id de l'espace>/` (racine et dossiers 0700 ; un lien ou un fichier
+  à cet endroit est refusé, jamais suivi). Le dossier d'une session, d'une reprise, d'un shell ou d'une commande est
+  celui de l'espace **de son projet**, lu en base par le runner ; celui d'un terminal de connexion, de `/status`, de
+  `claude mcp login`, de `auth status` et de `mcp get/add-json` est celui que le web envoie (`spaceId` du contexte,
+  jamais choisi par le navigateur), vérifié contre les comptes du serveur (404 sinon) ; **sans `spaceId` sur un
+  serveur à plusieurs comptes : refus** (`CLAUDE_ACCOUNT_REQUIRED`), jamais une devinette. La configuration commune
+  est écrite dans le dossier de chaque compte avec les mêmes gardes (`assertManagedTarget`). Un compte retiré du
+  serveur (ou supprimé) est déconnecté (`claude auth logout`) et son dossier supprimé ; un runner injoignable le fait à
+  son prochain démarrage (`sweep`). Le flux global d'un runner porte les événements de tous ses comptes : le relais
+  web ne garde que ceux de l'espace (projet ou session vérifiés en base, dans l'ordre, échec fermé ; opération sans
+  projet : premier compte seulement), et seul le `claude.status` du compte passe (`/v1/events?spaceId=`). Les
+  rappels `notify` vont aux membres de l'espace **de la session**, plus à ceux du premier compte. Un terminal sans
+  propriétaire ni espace n'est accepté que sur un serveur à un seul compte. Les charges du serveur (`system.metrics`,
+  sessions vivantes en tout) restent visibles de ses comptes : la capacité est partagée, pas le contenu.
 - **Claude Code** : binaire officiel en session interactive ; jamais de lecture de `~/.claude/.credentials.json` ;
   `bypassPermissions` bloqué sauf si l'espace l'autorise **et** que l'instance ne le bloque pas (échec fermé si la
   colonne est illisible) ; décisions d'autorisation prises dans Nuera Dev journalisées.
@@ -463,8 +483,10 @@ connectez-vous avec ce compte pour l'ouvrir. » ; « Se déconnecter » y ramèn
 | Anciens chiffrés | Les valeurs à l'ancien format (sans liaison à la ligne) peuvent encore être déplacées d'une ligne à l'autre jusqu'à leur rechiffrement (variables de projet et MCP : à la réécriture). | Passe de rechiffrement ; ré-enregistrer les variables sensibles. |
 | Serveur retiré en service | Ses sessions tmux continuent mais ne s'arrêtent plus par Nuera (runner en attente, RLS) ; des sessions encore rattachées à l'ancien serveur d'un espace sont listées « non vérifié ». | Désactiver le compte et arrêter ses sessions **avant** de retirer ou supprimer. |
 | tmux sur un hôte partagé | Chaque serveur a son socket et un runner ne rattache ni n'adopte une session tmux dont `NUERA_SESSION_ID` n'est pas l'id de la ligne. Un même `NUERA_TMUX_SOCKET` donné à la main à deux runners d'une machine les remet sur un serveur tmux commun (sessions protégées par cette vérification, mais visibles l'une de l'autre). Deux runners sous le même utilisateur Linux partagent de toute façon le système de fichiers. | En production chaque serveur a son conteneur ; ne jamais réutiliser une valeur de `NUERA_TMUX_SOCKET`. |
-| Diffusion du runner | Le runner republie `notification.created` sur son flux global ; le navigateur ne lit que le canal web du compte (seq 0) et l'ignore. Les destinataires sont de toute façon les membres de l'espace du serveur. | Suite : retirer cette diffusion (les suites `sessions.test.ts` et `http.test.ts` l'observent). |
-| Terminaux sans propriétaire | Un terminal ouvert par un runner plus ancien (sans `ownerUserId`) sur le serveur de l'espace est accepté : repose sur « un serveur = une personne ». | — |
+| Diffusion du runner | Le runner republie `notification.created` sur son flux global ; le navigateur ne lit que le canal web du compte (seq 0) et l'ignore. Sur un serveur partagé, le relais web ne garde que les événements des projets et sessions de l'espace (`server/runner/event-scope.ts`). | Suite : retirer cette diffusion (les suites `sessions.test.ts` et `http.test.ts` l'observent). |
+| Terminaux sans propriétaire | Un terminal ouvert par un runner plus ancien (sans `ownerUserId` ni `spaceId`) sur le serveur de l'espace est accepté seulement quand ce serveur n'a qu'un compte. | Un serveur partagé exige le contrat 3 (terminaux marqués de leur espace). |
+| Serveurs partagés : même utilisateur Linux | Tous les comptes d'un serveur s'exécutent sous l'utilisateur du runner : les dossiers 0700 ne protègent que des **autres** utilisateurs. Une session (ou un shell, une commande du projet) d'un compte peut donc lire les fichiers d'un autre compte du même serveur — son dossier Claude (`.credentials.json` compris), ses clones dans `espaces/<id>`, ses fichiers de session dans `NUERA_DATA_DIR` — et le DSN restreint du serveur. Atténuation partielle en place : la session de chaque compte reçoit dans `--settings` des règles `deny` `Read(//…/**)` / `Edit(//…/**)` sur les dossiers Claude des autres comptes du serveur (et sur `~/.claude`, `~/.claude.json` pour un compte ajouté), qui arrêtent les outils de fichiers de Claude mais **pas** une commande Bash (`cat`) ni un processus du projet. Un CLI resté ouvert sans `CLAUDE_CONFIG_DIR` (variable retirée à la main) retombe sur le dossier du premier compte. | N'ajouter un compte qu'à un serveur de personnes de confiance (copie de l'administration et `docs/DEPLOY.md` §13.1), sinon un serveur par personne. Suites : un utilisateur Linux par compte (lanceur privilégié minimal qui démarre `claude` sous cet uid, `docs/research/claude-code.md` §14, variante durcie) ou le bac à sable du CLI (`sandbox` de Claude Code / bubblewrap) refusant la lecture des autres dossiers, puis le dossier du premier compte déplacé lui aussi sous `claude-comptes/`. |
+| Serveurs partagés : contrat et cache | Le contrat du runner est lu dans son dernier battement (60 s) et le point d'accès est gardé 30 s : un runner rétrogradé (contrat < 3) sur un serveur partagé peut encore être appelé pendant ~90 s. | Ne pas redéployer une version antérieure d'un runner partagé ; un retour en arrière passe par le retrait des comptes ajoutés. |
 | Dédoublonnage des notifications | L'unicité `(user_id, dedup_key)` ignore l'espace : deux événements de même clé venant de deux portées se fusionnent (rare : un serveur non attribué ne fait tourner aucune session). | Les alertes d'instance nomment le serveur dans leur clé. |
 | Aperçu : même site | L'hôte d'aperçu partage le domaine de l'application (`*.perso.nuera.studio`) : le code prévisualisé peut écrire des cookies sur le domaine parent (`document.cookie` avec `Domain=`) que l'application recevrait (fixation ou effacement d'un cookie ; les cookies de session restent signés et vérifiés en base) ; les requêtes de l'aperçu vers l'application sont « same-site » (cookies `SameSite=Lax` envoyés), mais toute mutation exige l'Origin d'`APP_URL`. Les `Set-Cookie` du serveur de développement sont privés de `Domain`. | Prendre un domaine d'aperçu d'un autre domaine enregistrable pour une isolation complète (le cookie passe alors en `SameSite=None`) ; suite : préfixe `__Host-` pour les cookies de session de l'application. |
 | Aperçu : un seul processus web | Nonces des jetons à usage unique et verdicts d'accès (5 s) en mémoire. | Garder `web` à une réplique (comme ci-dessus). |

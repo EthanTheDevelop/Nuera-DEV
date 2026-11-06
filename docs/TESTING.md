@@ -49,7 +49,12 @@ node apps/web/e2e/harness/stack.mjs seed  --name <pile> --as b projects,sessions
 node apps/web/e2e/harness/stack.mjs login --name <pile> --as b
 node apps/web/e2e/harness/stack.mjs shot  --name <pile> /projets --mobile
 node apps/web/e2e/harness/stack.mjs down  --name <pile> [--purge]
+node apps/web/e2e/harness/stack.mjs up    --name partage --web-port 3670 --accounts 2 --shared   # serveur partagé (lot P1)
 ```
+
+`--shared` (lot P1) : le compte B est invité sur le serveur par défaut « VPS-3 » (aucun runner B) et y a son propre
+dossier Claude (`<dossier Claude du runner>-comptes/<id de l'espace>`, déconnecté au départ : le faux CLI traite un dossier
+nommé par un uuid comme neuf) ; ses clones vont dans `projects/espaces/<id>/`. Spec : `partage.spec.ts`.
 
 Chaque lot / agent utilise **son** nom de pile, ses ports et sa base : plusieurs piles tournent en même temps (ports web
 espacés d'au moins 30). Référence complète (options, `state.json`, scénarios, faux CLI, dépannage Linux/Windows) :

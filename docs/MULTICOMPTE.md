@@ -14,8 +14,10 @@ Invariants (non négociables) :
    sessions, événements, autorisations, lancements, opérations, PR, variables, sources GitHub, Coolify, MCP,
    notifications, journal métier, réglages). Un identifiant étranger reçoit **exactement** la réponse d'un identifiant
    inconnu (404, même message), sans appel au runner, sans écriture, sans audit métier.
-2. **Un serveur = un espace = une personne = une connexion Claude** (conditions d'Anthropic, `docs/research/
-   claude-code.md` §1.3 et §14.3). Un serveur déjà utilisé n'est jamais réattribué : on le retire et on en crée un.
+2. **Une personne = un espace = une connexion Claude** (conditions d'Anthropic, `docs/research/claude-code.md` §1.3
+   et §14.3), jamais partagée. Depuis le lot P1 (§14), un serveur peut accueillir **plusieurs comptes**, chacun avec
+   son espace et son propre dossier de configuration du CLI ; son premier compte ne change jamais : un serveur déjà
+   utilisé n'est jamais réattribué, on le retire et on en crée un.
 3. **2FA obligatoire par défaut** (TOTP + codes de secours, clés d'accès en option). `NUERA_REQUIRE_2FA=false`
    (décision du propriétaire, 6 novembre 2026) la rend facultative : connexion par mot de passe seul pour un compte
    sans 2FA, « Passer cette étape » à l'activation ; un compte qui l'a activée la garde.
@@ -128,6 +130,9 @@ Toutes les colonnes `timestamp` sont `withTimezone`. Les noms de contraintes com
    consultatifs retirés à `PUBLIC`, bail des rôles restreints par `nuera_runner_try_lease()`.
 6. `0006_session_usage_limit` (§14 Z1) ; `0007_instance_claude_config` (§14 K1) : configuration Claude commune, tables
    du web seulement (aucun `GRANT` au rôle restreint).
+7. `0008_shared_servers` (§14 P1) : table `environment_spaces` (comptes d'un serveur), cible de la clé
+   `projects_env_space_fk`, déclencheur qui y écrit le premier compte, unique « dépôt suivi » par compte du serveur,
+   lecture seule et RLS pour le rôle restreint, politique `space_settings` élargie aux comptes du serveur.
 
 Un **test de montée de version** part d'une base 0000 remplie (compte, réglages non par défaut, GitHub, Coolify, MCP,
 projet + worktree + session + événements + autorisation + lancement + opérations + PR + variable, notifications en
@@ -153,8 +158,10 @@ double, push, audit, disponibilité) et vérifie chaque rattachement. `0000` n'e
 - **Réglages lus** : sa ligne `environments` (sessions parallèles, mémoire) ; les politiques de session arrivent dans
   les options de lancement (champs **optionnels** de `launch.json`), jamais depuis `app_settings`.
 - **Battement** toutes les 60 s : `last_seen_at`, `runner_version`, `contract_version`, `backend`, `capabilities`.
-- **Claude** : `NUERA_CLAUDE_CONFIG_DIR` (dev/tests) → `CLAUDE_CONFIG_DIR` de **tous** les processus `claude` et de la
-  validation des journaux ; non défini en production (HOME propre au conteneur).
+- **Claude** : un dossier de configuration du CLI **par compte** du serveur (§14 P1) : le premier compte garde
+  `NUERA_CLAUDE_CONFIG_DIR` (dev/tests) ou le HOME du conteneur (production, variable non définie) ; les autres
+  `<NUERA_CLAUDE_ACCOUNTS_DIR>/<id de l'espace>`. C'est le `CLAUDE_CONFIG_DIR` de chaque processus `claude` du compte
+  et la racine de validation de ses journaux.
 - **Identité Git** : `gitIdentity` (options de lancement, terminaux de shell, lancements) → `GIT_AUTHOR_*` /
   `GIT_COMMITTER_*` injectés par le runner (le préfixe `GIT_` reste interdit dans les variables libres).
 - **Contrat** : `RUNNER_CONTRACT_VERSION = 2` exposé par `/v1/health` ; le web refuse poliment une route plus récente
@@ -805,3 +812,67 @@ développement partagées), l'accès sensible restant aux administrateurs. Réf�
 skill du même nom que celui d'un compte n'est pas installé sur ce serveur (conflit affiché) ; une session déjà lancée
 garde ses règles, permissions et MCP jusqu'à sa reprise ; les outils Coolify apparus après le dernier test ne sont dans
 aucune liste (le CLI les demande en mode Manuel ; refaire le test après une mise à jour de Coolify).
+
+### Lot P1 (serveurs partagés : plusieurs comptes sur un serveur)
+
+Décision du propriétaire (6 novembre 2026) : un serveur (une instance du runner) peut être attribué à **plusieurs
+comptes**. Chacun garde son espace, ses projets, ses sessions (cloisonnement inchangé : un espace n'en voit jamais un
+autre) et **sa propre connexion Claude Code** ; rien ne partage une connexion Claude entre comptes (conditions
+d'Anthropic : partager un compte est interdit). Écart assumé à l'invariant 2 (§1), dont la formulation suit.
+
+1. **Base** (`0008_shared_servers`) : `environment_spaces (environment_id, space_id, created_by_user_id, created_at)`,
+   PK composite, index `(space_id)`, FK RESTRICT. `environments.space_id` reste le **premier compte** du serveur
+   (réglages du serveur, dossier Claude existant) ; un déclencheur `environments_space_link` lui écrit sa ligne à chaque
+   attribution, quel que soit le chemin, et refuse (`projects_env_space_fk`) de remplacer le premier compte d'un
+   serveur qui porte ses projets (garantie de l'ancienne clé). `projects_env_space_fk` vise désormais
+   `environment_spaces` : un projet vit sur un serveur qui travaille pour son espace, et un compte ne quitte pas un
+   serveur où il a encore des projets. `projects_environment_repo_active_idx` devient `(environment_id, space_id,
+   github_full_name)` (deux comptes d'un serveur suivent le même dépôt) ; slug et chemin restent uniques par serveur
+   (worktrees `.worktrees/<slug>/`, sessions tmux `nuera-<slug>-…` inchangés). Rôle restreint : `SELECT` seul + RLS par
+   serveur ; la politique de `space_settings` couvre chaque compte du serveur. Un espace travaille sur un seul serveur
+   à la fois (vérifié par le web sous verrou de la ligne `spaces`).
+2. **Runner** (`apps/runner/src/claude/accounts.ts`, contrat 3) : `ClaudeAccounts` donne à chaque espace du serveur son
+   dossier — le premier compte garde le dossier existant (NUERA_CLAUDE_CONFIG_DIR ou le HOME : pointé, jamais déplacé,
+   copié ni lu ; le compte est épinglé dans `claude-compte-principal.json`), les autres
+   `<NUERA_CLAUDE_ACCOUNTS_DIR | <NUERA_CLAUDE_CONFIG_DIR>-comptes | ~/claude-comptes>/<id de l'espace>/` (0700, lien
+   refusé). Sessions, reprises, shells et commandes prennent l'espace de leur projet (lu en base) ; `auth status`,
+   terminaux `claude-login` / `claude-status` / `mcp-login`, `mcp get` / `add-json` prennent le `spaceId` envoyé par le
+   web, vérifié contre `environment_spaces` (404 sinon, `CLAUDE_ACCOUNT_REQUIRED` sans `spaceId` dès deux comptes).
+   Statut Claude mis en cache et publié **par compte** (`claude.status.spaceId`) ; `/v1/events?spaceId=` ne donne que le
+   statut de ce compte. Configuration commune : `CommonConfigRegistry`, une synchronisation par compte (état
+   `<NUERA_DATA_DIR>/claude-commun` pour le premier, `claude-commun-comptes/<id>` pour les autres ; mêmes gardes),
+   écrite dans **chaque** dossier au démarrage, à chaque `config/sync` (avec ou sans `spaceId`) et avant une session ;
+   `POST /api/internal/claude-config` accepte `spaceId` (compte du serveur appelant, 404 sinon). Clones d'un compte
+   ajouté : `<NUERA_PROJECTS_ROOT>/espaces/<id>/` (chemin relatif résolu là, absolu hors de là refusé ; le premier compte
+   ne peut pas écrire dans `espaces/`). `POST /v1/claude/accounts/:spaceId/forget` (`{ deleted }`) : `claude auth
+   logout` puis suppression du dossier d'un compte qui a quitté le serveur (ou supprimé : déconnexion seule pour le
+   premier) ; balayage au démarrage. tmux : `CLAUDE_CONFIG_DIR` posé dans l'environnement de la session tmux, comme
+   avant. Atténuation du même uid : règles `deny` `Read`/`Edit` des dossiers des autres comptes dans `--settings`
+   (jamais gardées dans `launch.json`).
+3. **Web** : contexte (`tenancy/context.ts`) par `environment_spaces` (`EnvironmentRef.primary`, `.accounts`) ;
+   `scopeOfOperation` : opération avec projet → espace du projet, sans projet → premier compte seulement ;
+   `scopeOfTerminal` : `spaceId` du terminal comparé, terminal anonyme refusé sur un serveur partagé ; flux global
+   filtré par espace (`runner/event-scope.ts`, ordre préservé, échec fermé) ; `notify` → membres de l'espace de la
+   session (`eventSpaceOfCaller`) ; listes administratives et « sessions vivantes » comptées par espace ; tous les appels
+   Claude portent `spaceId` (Accueil, coque, Paramètres › Claude Code, T6, terminaux, MCP) ; le client refuse tout
+   appel (sauf santé) à un runner de contrat < 3 sur un serveur partagé (`RUNNER_OUTDATED`). Administration ›
+   Serveurs : colonne « Compte » (+N), « Comptes du serveur » (liste, premier compte, projets, « Retirer »), « Ajouter un
+   compte… » ; invitation : serveurs « jamais utilisé » ou « partagé · N comptes » ; journal
+   `admin.server_account_added` / `admin.server_account_removed` (compte nommé), notifications au compte ajouté
+   (« Connectez votre propre compte Claude Code… ») et au premier compte. Désactiver le premier compte ne suspend le
+   serveur que s'il n'y reste aucun compte actif ; supprimer un compte d'un serveur partagé le déconnecte de Claude
+   sur ce serveur sans retirer le serveur. Paramètres › Serveur : « Serveur partagé entre N comptes… », sessions
+   parallèles partagées (réglées par le premier compte).
+4. **Capacité** : par **serveur**, partagée entre ses comptes (le runner ne connaît qu'une borne, sa ligne
+   `environments`) ; choix explicite, affiché dans Paramètres et l'administration. Une capacité par compte demanderait
+   une colonne par lien et un arbitrage du runner : non retenue en v1.
+5. **Tests** : `packages/db` (contraintes, RLS, montée de version), runner `test/shared-server.test.ts` (dossier par
+   compte, connexion dans le bon dossier, environnement de session, flux, clones, oubli), `common-config.test.ts`
+   (registre), `restricted.test.ts` (lecture RLS des comptes), web `server/tenancy/shared-server.test.ts`
+   (cloisonnement, flux, rappels, configuration, contrat, administration), e2e `partage.spec.ts` sur la pile
+   `up --accounts 2 --shared` (bureau et téléphone).
+
+Écarts : pas de maquette Figma (primitives existantes) ; clé du dossier Claude = l'espace personnel du compte (un espace
+personnel = un compte en v1 ; des espaces partagés demanderaient une clé par utilisateur) ; le dossier du premier compte
+reste au HOME (rien n'est déplacé : sessions tmux vivantes et connexions existantes intactes) ; même utilisateur Linux
+pour tous les comptes d'un serveur (risque résiduel, `docs/SECURITY.md` §11).

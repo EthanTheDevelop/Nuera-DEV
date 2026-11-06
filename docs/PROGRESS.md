@@ -141,6 +141,20 @@ Migration `0007_instance_claude_config` (tables du web seulement). Tests : web `
 `common-config.test.ts`, db `migrations.test.ts`/`rls.test.ts`, e2e `configuration-commune.spec.ts` (pile `config`,
 web 3660, bureau + téléphone). Détails : `docs/MULTICOMPTE.md` §14, lot K1 ; `docs/SECURITY.md` §8 ter.
 
+## Serveurs partagés (lot P1, 6 novembre 2026)
+
+Un serveur peut accueillir **plusieurs comptes** : chacun garde son espace, ses projets et ses sessions (cloisonnement
+inchangé) et **sa propre connexion Claude Code** — un dossier `CLAUDE_CONFIG_DIR` par compte sur le runner (le premier
+compte garde le dossier existant, pointé sans être déplacé ni lu ; les autres `~/claude-comptes/<id de l'espace>/`,
+0700), utilisé par chaque processus `claude` du compte (sessions, reprises, terminaux de connexion et `/status`,
+`claude mcp login`, shells, commandes). Configuration commune écrite dans chaque dossier. Administration › Serveurs :
+comptes du serveur, « Ajouter un compte… », « Retirer » ; invitation sur un serveur partagé. Capacité (sessions
+parallèles) partagée par serveur. Flux global filtré par espace, rappels du runner adressés à l'espace de la session.
+Contrat runner 3 (exigé pour partager un serveur). Migration `0008_shared_servers`. Tests : db, runner
+`shared-server.test.ts`, web `server/tenancy/shared-server.test.ts`, e2e `partage.spec.ts` (pile `partage`, web 3670,
+`--shared`, bureau + téléphone). Risque résiduel : même utilisateur Linux pour tous les comptes d'un serveur
+(`docs/SECURITY.md` §11). Détails : `docs/MULTICOMPTE.md` §14, lot P1 ; `docs/DEPLOY.md` §13.1.
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :
