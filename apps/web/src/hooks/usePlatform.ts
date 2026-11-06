@@ -10,6 +10,11 @@ function detectApple(): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform) || /Mac OS X/.test(navigator.userAgent);
 }
 
+/** Apple device (⌘ shortcuts). SSR renders true, like `useShortcutLabel`. */
+export function useIsApplePlatform(): boolean {
+  return useSyncExternalStore(noop, detectApple, () => true);
+}
+
 /**
  * Keyboard shortcut label for the command palette: « ⌘K » on Apple devices (as in Figma), « Ctrl K »
  * elsewhere (D01 note: « search palette (⌘K, and its Windows label "Ctrl K") »). SSR renders « ⌘K ».

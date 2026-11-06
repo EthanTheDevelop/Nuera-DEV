@@ -154,5 +154,5 @@ export function useComposer({
     [setValue, value],
   );
 
-  return { value, ref, innerRef, accepts, busy, canSend, submit, onKeyDown, onChange, insert };
+  return { value, setValue, ref, innerRef, accepts, busy, canSend, submit, onKeyDown, onChange, insert };
 }
