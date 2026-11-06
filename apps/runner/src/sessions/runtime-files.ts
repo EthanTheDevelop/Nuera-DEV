@@ -2,7 +2,15 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { AutoResumeOptionsSchema, GitIdentitySchema, McpConfigSchema, type AutoResumeOptions, type GitIdentity } from '@nuera/shared/runner';
+import {
+  AutoResumeOptionsSchema,
+  CommonConfigLaunchSchema,
+  GitIdentitySchema,
+  McpConfigSchema,
+  type AutoResumeOptions,
+  type CommonConfigLaunch,
+  type GitIdentity,
+} from '@nuera/shared/runner';
 import { z } from 'zod';
 
 /** MCP config as received (input type: `args` may be omitted), validated again here. */
@@ -53,6 +61,12 @@ export const LaunchFileSchema = z.object({
   gitIdentity: GitIdentitySchema.nullable().optional(),
   /** « Reprise automatique après la limite d'utilisation » (effective value from the web; absent: off). */
   autoResume: AutoResumeOptionsSchema.nullable().optional(),
+  /** Common configuration (lot K1): instance allow / ask rules and « Imposé » variables (settings `env`). */
+  allowRules: z.array(z.string()).optional(),
+  askRules: z.array(z.string()).optional(),
+  settingsEnv: z.record(z.string(), z.string()).optional(),
+  /** Common configuration the session must start with (`hash`, `revision`). */
+  commonConfig: CommonConfigLaunchSchema.nullable().optional(),
 });
 export type LaunchFile = z.infer<typeof LaunchFileSchema>;
 
@@ -77,8 +91,19 @@ export function sessionDir(dataDir: string, sessionId: string): string {
   return path.join(dataDir, 'sessions', sessionId);
 }
 
-/** settings.json given with `--settings` (merged over the user's settings by the CLI). */
-export function buildSettings(options: { permissionWaitSeconds: number; denyRules: string[] }): Record<string, unknown> {
+/**
+ * settings.json given with `--settings` (merged over the user's settings by the CLI; only managed
+ * settings win over it). Permission rules merge with the project's: deny wins over ask, ask over
+ * allow, so a project `allow` can never lift an instance `ask` or `deny`. `env` = « Imposé »
+ * variables of the instance.
+ */
+export function buildSettings(options: {
+  permissionWaitSeconds: number;
+  denyRules: string[];
+  allowRules?: string[];
+  askRules?: string[];
+  env?: Record<string, string>;
+}): Record<string, unknown> {
   const hookCommand = binCommand('nuera-hook.mjs');
   const hooks: Record<string, unknown[]> = {};
   for (const event of HOOK_EVENTS) {
@@ -96,8 +121,18 @@ export function buildSettings(options: { permissionWaitSeconds: number; denyRule
     hooks,
     statusLine: { type: 'command', command: binCommand('nuera-statusline.mjs'), padding: 0 },
     disableClaudeAiConnectors: true,
-    ...(options.denyRules.length ? { permissions: { deny: options.denyRules } } : {}),
+    ...(permissions(options) ? { permissions: permissions(options) } : {}),
+    ...(options.env && Object.keys(options.env).length ? { env: { ...options.env } } : {}),
   };
+}
+
+function permissions(options: { denyRules: string[]; allowRules?: string[]; askRules?: string[] }): Record<string, string[]> | null {
+  const unique = (rules: string[] | undefined) => [...new Set(rules ?? [])];
+  const result: Record<string, string[]> = {};
+  if (unique(options.allowRules).length) result.allow = unique(options.allowRules);
+  if (unique(options.askRules).length) result.ask = unique(options.askRules);
+  if (unique(options.denyRules).length) result.deny = unique(options.denyRules);
+  return Object.keys(result).length ? result : null;
 }
 
 /** mcp.json given with `--mcp-config … --strict-mcp-config`; `headersHelper: 'nuera'` → our helper. */
@@ -129,7 +164,15 @@ export async function writeSessionFiles(
     sessionId: string;
     claudeSessionId: string;
     /** `mcpConfig: undefined` keeps the existing mcp.json, `null` removes it. */
-    launch: { denyRules: string[]; env: Record<string, string>; mcpConfig?: McpConfigInput | null };
+    launch: {
+      denyRules: string[];
+      env: Record<string, string>;
+      mcpConfig?: McpConfigInput | null;
+      allowRules?: string[];
+      askRules?: string[];
+      settingsEnv?: Record<string, string>;
+      commonConfig?: CommonConfigLaunch | null;
+    };
     permissionWaitSeconds: number;
     maxConcurrentSessions: number | null;
     memoryLimitMb: number | null;
@@ -140,6 +183,7 @@ export async function writeSessionFiles(
   },
 ): Promise<SessionFiles> {
   validateSessionEnv(input.launch.env);
+  if (input.launch.settingsEnv) validateSessionEnv(input.launch.settingsEnv);
   const dir = sessionDir(dataDir, input.sessionId);
   await mkdir(dir, { recursive: true });
   const mcpPath = path.join(dir, 'mcp.json');
@@ -155,7 +199,14 @@ export async function writeSessionFiles(
     launch: path.join(dir, 'launch.json'),
     tokenFile: path.join(dir, 'hook-token'),
   };
-  await writeFile(files.settings, JSON.stringify(buildSettings({ permissionWaitSeconds: input.permissionWaitSeconds, denyRules: input.launch.denyRules }), null, 2), 'utf8');
+  const settings = buildSettings({
+    permissionWaitSeconds: input.permissionWaitSeconds,
+    denyRules: input.launch.denyRules,
+    allowRules: input.launch.allowRules ?? [],
+    askRules: input.launch.askRules ?? [],
+    env: input.launch.settingsEnv ?? {},
+  });
+  await writeFile(files.settings, JSON.stringify(settings, null, 2), 'utf8');
   const launch: LaunchFile = {
     sessionId: input.sessionId,
     claudeSessionId: input.claudeSessionId,
@@ -169,6 +220,10 @@ export async function writeSessionFiles(
     ...(input.blockBypassPermissions !== undefined ? { blockBypassPermissions: input.blockBypassPermissions } : {}),
     ...(input.gitIdentity ? { gitIdentity: GitIdentitySchema.parse(input.gitIdentity) } : {}),
     ...(input.autoResume ? { autoResume: AutoResumeOptionsSchema.parse(input.autoResume) } : {}),
+    ...(input.launch.allowRules?.length ? { allowRules: input.launch.allowRules } : {}),
+    ...(input.launch.askRules?.length ? { askRules: input.launch.askRules } : {}),
+    ...(input.launch.settingsEnv && Object.keys(input.launch.settingsEnv).length ? { settingsEnv: input.launch.settingsEnv } : {}),
+    ...(input.launch.commonConfig ? { commonConfig: CommonConfigLaunchSchema.parse(input.launch.commonConfig) } : {}),
   };
   await writeFile(files.launch, JSON.stringify(launch, null, 2), 'utf8');
   if (input.hookToken) {

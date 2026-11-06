@@ -1,9 +1,11 @@
+import { existsSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, readFile, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Database } from '@nuera/db';
 import { isPathInside } from '@nuera/shared/paths';
 import {
+  COMMON_SKILL_MARKER,
   ATTACHMENT_DIR,
   ATTACHMENT_EXCLUDE_LINE,
   ATTACHMENT_MAX_BYTES,
@@ -386,7 +388,9 @@ export class ComposerTools {
         const skill = await readSkill(root.dir, dirName);
         if (!skill || seen.has(skill.name)) continue;
         seen.add(skill.name);
-        skills.push({ ...skill, source: root.source });
+        // A folder of the user skills written by Nuera Dev (configuration commune) is « commun ».
+        const common = root.source === 'user' && existsSync(path.join(root.dir, dirName, COMMON_SKILL_MARKER));
+        skills.push({ ...skill, source: common ? 'common' : root.source });
       }
     }
     return { skills, truncated };

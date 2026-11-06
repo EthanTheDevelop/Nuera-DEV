@@ -49,6 +49,7 @@ export const NOTIFICATION_KINDS = [
   'integration_expired',
   'integration_error',
   'claude_disconnected',
+  'claude_config',
   'server',
   'security',
 ] as const satisfies readonly NotificationKind[];

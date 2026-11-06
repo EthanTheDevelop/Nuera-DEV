@@ -512,7 +512,9 @@ describe.skipIf(!available)('montée de version 0000 → dernière migration', (
       const snapshot = await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations']);
       await runMigrations(url);
       const [row] = await sql<{ count: string }[]>`select count(*) from drizzle.__drizzle_migrations`;
-      expect(row?.count).toBe('7');
+      expect(row?.count).toBe('8');
+      // 0007 on a filled database: the common Claude configuration starts empty, revision 0.
+      expect(await sql`select id, revision from instance_claude_policy`).toEqual([{ id: 'instance', revision: 0 }]);
       expect(await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations'])).toEqual(snapshot);
     });
   });

@@ -96,6 +96,7 @@ import {
   McpSyncRequestSchema,
   McpSyncResultSchema,
 } from './claude';
+import { CommonConfigStatusSchema, CommonConfigSyncRequestSchema } from './common-config';
 import { PublishEventRequestSchema } from '../events';
 
 export type RunnerHttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -410,6 +411,9 @@ export const RUNNER_ROUTES = {
   claudeStatus: { method: 'GET', path: '/v1/claude/status', query: ClaudeStatusQuerySchema, response: ClaudeStatusSchema, timeoutMs: 45_000 },
   claudeMcpSync: { method: 'POST', path: '/v1/claude/mcp/sync', body: McpSyncRequestSchema, response: McpSyncResultSchema, timeoutMs: 120_000 },
   claudeMcpGet: { method: 'GET', path: '/v1/claude/mcp/:name', params: McpNameParamsSchema, response: McpCliStatusSchema, timeoutMs: 45_000 },
+  // Configuration commune (lot K1): the runner fetches it from the web and writes it (absent before: 404).
+  claudeConfigStatus: { method: 'GET', path: '/v1/claude/config', response: CommonConfigStatusSchema },
+  claudeConfigSync: { method: 'POST', path: '/v1/claude/config/sync', body: CommonConfigSyncRequestSchema, response: CommonConfigStatusSchema, timeoutMs: 60_000 },
 } as const satisfies Record<string, RunnerRouteDef>;
 
 export type RunnerRoutes = typeof RUNNER_ROUTES;

@@ -238,5 +238,7 @@ export function registerRoutes(app: FastifyInstance, s: RunnerServices): void {
     return status;
   });
   defineRoute(app, 'claudeMcpSync', async ({ body }) => s.claude.mcpSync(body));
+  defineRoute(app, 'claudeConfigStatus', async () => s.commonConfig.current());
+  defineRoute(app, 'claudeConfigSync', async ({ body }) => s.commonConfig.sync(body.reason));
   defineRoute(app, 'claudeMcpGet', async ({ params }) => s.claude.mcpGet(params.name, { refresh: true }));
 }

@@ -125,6 +125,16 @@ const available = await pgAvailable('rls.test');
 
 /** Tables a runner role must never read. */
 const FORBIDDEN_TABLES = [
+  // Configuration Claude commune (0007): read by the web only, served to the runner over HTTP.
+  'instance_rules',
+  'instance_skills',
+  'instance_skill_files',
+  'instance_mcp_servers',
+  'instance_claude_policy',
+  'instance_config_versions',
+  'instance_config_proposals',
+  'space_claude_overrides',
+  'session_claude_config',
   'user',
   'session',
   'account',

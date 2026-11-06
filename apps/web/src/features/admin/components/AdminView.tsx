@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/shell';
 import { Button, IconButton, Tabs, TabsContent, TabsList, TabsTrigger, toast } from '@/components/ui';
 import type { AdministrationData } from '@/server/admin';
 import { reloadAdministrationAction } from '../actions';
+import { AdminClaudeTab } from '@/features/claude-config/components/AdminClaudeTab';
 import { ADMIN_TABS, parseAdminTab, type AdminTab } from '../lib/copy';
 import { AccountsTab, InviteDialog } from './AccountsTab';
 import { InstanceTab } from './InstanceTab';
@@ -31,6 +32,7 @@ function writeTab(tab: AdminTab): void {
   const url = new URL(window.location.href);
   if (tab === 'comptes') url.searchParams.delete('onglet');
   else url.searchParams.set('onglet', tab);
+  if (tab !== 'claude') url.searchParams.delete('section');
   const next = `${url.pathname}${url.search}${url.hash}`;
   if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history.pushState(null, '', next);
 }
@@ -66,7 +68,7 @@ export function AdminView({ initial }: { initial: AdministrationData }) {
       <div className="flex min-w-0 flex-col gap-3 nav:gap-5">
         <PageHeader
           title="Administration"
-          subtitle="Comptes, serveurs et journal de l'instance."
+          subtitle="Comptes, serveurs, configuration Claude commune et journal de l'instance."
           actions={
             <Button variant="accent" onClick={() => setInviting(true)}>
               Inviter un compte
@@ -90,6 +92,9 @@ export function AdminView({ initial }: { initial: AdministrationData }) {
           </TabsContent>
           <TabsContent value="instance" tabIndex={-1}>
             <InstanceTab />
+          </TabsContent>
+          <TabsContent value="claude" tabIndex={-1}>
+            <AdminClaudeTab initialSection={params.get('section')} />
           </TabsContent>
           <TabsContent value="journal" tabIndex={-1}>
             <JournalTab />

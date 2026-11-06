@@ -11,6 +11,7 @@ import {
   UuidSchema,
   WorktreeNameSchema,
 } from './common';
+import { CommonConfigLaunchSchema } from './common-config';
 
 // ---------------------------------------------------------------------------------------------
 // Status line JSON published by the CLI (stored in sessions.cli_status, never estimated)
@@ -365,6 +366,17 @@ export const SessionLaunchOptionsSchema = z.object({
    * the instruction typed then. Absent (older web, older launch file): off.
    */
   autoResume: AutoResumeOptionsSchema.optional(),
+  /** `permissions.allow` rules of the instance policy (configuration commune). */
+  allowRules: z.array(z.string().min(1).max(500)).max(500).optional(),
+  /** `permissions.ask` rules (instance policy, Coolify write tools…): always a permission request. */
+  askRules: z.array(z.string().min(1).max(500)).max(500).optional(),
+  /**
+   * « Imposé » variables of the instance: written in the `env` of the session settings (they win over
+   * the process environment and the project's settings). Same names refused as `env`.
+   */
+  settingsEnv: SessionEnvSchema.optional(),
+  /** Common configuration the session must start with: the runner refreshes its copy first when it differs. */
+  commonConfig: CommonConfigLaunchSchema.nullish(),
 });
 export type SessionLaunchOptions = z.input<typeof SessionLaunchOptionsSchema>;
 

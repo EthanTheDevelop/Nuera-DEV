@@ -1,5 +1,6 @@
 'use client';
 
+import { CommonConfigChip } from './header/CommonConfigChip';
 import { DIFF_PHONE_HINT, DiffFilePager, DiffView, BranchStatusBar, useKeyboardInset, usageLimitLabel } from '@/components/dev';
 import { ConnectionLostBanner } from '@/components/shell';
 import { CompactButton, EmptyState, ErrorPanel, IconButton, Sheet, SheetContent, SkeletonList, Switch, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui';
@@ -124,6 +125,7 @@ function PhoneHeader() {
         ) : (
           <p className="m-0 min-w-0 flex-1 truncate font-mono text-app-11 text-muted">{phoneStatusMeta(session, ws.host, now)}</p>
         )}
+        <CommonConfigChip compact />
       </div>
       <SessionSwitcherSheet open={switcher} onOpenChange={setSwitcher} />
       <ActionsSheet open={actions} onOpenChange={setActions} />

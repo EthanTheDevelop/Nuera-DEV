@@ -3,6 +3,7 @@ import { createDb, type Database } from '@nuera/db';
 import { RUNNER_CONTRACT_VERSION, uptimeServiceKey, type HealthResponse } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import { ClaudeCli } from './claude/cli';
+import { CommonConfigSync } from './claude/common-config';
 import type { RunnerConfig } from './config';
 import { EnvironmentContext, RunnerFatalError } from './environment';
 import { EventBus, GLOBAL } from './events/bus';
@@ -45,6 +46,8 @@ export interface RunnerServices {
   sessions: SessionManager;
   /** Composer « Joindre » and skills of the palette (disk side). */
   composer: ComposerTools;
+  /** Configuration Claude commune written in the CLI folder of this server (rules, skills). */
+  commonConfig: CommonConfigSync;
   runs: RunManager;
   claude: ClaudeCli;
   metrics: MetricsCollector;
@@ -153,7 +156,9 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
   const store = new SessionEventStore(db, bus);
   const claude = new ClaudeCli(config.claudeBin, paths.dataDir, logger, config.claudeConfigDir);
   const backend = await chooseBackend(config, terminals, logger, tmuxSocketResolver(config, environment));
+  const commonConfig = new CommonConfigSync({ claudeConfigDir: config.claudeConfigDir, dataDir: paths.dataDir, web, logger });
   const sessions = new SessionManager({
+    commonConfig,
     db,
     environment,
     bus,
@@ -277,6 +282,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     clone,
     files,
     composer,
+    commonConfig,
     ops,
     store,
     terminals,

@@ -126,6 +126,21 @@ route `POST /api/sessions/[id]/auto-resume`, journal `session.auto_resume_*`. Te
 `usage-limit.test.ts` ; e2e `reprise.spec.ts` (pile `reprise`, web 3640, bureau + téléphone) et
 `parcours-2-session-en-direct.spec.ts`. Détails : `docs/MULTICOMPTE.md` §14, lot Z1.
 
+## Configuration Claude commune (lot K1, 6 novembre 2026)
+
+Module d'instance pour que Claude Code se comporte de la même façon partout : **règles** Markdown (ordonnées,
+activables, « Imposé » → `--append-system-prompt-file`, « Par défaut » → `rules/nuera-commun.md` du dossier Claude,
+avant le CLAUDE.md du projet), **skills** (import .zip validé, éditeur, scripts sur autorisation, écrits par chaque
+runner dans `skills/` sous marqueur, « commun » dans la palette), **MCP communs** (audience tous / administrateurs,
+secrets servis par `headersHelper: 'nuera'` seulement aux comptes visés), **Coolify (administrateurs)** (lecture
+permise, écritures demandées, suppressions refusées sauf choix du propriétaire, mode sans autorisation bloqué),
+**permissions et réglages** (allow/ask/deny, variables non secrètes, modèle ; « Imposé » / « Par défaut » par élément,
+désactivation par l'espace), **versions** (différences, retour arrière), **propositions** des membres, transparence
+(Workspace, Paramètres › Claude Code). Administration › Claude (Règles · Skills · MCP · Permissions · Historique).
+Migration `0007_instance_claude_config` (tables du web seulement). Tests : web `server/claude-config/*.test.ts`, runner
+`common-config.test.ts`, db `migrations.test.ts`/`rls.test.ts`, e2e `configuration-commune.spec.ts` (pile `config`,
+web 3660, bureau + téléphone). Détails : `docs/MULTICOMPTE.md` §14, lot K1 ; `docs/SECURITY.md` §8 ter.
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :

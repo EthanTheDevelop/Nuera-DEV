@@ -64,7 +64,7 @@ apps/web        Next.js 16 (App Router) — UI, API, auth (Better Auth + 2FA), c
   src/server/tenancy   contexte de requête (compte, espace, serveur), gardes de portée, rappels du runner par serveur
   src/server/admin     comptes, invitations, serveurs (jetons, rôles PostgreSQL), instance, journal d'instance
 apps/runner     service d'exécution (Fastify), un par serveur — Git, worktrees, PTY, sessions Claude (tmux), processus
-packages/db     schéma Drizzle + migrations 0000–0005 (espaces, serveurs, RLS, FK composites) + client + CLI de secours
+packages/db     schéma Drizzle + migrations 0000–0007 (espaces, serveurs, RLS, FK composites, configuration Claude commune) + client + CLI de secours
 packages/shared contrats Zod runner⇄web (contrat v2), types d'événements, formatage FR, garde des chemins, jetons
 deploy/         Dockerfiles, compose Coolify (principal + serveur supplémentaire), sauvegarde/restauration
 ```
@@ -216,3 +216,7 @@ deploy/         Dockerfiles, compose Coolify (principal + serveur supplémentair
   `apps/runner/src/preview/proxy.ts`. Sous la pile de test (`next dev` côté web), `/_next/hmr` de l'hôte d'aperçu est
   pris par le HMR de notre propre `next dev` (seul le Next de production relaie ce socket ; celui de Vite passe).
 - Coolify « Connect to predefined network » branche **tous** les services sur le réseau `coolify` partagé : deux piles du même serveur (staging et production) y exposent chacune `web` et `runner`, et `http://runner:4100` atteignait au hasard le runner de l'autre pile (`401`, « VPS-3 ne répond pas » par intermittence, Coolify au vert) → alias propres au réseau interne de la pile (`nuera-dev-runner`, `nuera-dev-web`) dans `RUNNER_URL` / `NUERA_WEB_INTERNAL_URL` → `deploy/docker-compose.yml`.
+- Zod 4 : `schema.partial()` garde les `.default()` des champs — un PATCH validé par `createSchema.partial()` remet les champs absents à leur défaut (une règle « Imposé » repassait « Par défaut ») → schéma de mise à jour écrit sans aucun défaut → `apps/web/src/server/claude-config/model.ts` `ruleUpdateSchema`.
+- `jsonb` réordonne les clés (courtes d'abord) : comparer un objet relu de la base par `JSON.stringify` à l'objet calculé échoue toujours → comparer champ par champ → `apps/web/src/server/claude-config/effective.ts` `sessionConfigView`.
+- Configuration commune : le runner ne lit aucune table `instance_*` (route interne `POST /api/internal/claude-config`) et n'écrit que `skills/<nom>/` marqués `.nuera-commun.json`, `rules/nuera-commun.md` et son dossier ; un module importé par un composant client (classement des outils Coolify) ne doit pas importer `node:crypto` → `apps/web/src/lib/claude-coolify.ts`.
+

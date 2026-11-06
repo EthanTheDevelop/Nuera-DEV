@@ -27,6 +27,7 @@ import { formatClockDay } from '@nuera/shared/format';
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import type { Logger } from 'pino';
 import { resolveClaudeCommand } from '../claude/bin';
+import type { CommonConfigSync } from '../claude/common-config';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
 import { getPermissionRow, getReadyProject, getSessionRow, getWorktree, type WorktreeRow } from '../db/lookups';
 import type { EnvironmentScope } from '../environment';
@@ -140,6 +141,8 @@ interface LiveSession {
 
 export interface SessionManagerDeps {
   db: Database;
+  /** Common Claude configuration of the server (rules, skills): refreshed before a launch when it differs. */
+  commonConfig?: Pick<CommonConfigSync, 'ensure' | 'lockedRulesFile'> | null;
   /** Server of this runner: sessions are created, read, listed and reconciled within it only. */
   environment: EnvironmentScope;
   bus: EventBus;
@@ -534,6 +537,7 @@ export class SessionManager {
     await this.deps.environment.assertCanStartWork();
     await this.assertModeAllowed(input.permissionMode, input.launch.blockBypassPermissions);
     validateSessionEnv(input.launch.env ?? {});
+    validateSessionEnv(input.launch.settingsEnv ?? {});
     if (input.start) await this.assertCapacity(input.launch.maxConcurrentSessions ?? null);
     const id = input.sessionId ?? randomUUID();
     const rowValues = (worktreeId: string | null): typeof sessions.$inferInsert => ({
@@ -582,7 +586,15 @@ export class SessionManager {
     await writeSessionFiles(this.deps.dataDir, {
       sessionId: id,
       claudeSessionId: id,
-      launch: { denyRules: input.launch.denyRules ?? [], env: input.launch.env ?? {}, mcpConfig: input.launch.mcpConfig ?? null },
+      launch: {
+        denyRules: input.launch.denyRules ?? [],
+        env: input.launch.env ?? {},
+        mcpConfig: input.launch.mcpConfig ?? null,
+        allowRules: input.launch.allowRules ?? [],
+        askRules: input.launch.askRules ?? [],
+        settingsEnv: input.launch.settingsEnv ?? {},
+        commonConfig: input.launch.commonConfig ?? null,
+      },
       permissionWaitSeconds: input.launch.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: input.launch.maxConcurrentSessions ?? null,
       memoryLimitMb: input.launch.memoryLimitMb ?? settings.sessionMemoryLimitMb,
@@ -691,6 +703,7 @@ export class SessionManager {
   private async refreshLaunch(sessionId: string, launch: Partial<SessionLaunchOptions>): Promise<void> {
     const current = await readLaunchFile(this.deps.dataDir, sessionId);
     if (launch.env) validateSessionEnv(launch.env);
+    if (launch.settingsEnv) validateSessionEnv(launch.settingsEnv);
     const blockBypass = launch.blockBypassPermissions ?? current?.blockBypassPermissions;
     const [stored] = await this.deps.db.select({ claudeSessionId: sessions.claudeSessionId }).from(sessions).where(this.ownSession(sessionId)).limit(1);
     await writeSessionFiles(this.deps.dataDir, {
@@ -700,6 +713,10 @@ export class SessionManager {
         denyRules: launch.denyRules ?? current?.denyRules ?? [],
         env: launch.env ?? current?.env ?? {},
         mcpConfig: launch.mcpConfig === undefined ? undefined : launch.mcpConfig,
+        allowRules: launch.allowRules ?? current?.allowRules ?? [],
+        askRules: launch.askRules ?? current?.askRules ?? [],
+        settingsEnv: launch.settingsEnv ?? current?.settingsEnv ?? {},
+        commonConfig: launch.commonConfig === undefined ? (current?.commonConfig ?? null) : launch.commonConfig,
       },
       permissionWaitSeconds: launch.permissionWaitSeconds ?? current?.permissionWaitSeconds ?? DEFAULT_PERMISSION_WAIT_SECONDS,
       maxConcurrentSessions: launch.maxConcurrentSessions ?? current?.maxConcurrentSessions ?? null,
@@ -782,10 +799,24 @@ export class SessionManager {
     const token = newHookToken();
     const tokenHash = hashToken(token);
     const isTmux = this.deps.backend.kind === 'tmux';
+    // Rules and skills of the common configuration this session must start with (refreshed when the
+    // copy of the server is older; a failure keeps the copy on disk and never blocks the launch).
+    await this.deps.commonConfig?.ensure(launchFile.commonConfig?.hash ?? null).catch((error: unknown) => {
+      this.deps.logger.warn({ err: error, sessionId }, 'configuration commune non rafraîchie avant le lancement');
+    });
+    const lockedRules = this.deps.commonConfig?.lockedRulesFile() ?? null;
     const files = await writeSessionFiles(this.deps.dataDir, {
       sessionId,
       claudeSessionId,
-      launch: { denyRules: launchFile.denyRules, env: launchFile.env, mcpConfig: undefined },
+      launch: {
+        denyRules: launchFile.denyRules,
+        env: launchFile.env,
+        mcpConfig: undefined,
+        allowRules: launchFile.allowRules ?? [],
+        askRules: launchFile.askRules ?? [],
+        settingsEnv: launchFile.settingsEnv ?? {},
+        commonConfig: launchFile.commonConfig ?? null,
+      },
       permissionWaitSeconds: launchFile.permissionWaitSeconds,
       maxConcurrentSessions: launchFile.maxConcurrentSessions,
       memoryLimitMb: launchFile.memoryLimitMb,
@@ -807,6 +838,9 @@ export class SessionManager {
       ...(row.effort ? ['--effort', row.effort] : []),
       '--settings',
       files.settings,
+      // « Imposé » rules of the instance: appended to the system prompt (a project CLAUDE.md cannot
+      // take precedence). The « Par défaut » ones are user-level memory (rules/nuera-commun.md).
+      ...(lockedRules ? ['--append-system-prompt-file', lockedRules] : []),
       ...(mcpFile && existsSync(mcpFile) ? ['--mcp-config', mcpFile, '--strict-mcp-config'] : []),
       ...(row.remoteControl ? ['--remote-control', `${row.title} · ${project.name}`] : []),
     ];

@@ -159,6 +159,8 @@ export type NotificationKind =
   | 'integration_expired'
   | 'integration_error'
   | 'claude_disconnected'
+  /** Configuration Claude commune: a proposal to review (administrators), its decision (author). */
+  | 'claude_config'
   | 'server'
   | 'security';
 
@@ -213,3 +215,58 @@ export type InvitationKind = 'invite' | 'recovery';
 
 /** `github_sources.kind`: a GitHub App (`app`); `pat` is reserved. */
 export type GithubSourceKind = 'app' | 'pat';
+
+// ---------------------------------------------------------------------------------------------
+// Configuration Claude commune (instance) — docs/MULTICOMPTE.md, lot K1
+// ---------------------------------------------------------------------------------------------
+
+/** Who receives an instance item: every account, or only the owner and administrators. */
+export type ClaudeConfigAudience = 'all' | 'admins';
+
+/**
+ * `locked` (« Imposé ») : applied to every account it targets, no space can turn it off;
+ * `default` (« Par défaut ») : applied unless the owner of a space turns it off for that space.
+ */
+export type ClaudeConfigEnforcement = 'locked' | 'default';
+
+/** Kind of an instance item (versions, proposals, space overrides). */
+export type ClaudeConfigItemKind = 'rule' | 'skill' | 'mcp' | 'policy';
+
+/** `instance_config_versions.action`. */
+export type ClaudeConfigVersionAction = 'created' | 'updated' | 'deleted' | 'rolled_back' | 'approved';
+
+/** `instance_config_proposals.status`. */
+export type ClaudeProposalStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
+
+/** `instance_mcp_servers.kind`: a server described by an administrator, or Coolify (administrators only). */
+export type InstanceMcpKind = 'custom' | 'coolify';
+
+/** One permission rule of the instance policy (`permissions.allow|ask|deny` of Claude Code). */
+export interface ClaudePolicyRule {
+  id: string;
+  rule: string;
+  enforcement: ClaudeConfigEnforcement;
+  note?: string | null;
+}
+
+/** One non-secret environment variable of the instance policy. */
+export interface ClaudePolicyEnvVar {
+  id: string;
+  name: string;
+  value: string;
+  enforcement: ClaudeConfigEnforcement;
+}
+
+/** `instance_mcp_servers.config`: non-secret settings. */
+export interface InstanceMcpConfig {
+  /** Non-secret headers sent as-is. */
+  headers?: Record<string, string>;
+  /** Tools Claude must never call (`permissions.deny`). */
+  denyTools?: string[];
+  /** Tools Claude must ask before calling (`permissions.ask`). */
+  askTools?: string[];
+  /** Coolify: write tools offered (always behind a permission request). */
+  allowWrite?: boolean;
+  /** Coolify: destructive tools offered (behind a permission request) instead of refused. Owner only. */
+  allowDestructive?: boolean;
+}
