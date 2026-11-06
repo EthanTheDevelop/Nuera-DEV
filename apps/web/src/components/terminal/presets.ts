@@ -20,7 +20,7 @@ export interface TerminalLaunch {
 }
 
 export interface PresetOptions {
-  /** app_settings.serverName (default « VPS-3 »). */
+  /** Name of the server of the space (its `environments.name`, « VPS-3 » for the default one). */
   serverName?: string;
   onExit?: (code: number | null) => void;
 }

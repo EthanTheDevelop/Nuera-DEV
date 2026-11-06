@@ -223,12 +223,21 @@ export interface SessionListItem {
   durationMs: number | null;
 }
 
+/** Server (runner instance) of the space, as the session pages show it (« VPS-3 »). */
+export interface SessionServer {
+  id: string;
+  name: string;
+}
+
 export interface SessionCapacity {
   /** Live CLI processes (runner), or live statuses in the database when the runner is unreachable. */
   active: number;
-  /** app_settings.maxConcurrentSessions. */
+  /** Sessions allowed in parallel on the server (`environments.max_concurrent_sessions`); 0 without a server. */
   max: number;
-  source: 'runner' | 'database';
+  /** `unassigned`: no server is assigned to the space yet (no session can start). */
+  source: 'runner' | 'database' | 'unassigned';
+  /** Server of the space (null while none is assigned). */
+  environment: SessionServer | null;
 }
 
 export interface SessionListPage {
@@ -286,6 +295,8 @@ export interface NewSessionOptions {
   capacity: SessionCapacity | null;
   /** The runner did not answer: creation is impossible right now. */
   runnerUnavailable: boolean;
+  /** Server of the space where the new session would run (null: none assigned, creation impossible). */
+  environment: SessionServer | null;
 }
 
 export interface ProjectBranchOption {

@@ -9,5 +9,5 @@ export const runtime = 'nodejs';
 export const GET = apiRoute({
   params: worktreeParamsSchema,
   query: treeQuerySchema,
-  handler: ({ params, query }) => withWorkspaceErrors(() => getTree(params.worktreeId, query.path)),
+  handler: ({ params, query, ctx }) => withWorkspaceErrors(() => getTree(ctx, params.worktreeId, query.path)),
 });

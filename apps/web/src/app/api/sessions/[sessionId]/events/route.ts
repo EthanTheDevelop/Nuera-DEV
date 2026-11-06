@@ -13,5 +13,5 @@ export const runtime = 'nodejs';
 export const GET = apiRoute({
   params: sessionParamsSchema,
   query: eventsQuerySchema,
-  handler: ({ params, query }) => withWorkspaceErrors(() => getSessionEventsPage(params.sessionId, query.afterVersion)),
+  handler: ({ params, query, ctx }) => withWorkspaceErrors(() => getSessionEventsPage(ctx, params.sessionId, query.afterVersion)),
 });

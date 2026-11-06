@@ -1,6 +1,6 @@
 # `components/terminal` — terminal partagé (xterm.js)
 
-Terminal du navigateur relié à un vrai terminal du runner (PTY sur VPS-3) : « Terminal brut » d'une session (W2),
+Terminal du navigateur relié à un vrai terminal du runner (PTY sur le serveur de l'espace) : « Terminal brut » d'une session (W2),
 shell d'un worktree, `claude auth login` (« Se reconnecter dans un terminal », T6 / D08), `/status` (« Ouvrir
 /status », D08) et connexion d'un serveur MCP (« Reconnecter », Intégrations). Le web ne lance jamais rien
 lui-même : tout passe par le runner (`@/server/terminals`, `@/server/mcp`, sessions).
@@ -33,7 +33,7 @@ lui-même : tout passe par le runner (`@/server/terminals`, `@/server/mcp`, sess
 ```tsx
 // Paramètres · Claude Code (D08, T6)
 const terminal = useTerminalLauncher();
-const serverName = useOptionalShellData()?.server.name ?? 'VPS-3';
+const serverName = useOptionalShellData()?.server.name; // serveur de l'espace (« VPS-3 » pour le serveur par défaut)
 <CompactButton variant="discret" icon="refresh" onClick={() => terminal.open(claudeLoginTerminal({ serverName, onExit: () => router.refresh() }))}>
   Se reconnecter dans un terminal
 </CompactButton>

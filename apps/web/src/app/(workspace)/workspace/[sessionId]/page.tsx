@@ -3,7 +3,7 @@ import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
 import { WorkspaceView } from '@/features/workspace';
-import { requireUser } from '@/server/auth/session';
+import { requireContext } from '@/server/tenancy/context';
 import { getWorkspaceData } from '@/server/workspace';
 
 export const dynamic = 'force-dynamic';
@@ -25,13 +25,14 @@ function looksLikePhone(userAgent: string | null): boolean {
 
 /**
  * Workspace Claude Code — D05 / M05 and the states W1–W7, S1–S4. « Ouvert depuis un projet ou une
- * session, jamais depuis la navigation. » Unknown or archived sessions answer 404.
+ * session, jamais depuis la navigation. » Unknown or archived sessions, and sessions of another space,
+ * answer the same 404.
  */
 export default async function WorkspacePage({ params }: PageProps) {
-  const user = await requireUser();
+  const ctx = await requireContext();
   const parsed = paramsSchema.safeParse(await params);
   if (!parsed.success) notFound();
-  const data = await getWorkspaceData(parsed.data.sessionId, user);
+  const data = await getWorkspaceData(ctx, parsed.data.sessionId);
   if (!data) notFound();
   const userAgent = (await headers()).get('user-agent');
   return <WorkspaceView data={data} initialDesktop={!looksLikePhone(userAgent)} />;

@@ -6,12 +6,16 @@
 import { randomBytes } from 'node:crypto';
 import { createDb } from '@nuera/db';
 import { runMigrations } from '@nuera/db/migrate';
-import { user } from '@nuera/db/schema';
 import { sql } from 'drizzle-orm';
+import type { RequestContext } from '@/server/tenancy/context';
+import { legacyOwnerContext, seedLegacyOwner, TEST_ENVIRONMENT_ID, TEST_SPACE_ID, type TestAccount } from '@/server/tenancy/test/fixtures';
 
 const ADMIN_URL = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
 
 export const TEST_USER_ID = 'test-owner';
+
+/** Space and default server (« VPS-3 », RUNNER_URL / RUNNER_TOKEN) of the owner seeded by the reset below. */
+export { TEST_ENVIRONMENT_ID, TEST_SPACE_ID };
 export const TEST_ACTOR = { id: TEST_USER_ID, name: 'Camille Laurent', email: 'camille@example.test' };
 
 function databaseUrl(name: string): string {
@@ -54,14 +58,24 @@ export async function prepareProjectsDatabase(suffix: string): Promise<string> {
   return url;
 }
 
-export async function resetProjectTables(): Promise<void> {
+/** Request context of the seeded owner (space TEST_SPACE_ID, server TEST_ENVIRONMENT_ID). */
+export function testContext(): RequestContext {
+  return legacyOwnerContext({ id: TEST_USER_ID, name: TEST_ACTOR.name, email: TEST_ACTOR.email });
+}
+
+/**
+ * Empties the tables and seeds the owner again with its personal space and the default server
+ * (fixed ids TEST_SPACE_ID / TEST_ENVIRONMENT_ID): set them on every inserted project
+ * (`spaceId`, `environmentId`) and `environmentId` on worktrees, sessions, runs and operations.
+ */
+export async function resetProjectTables(): Promise<TestAccount> {
   const { db } = await import('@/server/db');
   await db.execute(
     sql.raw(
       'truncate table audit_log, command_runs, operations, project_env_vars, project_mcp_servers, mcp_servers, permission_requests, session_events, sessions, worktrees, projects, integrations, "user" restart identity cascade',
     ),
   );
-  await db.insert(user).values({ id: TEST_USER_ID, name: TEST_ACTOR.name, email: TEST_ACTOR.email, twoFactorEnabled: true });
+  return seedLegacyOwner({ id: TEST_USER_ID, name: TEST_ACTOR.name, email: TEST_ACTOR.email });
 }
 
 export function useTestEncryptionKey(): void {

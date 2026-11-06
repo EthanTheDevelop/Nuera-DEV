@@ -66,6 +66,8 @@ export interface TerminalViewProps {
   label?: string;
   /** Phone key bar (Échap, Ctrl+C, Tab, arrows, Coller): `auto` = phone layout or touch screen. */
   keyBar?: boolean | 'auto';
+  /** Server name of the « … ne répond pas » copy outside the app shell (default: the shell's server). */
+  serverName?: string;
 }
 
 const INITIAL_STATUS: TerminalConnectionStatus = {
@@ -149,6 +151,7 @@ export function TerminalView({
   onStateChange,
   label = 'Terminal',
   keyBar = 'auto',
+  serverName: serverNameProp,
 }: TerminalViewProps) {
   const urls = useMemo(() => terminalUrls(terminalId), [terminalId]);
   const stream = streamUrl ?? urls.stream;
@@ -160,7 +163,7 @@ export function TerminalView({
   const canPaste = useCanReadClipboard();
   const effectiveFontSize = fontSize ?? (isDesktop ? DESKTOP_FONT_SIZE : PHONE_FONT_SIZE);
   const showKeyBar = !readOnly && (keyBar === true || (keyBar === 'auto' && (!isDesktop || coarsePointer)));
-  const serverName = useOptionalShellData()?.server.name ?? 'le serveur';
+  const serverName = useOptionalShellData()?.server.name ?? serverNameProp ?? 'le serveur';
 
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);

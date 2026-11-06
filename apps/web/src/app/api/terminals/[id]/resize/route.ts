@@ -1,8 +1,7 @@
 import { TerminalResizeRequestSchema } from '@nuera/shared/runner';
 import { z } from 'zod';
 import { apiRoute } from '@/server/http';
-import { runner } from '@/server/runner/client';
-import { TERMINAL_ID_PATTERN } from '@/server/terminals';
+import { resizeTerminal, TERMINAL_ID_PATTERN } from '@/server/terminals';
 
 /**
  * POST /api/terminals/[id]/resize — `{ cols, rows, clientId? }` (clientId = one id per browser tab).
@@ -16,8 +15,8 @@ export const POST = apiRoute({
   body: TerminalResizeRequestSchema,
   maxBodyBytes: 4 * 1024,
   rateLimit: { limit: 600, windowMs: 60_000 },
-  handler: async ({ params, body }) => {
-    await runner.terminalResize({ params: { terminalId: params.id }, body });
+  handler: async ({ params, body, ctx }) => {
+    await resizeTerminal(ctx, params.id, body);
     return undefined;
   },
 });

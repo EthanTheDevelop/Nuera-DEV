@@ -219,6 +219,8 @@ export function useCommitFlow(preset: CommitPreset, active: boolean) {
     prTitle,
     base,
     branch: worktree?.branch ?? null,
+    /** Git identity that signs the commit (Paramètres, else the account): the « Auteur » line. */
+    author: ws.data.author,
     worktreeName: worktree?.isPrimary ? 'clone principal' : (worktree?.name ?? null),
     toggleFile,
     toggleAll,

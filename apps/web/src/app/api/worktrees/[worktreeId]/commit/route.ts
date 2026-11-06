@@ -14,5 +14,5 @@ export const POST = apiRoute({
   body: commitInputSchema,
   maxBodyBytes: 256 * 1024,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: ({ params, body, user }) => withWorkspaceErrors(() => commitChanges(params.worktreeId, body, user)),
+  handler: ({ params, body, ctx }) => withWorkspaceErrors(() => commitChanges(ctx, params.worktreeId, body)),
 });

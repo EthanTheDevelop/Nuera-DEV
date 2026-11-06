@@ -12,5 +12,5 @@ export const runtime = 'nodejs';
 export const POST = apiRoute({
   params: sessionIdParamsSchema,
   rateLimit: { limit: 30, windowMs: 10 * 60_000 },
-  handler: async ({ params, user }) => resumeSession(params.sessionId, user),
+  handler: async ({ params, ctx }) => resumeSession(ctx, params.sessionId),
 });

@@ -20,13 +20,19 @@ import {
 import { capacityTitle } from '@/features/sessions/lib/view';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { isRunnerUnavailable, runner } from '@/server/runner/client';
-import { getAppSettings } from '@/server/settings';
+import { getRunnerForEnvironment, isRunnerUnavailable, type RunnerClient } from '@/server/runner/client';
+import { getEnvironmentSettings } from '@/server/settings';
+import type { RequestContext } from '@/server/tenancy/context';
+import { NOT_FOUND_MESSAGES, ofSpace, scopeOfSession } from '@/server/tenancy/scope';
 
 /**
  * Read side of the sessions lot: lists (D06 « EN COURS », « HISTORIQUE »), capacity, summary.
  * The database is the source; the runner (when it answers) confirms what only it knows: which
  * CLI is alive and whether a stopped conversation can really be resumed (journal on disk).
+ *
+ * Every query is limited to the space of ctx (`ofSpace`), and every runner call goes to the server
+ * HOLDING the session (`sessions.environment_id`): a list never mixes spaces, and a runner is
+ * never asked about a session of another server.
  */
 
 const RESUMABLE_STATUSES = ['interrupted', 'stopped', 'failed'] as const satisfies readonly SessionStatus[];
@@ -67,6 +73,7 @@ const columns = {
   worktreeIsPrimary: worktrees.isPrimary,
   worktreeStatus: worktrees.status,
   worktreeRemovedAt: worktrees.removedAt,
+  environmentId: sessions.environmentId,
   /** Exact sort key (microseconds) for the pagination cursor. */
   startKeyText: sql<string>`to_char(coalesce(${sessions.startedAt}, ${sessions.createdAt}) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
 };
@@ -101,17 +108,20 @@ export type SessionRow = {
   worktreeIsPrimary: boolean | null;
   worktreeStatus: string | null;
   worktreeRemovedAt: Date | null;
+  /** Server holding the session (its runner is the one asked about it). */
+  environmentId: string;
   startKeyText?: string;
 };
 
 const startKey = sql<Date>`coalesce(${sessions.startedAt}, ${sessions.createdAt})`;
 const timestamp = (date: Date) => sql`${date.toISOString()}::timestamptz`;
 
+/** sessions ⋈ projects ⋈ worktrees: every caller filters with `ofSpace(ctx, …)`. */
 function baseQuery() {
   return db
     .select(columns)
     .from(sessions)
-    .innerJoin(projects, eq(projects.id, sessions.projectId))
+    .innerJoin(projects, and(eq(projects.id, sessions.projectId), eq(projects.environmentId, sessions.environmentId)))
     .leftJoin(worktrees, eq(worktrees.id, sessions.worktreeId));
 }
 
@@ -198,26 +208,46 @@ export function toListItem(
 // Capacity
 // ---------------------------------------------------------------------------------------------
 
-async function databaseLiveCount(): Promise<number> {
+/**
+ * A read overlay the runner could not give: unreachable (RUNNER_UNAVAILABLE), too slow or out of
+ * contract (UPSTREAM). The database view stays, marked « non vérifié », instead of failing the
+ * whole section. Writes keep their error.
+ */
+export function isRunnerUnverified(error: unknown): boolean {
+  return isRunnerUnavailable(error) || (error instanceof AppError && error.code === 'UPSTREAM');
+}
+
+/** Live sessions of ONE server according to the database (its runner does not answer). */
+export async function databaseLiveCount(environmentId: string): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(sessions)
-    .where(and(inArray(sessions.status, [...LIVE_STATUSES]), isNull(sessions.archivedAt)));
+    .where(and(eq(sessions.environmentId, environmentId), inArray(sessions.status, [...LIVE_STATUSES]), isNull(sessions.archivedAt)));
   return Number(row?.n ?? 0);
 }
 
+/** Sessions allowed in parallel on a server (its row; `fallback` when it cannot be read). */
+export async function environmentMaxSessions(environmentId: string, fallback: number): Promise<number> {
+  const settings = await getEnvironmentSettings(environmentId);
+  return settings?.maxConcurrentSessions ?? fallback;
+}
+
 /**
- * « 2 sessions actives sur 4 autorisées »: live CLI processes counted by the runner (database
- * fallback when it does not answer), limit from Paramètres (app_settings.maxConcurrentSessions).
+ * « 2 sessions actives sur 4 autorisées » on the server of the space: live CLI processes counted
+ * by its runner (database fallback when it does not answer), limit of the server
+ * (`environments.max_concurrent_sessions`). Without a server: `source: 'unassigned'`, 0 on 0.
  */
-export async function getCapacity(): Promise<SessionCapacity> {
-  const settings = await getAppSettings();
+export async function getCapacity(ctx: Pick<RequestContext, 'environment'>): Promise<SessionCapacity> {
+  const environment = ctx.environment;
+  if (!environment) return { active: 0, max: 0, source: 'unassigned', environment: null };
+  const server = { id: environment.id, name: environment.name };
+  const max = await environmentMaxSessions(environment.id, environment.maxConcurrentSessions);
   try {
-    const { capacity } = await runner.listSessions(undefined, { timeoutMs: 5_000 });
-    return { active: capacity.live, max: settings.maxConcurrentSessions, source: 'runner' };
+    const { capacity } = await getRunnerForEnvironment(environment.id).listSessions(undefined, { timeoutMs: 5_000 });
+    return { active: capacity.live, max, source: 'runner', environment: server };
   } catch (error) {
-    if (!isRunnerUnavailable(error)) throw error;
-    return { active: await databaseLiveCount(), max: settings.maxConcurrentSessions, source: 'database' };
+    if (!isRunnerUnverified(error)) throw error;
+    return { active: await databaseLiveCount(environment.id), max, source: 'database', environment: server };
   }
 }
 
@@ -295,27 +325,41 @@ function filterSql(filter: HistoryFilter): SQL {
   }
 }
 
-/** Live DTOs of the runner by id (null when it does not answer). */
-async function runnerLiveSessions(): Promise<Map<string, SessionDto> | null> {
-  try {
-    const { sessions: list } = await runner.listSessions(undefined, { timeoutMs: 5_000 });
-    return new Map(list.map((dto) => [dto.id, dto]));
-  } catch (error) {
-    if (isRunnerUnavailable(error)) return null;
-    throw error;
-  }
-}
-
-/** Confirms « reprise possible » with the runner (journal on disk); null when it does not answer. */
-async function confirmResumable(ids: string[]): Promise<Map<string, SessionDto> | null> {
+/**
+ * Live DTOs of the runners of `environmentIds` (each asked once), by session id, limited to
+ * `allowed` (a DTO of a session that is not a row of this space is ignored). null when one of them
+ * does not answer.
+ */
+async function runnerLiveSessions(environmentIds: Iterable<string>, allowed: ReadonlySet<string>): Promise<Map<string, SessionDto> | null> {
   const result = new Map<string, SessionDto>();
   let reachable = true;
   await Promise.all(
-    ids.map(async (sessionId) => {
+    [...new Set(environmentIds)].map(async (environmentId) => {
       try {
-        result.set(sessionId, await runner.getSession({ params: { sessionId } }, { timeoutMs: 5_000 }));
+        const { sessions: list } = await getRunnerForEnvironment(environmentId).listSessions(undefined, { timeoutMs: 5_000 });
+        for (const dto of list) if (allowed.has(dto.id)) result.set(dto.id, dto);
       } catch (error) {
-        if (isRunnerUnavailable(error)) reachable = false;
+        if (isRunnerUnverified(error)) reachable = false;
+        else throw error;
+      }
+    }),
+  );
+  return reachable ? result : null;
+}
+
+/**
+ * Confirms « reprise possible » with the runner of each session's server (journal on disk); null
+ * when one of them does not answer.
+ */
+async function confirmResumable(rows: ReadonlyArray<Pick<SessionRow, 'id' | 'environmentId'>>): Promise<Map<string, SessionDto> | null> {
+  const result = new Map<string, SessionDto>();
+  let reachable = true;
+  await Promise.all(
+    rows.map(async ({ id: sessionId, environmentId }) => {
+      try {
+        result.set(sessionId, await getRunnerForEnvironment(environmentId).getSession({ params: { sessionId } }, { timeoutMs: 5_000 }));
+      } catch (error) {
+        if (isRunnerUnverified(error)) reachable = false;
         // NOT_FOUND or anything else: the database view stays.
       }
     }),
@@ -323,7 +367,11 @@ async function confirmResumable(ids: string[]): Promise<Map<string, SessionDto> 
   return reachable ? result : null;
 }
 
-export async function listSessions(input: ListSessionsInput): Promise<SessionListPage> {
+/**
+ * D06 lists of the space: « EN COURS » (`status: 'active'`) or « HISTORIQUE » with its filters
+ * (statut, période, projet, recherche) and its cursor.
+ */
+export async function listSessions(ctx: Pick<RequestContext, 'space' | 'environment'>, input: ListSessionsInput): Promise<SessionListPage> {
   const conditions: SQL[] = [];
   if (input.projectId) conditions.push(eq(sessions.projectId, input.projectId));
   const q = input.q?.trim();
@@ -342,10 +390,13 @@ export async function listSessions(input: ListSessionsInput): Promise<SessionLis
   if (input.status === 'active') {
     conditions.push(inArray(sessions.status, [...ACTIVE_STATUSES]), isNull(sessions.archivedAt));
     const rows = (await baseQuery()
-      .where(and(...conditions))
+      .where(ofSpace(ctx, ...conditions))
       .orderBy(desc(startKey), desc(sessions.id))
       .limit(100)) as SessionRow[];
-    const live = await runnerLiveSessions();
+    // The servers of the rows, plus the space's own server (« non vérifié » while it is down).
+    const servers = rows.map((row) => row.environmentId);
+    if (ctx.environment) servers.push(ctx.environment.id);
+    const live = await runnerLiveSessions(servers, new Set(rows.map((row) => row.id)));
     return {
       items: rows.map((row) => toListItem(row, live ? { dto: live.get(row.id) ?? null, live: live.get(row.id)?.live ?? false } : {})),
       nextCursor: null,
@@ -381,11 +432,11 @@ export async function listSessions(input: ListSessionsInput): Promise<SessionLis
       where.push(or(lt(startKey, at), and(eq(startKey, at), lt(sessions.id, cursor.id)))!);
     }
     const rows = (await baseQuery()
-      .where(and(...where))
+      .where(ofSpace(ctx, ...where))
       .orderBy(desc(startKey), desc(sessions.id))
       .limit(limit + 1)) as SessionRow[];
     const page = rows.slice(0, limit);
-    const candidates = page.filter(resumableFromDatabase).map((row) => row.id);
+    const candidates = page.filter(resumableFromDatabase);
     const confirmed = candidates.length ? await confirmResumable(candidates) : new Map<string, SessionDto>();
     if (confirmed === null) verified = false;
     let consumed = 0;
@@ -404,25 +455,32 @@ export async function listSessions(input: ListSessionsInput): Promise<SessionLis
   return { items, nextCursor: hasMore && cursor ? encodeCursor(cursor) : null, verified };
 }
 
-/** One session (row + runner view when reachable). */
-export async function getSessionItem(sessionId: string): Promise<SessionListItem> {
-  const [row] = (await baseQuery().where(eq(sessions.id, sessionId)).limit(1)) as SessionRow[];
-  if (!row) throw new AppError('NOT_FOUND', 'Session introuvable.');
+/** One session of the space (row + view of its server's runner when reachable). */
+export async function getSessionItem(ctx: Pick<RequestContext, 'space'>, sessionId: string): Promise<SessionListItem> {
+  const scope = await scopeOfSession(ctx, sessionId);
+  return readSessionItem(ctx, scope.sessionId, scope.runner);
+}
+
+/** {@link getSessionItem} once the session is scoped (`runner` = the client of its server). */
+export async function readSessionItem(ctx: Pick<RequestContext, 'space'>, sessionId: string, runner: RunnerClient): Promise<SessionListItem> {
+  const [row] = (await baseQuery().where(ofSpace(ctx, eq(sessions.id, sessionId))).limit(1)) as SessionRow[];
+  if (!row) throw new AppError('NOT_FOUND', NOT_FOUND_MESSAGES.session);
   try {
     const dto = await runner.getSession({ params: { sessionId } }, { timeoutMs: 5_000 });
     return toListItem(row, { dto });
   } catch (error) {
-    if (isRunnerUnavailable(error) || (error instanceof AppError && error.code === 'NOT_FOUND')) return toListItem(row);
+    if (isRunnerUnverified(error) || (error instanceof AppError && error.code === 'NOT_FOUND')) return toListItem(row);
     throw error;
   }
 }
 
-/** Projects that have at least one session (D06 « Projet : tous » options). */
-export async function listSessionProjects(): Promise<Array<{ id: string; name: string }>> {
+/** Projects of the space that have at least one session (D06 « Projet : tous » options). */
+export async function listSessionProjects(ctx: Pick<RequestContext, 'space'>): Promise<Array<{ id: string; name: string }>> {
   return db
     .selectDistinct({ id: projects.id, name: projects.name })
     .from(projects)
     .innerJoin(sessions, eq(sessions.projectId, projects.id))
+    .where(ofSpace(ctx))
     .orderBy(projects.name);
 }
 
@@ -442,8 +500,10 @@ export function summaryPoints(message: string | null, max = 12): string[] {
   return points;
 }
 
-export async function getSessionSummary(sessionId: string): Promise<SessionSummary> {
-  const session = await getSessionItem(sessionId);
+/** W3 « Voir le résumé » of a session of the space. */
+export async function getSessionSummary(ctx: Pick<RequestContext, 'space'>, sessionId: string): Promise<SessionSummary> {
+  const scope = await scopeOfSession(ctx, sessionId);
+  const session = await readSessionItem(ctx, scope.sessionId, scope.runner);
   const [final] = await db
     .select({ payload: sessionEvents.payload })
     .from(sessionEvents)
@@ -463,7 +523,7 @@ export async function getSessionSummary(sessionId: string): Promise<SessionSumma
   let changes: SessionSummary['changes'] = null;
   if (session.worktree?.present) {
     try {
-      const result = await runner.worktreeChanges({ params: { worktreeId: session.worktree.id } }, { timeoutMs: 8_000 });
+      const result = await scope.runner.worktreeChanges({ params: { worktreeId: session.worktree.id } }, { timeoutMs: 8_000 });
       changes = { files: result.totals.files, additions: result.totals.insertions, deletions: result.totals.deletions };
     } catch {
       changes = null;

@@ -16,5 +16,5 @@ export const POST = apiRoute({
   body: permissionDecisionInputSchema,
   maxBodyBytes: 16 * 1024,
   rateLimit: { limit: 120, windowMs: 10 * 60_000 },
-  handler: ({ params, body, user }) => withWorkspaceErrors(() => decidePermission(params.permissionId, body, user)),
+  handler: ({ params, body, ctx }) => withWorkspaceErrors(() => decidePermission(ctx, params.permissionId, body)),
 });

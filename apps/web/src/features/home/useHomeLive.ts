@@ -10,7 +10,8 @@ import type { ClaudeState, HomeData, HomePendingPermission, HomeServer, HomeSess
 const REFRESH_DEBOUNCE_MS = 800;
 
 export interface HomeLive {
-  server: HomeServer;
+  /** Server of the space (null while none is assigned: its tiles show « Aucun serveur attribué »). */
+  server: HomeServer | null;
   claudeState: ClaudeState;
   claudePlan: string | null;
   availability: ServerAvailability;
@@ -36,7 +37,7 @@ export function useHomeLive(data: HomeData): HomeLive {
   const live = useLiveEvents();
   const [sessions, setSessions] = useState<HomeSession[]>(data.sessions.items);
   const [quick, setQuick] = useState<HomeSession | null>(data.quickResume);
-  const [uptimeSec, setUptimeSec] = useState<number | null>(data.server.uptimeSec);
+  const [uptimeSec, setUptimeSec] = useState<number | null>(data.server?.uptimeSec ?? null);
   const [plan, setPlan] = useState<string | null>(data.claude.plan);
   const [snapshot, setSnapshot] = useState(data);
   // A new server snapshot (router.refresh, navigation) replaces the live overlay.
@@ -44,7 +45,7 @@ export function useHomeLive(data: HomeData): HomeLive {
     setSnapshot(data);
     setSessions(data.sessions.items);
     setQuick(data.quickResume);
-    setUptimeSec(data.server.uptimeSec);
+    setUptimeSec(data.server?.uptimeSec ?? null);
     setPlan(data.claude.plan);
   }
   const sessionsRef = useRef(sessions);
@@ -97,17 +98,20 @@ export function useHomeLive(data: HomeData): HomeLive {
   useLiveEvent('system.metrics', (event) => setUptimeSec(event.data.uptimeSec));
   useLiveEvent('claude.status', (event) => setPlan(event.data.state === 'connected' ? (event.data.auth?.subscriptionType ?? null) : null));
 
-  const availability: ServerAvailability =
-    live.runner === 'unknown' ? data.server.availability : live.runner;
+  // Without a server, nothing of the runner is shown (the global stream has no runner part).
+  const availability: ServerAvailability = !data.server ? 'unknown' : live.runner === 'unknown' ? data.server.availability : live.runner;
 
-  const server = useMemo<HomeServer>(
-    () => ({
-      ...data.server,
-      availability,
-      metrics: live.metrics ?? data.server.metrics,
-      uptimeSec,
-      lastContactAt: live.lastRunnerContactAt ?? data.server.lastContactAt,
-    }),
+  const server = useMemo<HomeServer | null>(
+    () =>
+      data.server
+        ? {
+            ...data.server,
+            availability,
+            metrics: live.metrics ?? data.server.metrics,
+            uptimeSec,
+            lastContactAt: live.lastRunnerContactAt ?? data.server.lastContactAt,
+          }
+        : null,
     [data.server, availability, live.metrics, uptimeSec, live.lastRunnerContactAt],
   );
 
@@ -117,7 +121,7 @@ export function useHomeLive(data: HomeData): HomeLive {
     [data.pending, sessions],
   );
 
-  const claudeState: ClaudeState = live.claude.state === 'unknown' ? data.claude.state : live.claude.state;
+  const claudeState: ClaudeState = !data.server ? 'unknown' : live.claude.state === 'unknown' ? data.claude.state : live.claude.state;
 
   return {
     server,

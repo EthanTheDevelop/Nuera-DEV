@@ -8,5 +8,5 @@ export const runtime = 'nodejs';
 
 export const POST = apiRoute({
   params: z.object({ projectId: z.uuid() }),
-  handler: ({ params: { projectId }, user }) => withProjectErrors(() => restoreProject(projectId, user)),
+  handler: ({ params: { projectId }, ctx }) => withProjectErrors(() => restoreProject(ctx, projectId)),
 });

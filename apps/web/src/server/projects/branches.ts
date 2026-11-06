@@ -4,13 +4,11 @@ import { isValidBranchName } from '@nuera/shared/paths';
 import { z } from 'zod';
 import { AppError } from '@/server/errors';
 import { listProtectedBranches } from '@/server/github';
-import { RunnerError, runner } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
+import { RunnerError } from '@/server/runner/client';
+import { auditIn, scopeOfWorktree } from '@/server/tenancy/scope';
+import { requireProject, type ProjectContext, type ProjectHandle } from './access';
 import { withSyncCopy } from './errors';
-import { requireReadyProject } from './queries';
 import type { BranchView, BranchesView, WorktreeRemovalPreview, WorktreeView } from './types';
-
-type Actor = { id: string };
 
 export const branchNameSchema = z
   .string()
@@ -68,44 +66,47 @@ export function shapeBranches(defaultBranch: string, branches: Branch[]): Branch
   return { defaultBranch, items: [...local, ...remoteOnly].map(toBranchView) };
 }
 
-export async function listProjectBranches(projectId: string): Promise<BranchesView> {
-  const project = await requireReadyProject(projectId);
-  // « Protégée » = the default branch and the branches protected on GitHub (same list as the push).
-  const protectedNames = await listProtectedBranches(project.githubFullName, project.defaultBranch);
-  const result = await runner.listBranches({ params: { projectId }, query: { protected: protectedNames.join(',') } });
+export async function listProjectBranches(ctx: ProjectContext, projectId: string): Promise<BranchesView> {
+  const { row: project, runner } = await requireProject(ctx, projectId, { state: 'ready' });
+  // « Protégée » = the default branch and the branches protected on GitHub (same list as the push),
+  // read through the project's GitHub source.
+  const protectedNames = await listProtectedBranches(project, project.defaultBranch);
+  const result = await runner.listBranches({ params: { projectId: project.id }, query: { protected: protectedNames.join(',') } });
   return shapeBranches(result.defaultBranch, result.branches);
 }
 
 /** « Nouvelle branche » (D02 menu, D04 tile): created from the default branch unless `from` says otherwise. */
-export async function createProjectBranch(projectId: string, input: z.input<typeof createBranchInputSchema>, actor: Actor) {
-  const project = await requireReadyProject(projectId);
+export async function createProjectBranch(ctx: ProjectContext, projectId: string, input: z.input<typeof createBranchInputSchema>) {
+  const { row: project, runner, environment } = await requireProject(ctx, projectId, { state: 'ready' });
   const parsed = createBranchInputSchema.parse(input);
   const result = await runner
-    .createBranch({ params: { projectId }, body: { name: parsed.name, ...(parsed.from ? { from: parsed.from } : {}), checkout: parsed.checkout, actorUserId: actor.id } })
+    .createBranch({ params: { projectId: project.id }, body: { name: parsed.name, ...(parsed.from ? { from: parsed.from } : {}), checkout: parsed.checkout, actorUserId: ctx.user.id } })
     .catch(withSyncCopy);
-  await audit({
+  await auditIn(ctx, {
+    environmentId: environment.id,
     action: 'project.branch_created',
     summary: `branche ${parsed.name} créée dans ${project.name} depuis ${parsed.from ?? project.defaultBranch}${parsed.checkout ? ' (branche courante)' : ''}`,
     targetType: 'project',
     targetId: project.id,
     metadata: { branch: parsed.name, from: parsed.from ?? project.defaultBranch, checkout: parsed.checkout },
-    actorUserId: actor.id,
   });
   return result;
 }
 
 /** D04 branch selector: switches the primary clone (refused while a session works in it, or when dirty). */
-export async function checkoutProjectBranch(projectId: string, input: z.input<typeof checkoutInputSchema>, actor: Actor) {
-  const project = await requireReadyProject(projectId);
+export async function checkoutProjectBranch(ctx: ProjectContext, projectId: string, input: z.input<typeof checkoutInputSchema>) {
+  const { row: project, runner, environment } = await requireProject(ctx, projectId, { state: 'ready' });
   const parsed = checkoutInputSchema.parse(input);
-  const result = await runner.checkoutBranch({ params: { projectId }, body: { branch: parsed.branch, track: true, actorUserId: actor.id } }).catch(withSyncCopy);
-  await audit({
+  const result = await runner
+    .checkoutBranch({ params: { projectId: project.id }, body: { branch: parsed.branch, track: true, actorUserId: ctx.user.id } })
+    .catch(withSyncCopy);
+  await auditIn(ctx, {
+    environmentId: environment.id,
     action: 'project.checkout',
     summary: `${project.name} passé sur la branche ${parsed.branch}`,
     targetType: 'project',
     targetId: project.id,
     metadata: { branch: parsed.branch, from: project.currentBranch },
-    actorUserId: actor.id,
   });
   return result;
 }
@@ -128,22 +129,35 @@ export function toWorktreeView(worktree: WorktreeDto): WorktreeView {
   };
 }
 
-export async function listProjectWorktrees(projectId: string): Promise<WorktreeView[]> {
-  await requireReadyProject(projectId);
-  const { worktrees } = await runner.listWorktrees({ params: { projectId } });
+async function readWorktrees(handle: ProjectHandle): Promise<WorktreeView[]> {
+  const { worktrees } = await handle.runner.listWorktrees({ params: { projectId: handle.row.id } });
   return worktrees.filter((worktree) => worktree.status !== 'removed').map(toWorktreeView);
 }
 
-async function findWorktree(projectId: string, worktreeId: string): Promise<WorktreeView> {
-  const worktrees = await listProjectWorktrees(projectId);
-  const worktree = worktrees.find((item) => item.id === worktreeId);
-  if (!worktree) throw new AppError('NOT_FOUND', 'Worktree introuvable : il a peut-être déjà été supprimé.');
+export async function listProjectWorktrees(ctx: ProjectContext, projectId: string): Promise<WorktreeView[]> {
+  return readWorktrees(await requireProject(ctx, projectId, { state: 'ready' }));
+}
+
+const WORKTREE_GONE = 'Worktree introuvable : il a peut-être déjà été supprimé.';
+
+/**
+ * The worktree of the project, as its server sees it. The worktree is first checked in the
+ * database (in the space AND in that project), so a foreign or mismatched id never reaches the
+ * runner.
+ */
+async function findWorktree(ctx: ProjectContext, handle: ProjectHandle, worktreeId: string): Promise<WorktreeView> {
+  const scope = await scopeOfWorktree(ctx, worktreeId, { notFound: WORKTREE_GONE });
+  if (scope.projectId !== handle.row.id) throw new AppError('NOT_FOUND', WORKTREE_GONE);
+  const worktree = (await readWorktrees(handle)).find((item) => item.id === worktreeId);
+  if (!worktree) throw new AppError('NOT_FOUND', WORKTREE_GONE);
   return worktree;
 }
 
 /** T8: what removing this worktree keeps and loses (uncommitted files, live session). */
-export async function previewWorktreeRemoval(projectId: string, worktreeId: string): Promise<WorktreeRemovalPreview> {
-  const worktree = await findWorktree(projectId, worktreeId);
+export async function previewWorktreeRemoval(ctx: ProjectContext, projectId: string, worktreeId: string): Promise<WorktreeRemovalPreview> {
+  const handle = await requireProject(ctx, projectId, { state: 'ready' });
+  const { runner } = handle;
+  const worktree = await findWorktree(ctx, handle, worktreeId);
   let dirtyFiles: string[] = [];
   if ((worktree.dirtyFiles ?? 0) > 0) {
     try {
@@ -166,10 +180,11 @@ export async function previewWorktreeRemoval(projectId: string, worktreeId: stri
  * the runner (WORKTREE_DIRTY, files listed); the UI only sends `force` after the typed confirmation.
  * The branch is kept unless `deleteBranch` and it is merged.
  */
-export async function removeProjectWorktree(projectId: string, worktreeId: string, input: z.input<typeof removeWorktreeInputSchema>, actor: Actor) {
-  const project = await requireReadyProject(projectId);
+export async function removeProjectWorktree(ctx: ProjectContext, projectId: string, worktreeId: string, input: z.input<typeof removeWorktreeInputSchema>) {
+  const handle = await requireProject(ctx, projectId, { state: 'ready' });
+  const { row: project, runner } = handle;
   const parsed = removeWorktreeInputSchema.parse(input);
-  const worktree = await findWorktree(projectId, worktreeId);
+  const worktree = await findWorktree(ctx, handle, worktreeId);
   if (worktree.isPrimary) throw new AppError('VALIDATION', 'Le clone principal ne se supprime pas : archivez le projet.');
   let result;
   try {
@@ -178,13 +193,13 @@ export async function removeProjectWorktree(projectId: string, worktreeId: strin
     if (error instanceof RunnerError && error.reason === 'WORKTREE_DIRTY') withSyncCopy(error);
     throw error;
   }
-  await audit({
+  await auditIn(ctx, {
+    environmentId: handle.environment.id,
     action: 'project.worktree_removed',
     summary: `worktree ${worktree.name} (${worktree.branch}) supprimé de ${project.name}${parsed.force && (worktree.dirtyFiles ?? 0) > 0 ? `, ${worktree.dirtyFiles} fichier(s) non commité(s) abandonné(s)` : ''}${result.branchDeleted ? ', branche supprimée' : ', branche conservée'}`,
     targetType: 'worktree',
     targetId: worktree.id,
     metadata: { projectId: project.id, branch: worktree.branch, force: parsed.force, branchDeleted: result.branchDeleted },
-    actorUserId: actor.id,
   });
   return result;
 }

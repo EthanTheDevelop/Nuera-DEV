@@ -133,7 +133,8 @@ export function WorkspaceProvider({ data, children }: { data: WorkspaceData; chi
   const live = useOptionalLiveEvents();
   const ctl = useWorkspaceState(data);
   const { state, dispatch, refreshChanges } = ctl;
-  const host = shell?.server.name ?? 'VPS-3';
+  // The server holding the session (its CLI lives there), not necessarily the shell's.
+  const host = data.environment.name;
   const [initialNow] = useState(() => {
     const parsed = Date.parse(data.generatedAt);
     return Number.isNaN(parsed) ? Date.now() : parsed;

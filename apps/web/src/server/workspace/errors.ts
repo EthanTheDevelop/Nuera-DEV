@@ -1,6 +1,5 @@
 import 'server-only';
 import { AppError, toAppError, toErrorBody } from '@/server/errors';
-import { RunnerError } from '@/server/runner/client';
 
 /**
  * Errors of the Workspace routes. Runner sub-codes (`reason`) become the French copy of the
@@ -71,11 +70,14 @@ export interface WorkspaceErrorBody {
   };
 }
 
-/** Error body with the Workspace copy for a runner reason (pure, tested). */
+/**
+ * Error body with the Workspace copy for a reason (pure, tested). The reason comes from the runner
+ * (RunnerError) or from the web itself (AppError: NO_ENVIRONMENT, RUNNER_OUTDATED…).
+ */
 export function workspaceErrorBody(error: unknown): { status: number; body: WorkspaceErrorBody; retryAfter?: number } {
   const appError = toAppError(error);
   const body = toErrorBody(appError) as WorkspaceErrorBody;
-  const reason = error instanceof RunnerError ? error.reason : undefined;
+  const reason = appError.reason;
   if (reason) {
     body.error.reason = reason;
     const copy = REASON_COPY[reason];

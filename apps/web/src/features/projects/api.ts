@@ -40,7 +40,7 @@ export class ProjectApiError extends Error {
     if (extra.data) this.data = extra.data;
   }
 
-  /** VPS-3 (the runner) does not answer. */
+  /** The runner of the server does not answer. */
   get unavailable(): boolean {
     return this.code === 'RUNNER_UNAVAILABLE';
   }
@@ -87,7 +87,8 @@ const p = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}
 
 export const projectsApi = {
   repos: () => projectFetch<AddReposResult>('/api/projects/repos'),
-  preview: (fullName: string) => projectFetch<RepoPreview>(`/api/projects/repos/preview?depot=${encodeURIComponent(fullName)}`),
+  preview: (fullName: string, sourceId?: string | null) =>
+    projectFetch<RepoPreview>(`/api/projects/repos/preview?depot=${encodeURIComponent(fullName)}${sourceId ? `&source=${encodeURIComponent(sourceId)}` : ''}`),
   checkDestination: (path: string, fullName?: string, signal?: AbortSignal) =>
     projectFetch<DestinationView>(
       `/api/projects/destination-check?chemin=${encodeURIComponent(path)}${fullName ? `&depot=${encodeURIComponent(fullName)}` : ''}`,
@@ -95,6 +96,8 @@ export const projectsApi = {
     ),
   create: (input: {
     fullName: string;
+    /** GitHub source chosen in D03 (several sources reach the repository). */
+    sourceId?: string;
     branch?: string;
     name: string;
     destination: string;

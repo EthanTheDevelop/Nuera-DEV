@@ -6,12 +6,16 @@
  */
 import { createDb } from '@nuera/db';
 import { runMigrations } from '@nuera/db/migrate';
-import { user } from '@nuera/db/schema';
 import { sql } from 'drizzle-orm';
+import type { RequestContext } from '@/server/tenancy/context';
+import { legacyOwnerContext, seedLegacyOwner, TEST_ENVIRONMENT_ID, TEST_SPACE_ID, type TestAccount } from '@/server/tenancy/test/fixtures';
 
 const ADMIN_URL = process.env.NUERA_TEST_PG_ADMIN_URL ?? 'postgres://nuera:nuera@127.0.0.1:54329/postgres';
 
 export const TEST_USER_ID = 'test-owner';
+
+/** Space and default server (« VPS-3 », RUNNER_URL / RUNNER_TOKEN) of the owner seeded by the reset below. */
+export { TEST_ENVIRONMENT_ID, TEST_SPACE_ID };
 
 function databaseUrl(name: string): string {
   const url = new URL(ADMIN_URL);
@@ -53,14 +57,24 @@ export async function prepareHomeTestDatabase(suffix: string): Promise<string> {
   return url;
 }
 
-export async function resetHomeTables(): Promise<void> {
+/** Request context of the seeded owner (space TEST_SPACE_ID, server TEST_ENVIRONMENT_ID). */
+export function testContext(): RequestContext {
+  return legacyOwnerContext({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test' });
+}
+
+/**
+ * Empties the tables and seeds the owner again with its personal space and the default server
+ * (fixed ids TEST_SPACE_ID / TEST_ENVIRONMENT_ID): set them on every inserted project
+ * (`spaceId`, `environmentId`) and `environmentId` on worktrees, sessions, runs and operations.
+ */
+export async function resetHomeTables(): Promise<TestAccount> {
   const { db } = await import('@/server/db');
   await db.execute(
     sql.raw(
       'truncate table operations, pull_requests, permission_requests, session_events, sessions, worktrees, projects, "user" restart identity cascade',
     ),
   );
-  await db.insert(user).values({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test', twoFactorEnabled: true });
+  return seedLegacyOwner({ id: TEST_USER_ID, name: 'Camille Laurent', email: 'owner@example.test' });
 }
 
 export async function closeHomeTestDb(): Promise<void> {

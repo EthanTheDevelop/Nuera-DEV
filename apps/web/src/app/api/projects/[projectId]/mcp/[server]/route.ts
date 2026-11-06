@@ -13,5 +13,5 @@ export const runtime = 'nodejs';
 export const PUT = apiRoute({
   params: z.object({ projectId: z.uuid(), server: z.string().min(1).max(64) }),
   body: z.object({ enabled: z.boolean() }),
-  handler: ({ params, body, user }) => withProjectErrors(() => setProjectMcpTool(params.projectId, params.server, body.enabled, user)),
+  handler: ({ params, body, ctx }) => withProjectErrors(() => setProjectMcpTool(ctx, params.projectId, params.server, body.enabled)),
 });

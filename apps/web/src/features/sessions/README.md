@@ -26,12 +26,21 @@ const [open, setOpen] = useState(false);
 
 ## Serveur — `@/server/sessions`
 
-`createSession(input, actor)` → `{ sessionId, workspaceUrl, instruction, instructionError }` · `resumeSession(id, actor)` ·
-`stopSession(id, actor, { force? })` (409 si rien ne tourne) · `archiveSession(id, actor)` (409 si vivante) ·
-`renameSession(id, title, actor)` · `getCapacity()` → `{ active, max, source }` · `listSessions({ status: 'active' | 'history',
-projectId?, filter?, period?, q?, cursor?, limit? })` → `{ items: SessionListItem[], nextCursor, verified }` ·
-`getSessionSummary(id)` → `SessionSummary` · `getNewSessionOptions()`, `getProjectBranchOptions(projectId)` ·
-`buildLaunchOptions(projectId)` (MCP + variables du projet déchiffrées, noms protégés écartés + limites de Paramètres).
+Chaque fonction reçoit d'abord le contexte de la requête (`ctx` : compte, espace, serveur — `docs/MULTICOMPTE.md` §5) :
+les listes se limitent à l'espace, un identifiant d'un autre espace reçoit la réponse d'un identifiant inconnu (404, même
+message, aucun appel au runner) et chaque session est pilotée sur le serveur qui porte son projet.
+
+`createSession(ctx, input)` → `{ sessionId, workspaceUrl, instruction, instructionError }` · `resumeSession(ctx, id)` ·
+`startNewSession(ctx, id)` (premier démarrage d'une session `new`, options de lancement reconstruites) ·
+`stopSession(ctx, id, { force? })` (409 si rien ne tourne) · `archiveSession(ctx, id)` (409 si vivante) ·
+`renameSession(ctx, id, title)` · `getCapacity(ctx)` → `{ active, max, source: runner | database | unassigned, environment }` ·
+`listSessions(ctx, { status: 'active' | 'history', projectId?, filter?, period?, q?, cursor?, limit? })` →
+`{ items: SessionListItem[], nextCursor, verified }` (`verified: false` si un runner est injoignable ou trop lent) ·
+`getSessionSummary(ctx, id)` → `SessionSummary` ·
+`getNewSessionOptions(ctx)`, `getProjectBranchOptions(ctx, projectId)` · `buildLaunchOptions(ctx, scope)` (MCP + variables du
+projet déchiffrées, noms protégés écartés, politique effective de l'espace — blocage du mode sans autorisation = instance
+OU espace, attente d'autorisation —, identité Git du compte qui démarre ou reprend ; aucune limite de capacité ni de
+mémoire : le runner lit celles de son serveur) · `canDriveSession(ctx, session)` (v1 : les membres de l'espace) · `getGitIdentity(user)`.
 Toutes les actions sont auditées (`session.create|resume|stop|archive|rename`). Contrats (Zod, types) :
 `lib/contract.ts` (pur, aussi utilisé par le navigateur).
 
@@ -45,5 +54,7 @@ Toutes les actions sont auditées (`session.create|resume|stop|archive|rename`).
 
 État d'URL : `?filtre=terminees|reprise-possible|reprise-impossible|archivees`, `?periode=7j|90j|tout` (déf. 30 j),
 `?projet=<uuid>`, `?q=`. Temps réel : `session.status` met à jour les cartes « EN COURS » sur place ;
-`session.permission`, `stream.reset` et toute entrée / sortie de la liste relisent les données serveur. Tests :
+`session.permission`, `stream.reset` et toute entrée / sortie de la liste relisent les données serveur. Sans serveur
+attribué : « Aucun serveur attribué » sur la page et dans la fenêtre (jamais T5), `POST /api/terminals` d'un shell →
+409 `NO_ENVIRONMENT`. Tests :
 `lib/lib.test.ts`, `server/sessions/*.test.ts` (base `nuera_sessions_service`), `e2e/sessions.spec.ts`.

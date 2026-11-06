@@ -9,8 +9,11 @@ import type { ClaudeState, ServerAvailability } from '@/components/shell/types';
 
 export type { ClaudeState, ServerAvailability, SessionStatus };
 
-/** Why a part of the page could not be read (the rest of the page renders normally). */
-export type HomePartError = 'runner_unavailable' | 'failed';
+/**
+ * Why a part of the page could not be read (the rest of the page renders normally).
+ * `no_environment`: no server is assigned to the account's space yet (no « Réessayer »).
+ */
+export type HomePartError = 'runner_unavailable' | 'failed' | 'no_environment';
 
 export interface HomeServerMetrics {
   cpuPercent: number;
@@ -21,11 +24,11 @@ export interface HomeServerMetrics {
   sampledAt: string;
 }
 
-/** `Tuile · Serveur VPS-3` (D01) · status pill « VPS-3 en ligne » (M01). */
+/** `Tuile · Serveur VPS-3` (D01) · status pill « VPS-3 en ligne » (M01): the server of the space. */
 export interface HomeServer {
-  /** app_settings.serverName (« VPS-3 »). */
+  /** Name of the server (`environments.name`, « VPS-3 » for the default one). */
   name: string;
-  /** app_settings.serverLocation (« OVH Gravelines »), null when not set. */
+  /** Its location (« OVH Gravelines »), null when not set. */
   location: string | null;
   availability: ServerAvailability;
   metrics: HomeServerMetrics | null;
@@ -40,7 +43,7 @@ export interface HomeClaude {
   state: ClaudeState;
   /** Plan reported by the CLI (`subscriptionType`: « max », « pro »…), null when it does not say. */
   plan: string | null;
-  /** app_settings.defaultModel; null = « défaut du CLI ». */
+  /** Default model of the space (space settings); null = « défaut du CLI ». */
   defaultModel: string | null;
   checkedAt: string | null;
 }
@@ -93,7 +96,7 @@ export interface HomeSessions {
 export interface HomeCapacity {
   /** Live sessions counted by the runner (database fallback). */
   active: number;
-  /** app_settings.maxConcurrentSessions. */
+  /** Parallel sessions allowed on the server of the space (0 without a server). */
   max: number;
 }
 
@@ -171,12 +174,29 @@ export interface HomeIntegrations {
   inactiveMcp: number;
 }
 
+/**
+ * Facts behind the « Premiers pas » card (Connecter Claude Code · Connecter GitHub · Ajouter un
+ * premier projet), all read, never assumed. The Claude Code step uses `claude.state` (live).
+ */
+export interface HomeOnboarding {
+  /** A GitHub source of the space is connected (installed); null = Intégrations could not be read. */
+  github: boolean | null;
+  /** The space has (or had: archived included) at least one project. */
+  project: boolean;
+  /**
+   * A Claude Code session has already run in a project of the space: onboarding is over for good
+   * (a later outage is T5 / T6 or an integration banner, never « Premiers pas » again).
+   */
+  session: boolean;
+}
+
 export interface HomeData {
   /** Server time of the snapshot (ISO): relative times are computed from it on the first render. */
   generatedAt: string;
   /** « Bonjour {prénom} ». */
   firstName: string;
-  server: HomeServer;
+  /** Server of the space; null while no server is assigned (« Aucun serveur attribué »). */
+  server: HomeServer | null;
   claude: HomeClaude;
   capacity: HomeCapacity;
   sessions: HomeSessions;
@@ -188,4 +208,5 @@ export interface HomeData {
   activity: HomeActivity;
   /** null when the integrations could not be read (tile shows its own error). */
   integrations: HomeIntegrations | null;
+  onboarding: HomeOnboarding;
 }

@@ -2,7 +2,7 @@
 
 import { headers } from 'next/headers';
 import { z } from 'zod';
-import { requireUser } from '@/server/auth/session';
+import { requireContext } from '@/server/tenancy/context';
 import { toAppError } from '@/server/errors';
 import { assertSameOriginHeaders } from '@/server/security/origin';
 import { assertRateLimit } from '@/server/security/rate-limit';
@@ -11,7 +11,8 @@ import { INSTRUCTION_MAX, type NewSessionOptions, type ProjectBranchOptions } fr
 
 /**
  * Server actions of the « Nouvelle session » dialog (reads its options; re-sends a first
- * instruction that failed). Each one re-checks the session (requireUser) and the Origin.
+ * instruction that failed). Each one re-checks the session and its space (requireContext) and the
+ * Origin; an id of another space comes back as NOT_FOUND, like an unknown id.
  * Errors come back as data (`{ ok: false, error }`): Next hides thrown messages in production.
  */
 
@@ -19,9 +20,9 @@ export type ActionError = { message: string; detail?: string; untouched?: string
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: ActionError };
 
 async function guard() {
-  const user = await requireUser();
+  const ctx = await requireContext();
   assertSameOriginHeaders(await headers());
-  return user;
+  return ctx;
 }
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
@@ -45,8 +46,8 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 export async function loadNewSessionOptionsAction(): Promise<ActionResult<NewSessionOptions>> {
   return run(async () => {
-    await guard();
-    return getNewSessionOptions();
+    const ctx = await guard();
+    return getNewSessionOptions(ctx);
   });
 }
 
@@ -54,9 +55,9 @@ const projectIdSchema = z.uuid();
 
 export async function loadProjectBranchesAction(projectId: string): Promise<ActionResult<ProjectBranchOptions>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('sessions:branches', user.id, { limit: 120, windowMs: 60_000 });
-    return getProjectBranchOptions(projectIdSchema.parse(projectId));
+    const ctx = await guard();
+    assertRateLimit('sessions:branches', ctx.user.id, { limit: 120, windowMs: 60_000 });
+    return getProjectBranchOptions(ctx, projectIdSchema.parse(projectId));
   });
 }
 
@@ -64,9 +65,9 @@ const instructionSchema = z.object({ sessionId: z.uuid(), text: z.string().min(1
 
 export async function retryFirstInstructionAction(sessionId: string, text: string): Promise<ActionResult<'delivered' | 'queued'>> {
   return run(async () => {
-    const user = await guard();
-    assertRateLimit('sessions:first-instruction', user.id, { limit: 20, windowMs: 10 * 60_000 });
+    const ctx = await guard();
+    assertRateLimit('sessions:first-instruction', ctx.user.id, { limit: 20, windowMs: 10 * 60_000 });
     const input = instructionSchema.parse({ sessionId, text });
-    return sendFirstInstruction(input.sessionId, input.text);
+    return sendFirstInstruction(ctx, input.sessionId, input.text);
   });
 }

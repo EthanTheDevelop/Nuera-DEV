@@ -55,7 +55,7 @@ export interface ProjectDetailViewProps {
 export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProps) {
   const params = useSearchParams();
   const tab = parseTab(params.get('onglet'));
-  const serverName = useServerName();
+  const serverName = useServerName(detail.environment.name);
   const refresh = useThrottledRefresh();
   const now = useNow(30_000, generatedAt);
   const project = detail.project;
@@ -648,9 +648,10 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
           project={{ id: project.id, name: project.name, defaultBranch: project.defaultBranch }}
           branches={localBranches.map((branch) => branch.name)}
           onCreated={refresh}
+          serverName={serverName}
         />
       ) : null}
-      <ArchiveProjectDialog open={dialogs.archive} onOpenChange={(value) => open({ archive: value })} project={{ id: project.id, name: project.name }} onArchived={refresh} />
+      <ArchiveProjectDialog open={dialogs.archive} onOpenChange={(value) => open({ archive: value })} project={{ id: project.id, name: project.name }} onArchived={refresh} serverName={serverName} />
       <NewSessionDialog open={dialogs.session} onOpenChange={(value) => open({ session: value })} defaultProjectId={project.id} />
       <ClaudeMdEditor
         projectId={project.id}

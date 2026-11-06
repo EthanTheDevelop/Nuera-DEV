@@ -4,7 +4,7 @@ import { useId, useRef, type KeyboardEvent } from 'react';
 import { Icon } from '@/components/icons';
 import { Badge, Banner, ChipGroup, CompactButton, ErrorPanel, SearchField, Skeleton } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import type { AddRepoItem, AddReposResult } from '@/server/projects/types';
+import type { AddRepoAccount, AddRepoItem, AddReposResult } from '@/server/projects/types';
 import type { Failure } from '../FailureBanner';
 import { repoMeta } from '../format';
 
@@ -26,19 +26,38 @@ export interface RepoStepProps {
   serverName: string;
 }
 
+/**
+ * Does `repo` belong to the account chip `key` (`<sourceId>:<login>`, or `tous`)? An account is
+ * listed once even when several sources reach it (the source is chosen in D03).
+ */
+export function repoInAccount(repo: Pick<AddRepoItem, 'owner'>, key: string): boolean {
+  if (key === 'tous') return true;
+  return repo.owner.toLowerCase() === key.slice(key.indexOf(':') + 1);
+}
+
+/**
+ * Label of an account chip: « nuera-studio · 11 » (Figma), plus the source when the space has
+ * several GitHub sources and its label differs from the account (« ethan · Application perso · 2 »).
+ */
+export function accountChipLabel(account: AddRepoAccount, severalSources: boolean): string {
+  const source = severalSources && account.sourceLabel.toLowerCase() !== account.login.toLowerCase() ? ` · ${account.sourceLabel}` : '';
+  return `${account.login}${source} · ${account.count}`;
+}
+
 /** Repositories matching the search and account chip (A1 « Comptes », M03 search only). */
 export function visibleRepos(data: Extract<AddReposResult, { connected: true }>, search: string, account: string): AddRepoItem[] {
   const q = search.trim().toLowerCase();
-  const matching = data.repos.filter((repo) => (!q || repo.fullName.toLowerCase().includes(q)) && (account === 'tous' || repo.owner.toLowerCase() === account));
+  const matching = data.repos.filter((repo) => (!q || repo.fullName.toLowerCase().includes(q)) && repoInAccount(repo, account));
   // Selectable repositories first (most recent push first, as served), « Déjà cloné » at the end (A1).
   const blocked = (repo: AddRepoItem) => Boolean(repo.clonedProject) || repo.archived;
   return [...matching.filter((repo) => !blocked(repo)), ...matching.filter(blocked)];
 }
 
 /**
- * A1 « Choix du dépôt » (desktop) / M03 step 1 (phone): search, account chips, radio list of the
- * repositories the GitHub App can read (« Déjà cloné » rows disabled), T1 skeleton while GitHub
- * answers, T7-style call to action when GitHub is not connected.
+ * A1 « Choix du dépôt » (desktop) / M03 step 1 (phone): search, account chips (per GitHub source
+ * when the space has several), radio list of the repositories the space's GitHub sources can read
+ * (« Déjà cloné » rows disabled: projects of the space), T1 skeleton while GitHub answers,
+ * T7-style call to action when GitHub is not connected.
  */
 export function RepoStep({ repos, selected, onSelect, onConfirm, search, onSearch, account, onAccount, onRetry, variant, now, serverName }: RepoStepProps) {
   const phone = variant === 'phone';
@@ -96,8 +115,14 @@ export function RepoStep({ repos, selected, onSelect, onConfirm, search, onSearc
   }
 
   const items = visibleRepos(data, search, account);
-  const chips = [{ value: 'tous', label: `Tous · ${data.total}` }, ...data.accounts.map((a) => ({ value: a.login.toLowerCase(), label: `${a.login} · ${a.count}` }))];
+  const severalSources = data.sources.length > 1;
+  const chips = [{ value: 'tous', label: `Tous · ${data.total}` }, ...data.accounts.map((a) => ({ value: a.key, label: accountChipLabel(a, severalSources) }))];
   const selectable = items.filter((repo) => !repo.clonedProject && !repo.archived);
+  const failures = data.failures.length ? (
+    <Banner tone="warn" icon="github" title="Une source GitHub n'a pas pu être lue" dense="relaxed">
+      {data.failures.map((failure) => `${failure.label} : ${failure.message}`).join(' ')}
+    </Banner>
+  ) : null;
 
   const moveSelection = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
@@ -119,6 +144,7 @@ export function RepoStep({ repos, selected, onSelect, onConfirm, search, onSearc
         onChange={(event) => onSearch(event.target.value)}
         size={phone ? 'lg' : 'md'}
       />
+      {failures}
       {!phone && data.accounts.length > 1 ? (
         <ChipGroup items={chips} value={account} onValueChange={onAccount} aria-label="Filtrer par compte GitHub" />
       ) : null}

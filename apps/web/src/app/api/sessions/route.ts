@@ -18,8 +18,8 @@ export const POST = apiRoute({
   body: createSessionInputSchema,
   maxBodyBytes: 256 * 1024,
   rateLimit: { limit: 20, windowMs: 10 * 60_000 },
-  handler: async ({ body, user }) => {
-    const result = await createSession(body, user);
+  handler: async ({ body, ctx }) => {
+    const result = await createSession(ctx, body);
     return Response.json(result, { status: 201, headers: { 'cache-control': 'no-store' } });
   },
 });
@@ -27,8 +27,8 @@ export const POST = apiRoute({
 export const GET = apiRoute({
   query: listSessionsQuerySchema,
   rateLimit: { limit: 240, windowMs: 60_000 },
-  handler: async ({ query }) =>
-    listSessions({
+  handler: async ({ query, ctx }) =>
+    listSessions(ctx, {
       status: query.statut,
       projectId: query.projet ?? null,
       filter: query.filtre,

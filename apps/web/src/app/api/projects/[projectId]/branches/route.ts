@@ -13,13 +13,13 @@ const params = z.object({ projectId: z.uuid() });
 
 export const GET = apiRoute({
   params,
-  handler: ({ params: { projectId } }) => withProjectErrors(() => listProjectBranches(projectId)),
+  handler: ({ params: { projectId }, ctx }) => withProjectErrors(() => listProjectBranches(ctx, projectId)),
 });
 
 export const POST = apiRoute({
   params,
   body: createBranchInputSchema,
   rateLimit: { limit: 60, windowMs: 10 * 60_000 },
-  handler: ({ params: { projectId }, body, user }) =>
-    withProjectErrors(async () => Response.json(await createProjectBranch(projectId, body, user), { status: 201 })),
+  handler: ({ params: { projectId }, body, ctx }) =>
+    withProjectErrors(async () => Response.json(await createProjectBranch(ctx, projectId, body), { status: 201 })),
 });

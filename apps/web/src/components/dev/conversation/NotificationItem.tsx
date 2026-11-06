@@ -5,7 +5,12 @@ import { CompactButton, Pastille, StatusDot, type PastilleTone } from '@/compone
 import { cn } from '@/lib/cn';
 import { LiveTime, type DateInput } from '../status/LiveTime';
 
-const KIND: Record<NotificationKind, { icon: IconName; tone: PastilleTone }> = {
+/**
+ * Icon and tone of each notification kind — exactly the kinds of `NotificationKind`
+ * (`NOTIFICATION_KINDS` of `@/server/notifications`; a test keeps both lists aligned). Account and
+ * server events of the multi-account model reuse `server` and `security`.
+ */
+export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, { icon: IconName; tone: PastilleTone }>> = {
   permission_request: { icon: 'shield', tone: 'warn' },
   session_finished: { icon: 'check', tone: 'success' },
   session_failed: { icon: 'alert', tone: 'danger' },
@@ -20,8 +25,14 @@ const KIND: Record<NotificationKind, { icon: IconName; tone: PastilleTone }> = {
   security: { icon: 'lock', tone: 'accent' },
 };
 
+/** Spec of a kind; a kind this build does not know (newer server) gets the neutral bell. */
+export function notificationKindSpec(kind: string): { icon: IconName; tone: PastilleTone } {
+  return Object.hasOwn(NOTIFICATION_KIND_SPECS, kind) ? NOTIFICATION_KIND_SPECS[kind as NotificationKind] : { icon: 'bell', tone: 'accent' };
+}
+
 export interface NotificationItemProps {
-  kind: NotificationKind;
+  /** A `NotificationKind`; any other string is shown with the neutral bell. */
+  kind: NotificationKind | (string & {});
   /** « Tests e2e du devis attend votre accord » (same wording as the Web Push title, S5). */
   title: string;
   /** « npm run test -- e2e · Nuera OS » */
@@ -40,7 +51,7 @@ export interface NotificationItemProps {
  * title Outfit 600 15, body Outfit 13 muted, « maintenant » — and the Nuera list-row pattern).
  */
 export function NotificationItem({ kind, title, body, at, read = false, href, action, className }: NotificationItemProps) {
-  const spec = KIND[kind];
+  const spec = notificationKindSpec(kind);
   const titleClass = 'font-sans text-app-14 font-semibold text-text';
   return (
     <article

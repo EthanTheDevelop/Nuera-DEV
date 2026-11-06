@@ -10,17 +10,18 @@ import type {
   WorkspacePullRequest,
   WorkspaceSession,
 } from '@/features/workspace/lib/contract';
-import type { CurrentUser } from '@/server/auth/session';
 import { db } from '@/server/db';
-import { isRunnerUnavailable, runner } from '@/server/runner/client';
-import { getAppSettings } from '@/server/settings';
+import { isRunnerUnavailable, type RunnerClient } from '@/server/runner/client';
+import { environmentMaxSessions, getGitIdentity } from '@/server/sessions';
+import type { RequestContext } from '@/server/tenancy/context';
 import { findSessionContext, githubHtmlUrl, repoName, requireSessionContext, type SessionContext } from './access';
 
 /**
  * Initial data of `/workspace/[sessionId]` (D05, W1–W7, M05, S1–S4). The database gives what the
  * web owns (titles, project, sibling sessions, pull requests); the runner gives the live view
  * (process, pending permission, conversation, git). Any runner part that fails is null: the page
- * renders a sober inline state for it, never a crash (T5 is handled by the shell).
+ * renders a sober inline state for it, never a crash (T5 is handled by the shell). Every read is
+ * scoped to the space of ctx and goes to the runner of the server holding the session.
  */
 
 const EVENTS_PAGE = 2000;
@@ -62,8 +63,8 @@ function toWorkspaceSession(row: SessionContext['session'], dto: SessionDto | nu
   };
 }
 
-/** Every event after `afterVersion`, page by page (bounded). */
-export async function readSessionEvents(sessionId: string, afterVersion = 0, max = MAX_INITIAL_EVENTS): Promise<WorkspaceEventsPage> {
+/** Every event after `afterVersion`, page by page (bounded), from the session's server. */
+async function readSessionEvents(runner: RunnerClient, sessionId: string, afterVersion = 0, max = MAX_INITIAL_EVENTS): Promise<WorkspaceEventsPage> {
   const items: SessionEventItem[] = [];
   let version = afterVersion;
   let complete = false;
@@ -80,12 +81,13 @@ export async function readSessionEvents(sessionId: string, afterVersion = 0, max
 }
 
 /** `GET /api/sessions/[id]/events?afterVersion=` (reload after `stream.reset`, catch-up after W7). */
-export async function getSessionEventsPage(sessionId: string, afterVersion: number): Promise<WorkspaceEventsPage> {
-  await requireSessionContext(sessionId);
-  return readSessionEvents(sessionId, afterVersion);
+export async function getSessionEventsPage(ctx: Pick<RequestContext, 'space'>, sessionId: string, afterVersion: number): Promise<WorkspaceEventsPage> {
+  const { scope } = await requireSessionContext(ctx, sessionId);
+  return readSessionEvents(scope.runner, scope.sessionId, afterVersion);
 }
 
-export async function readBranchStatus(worktreeId: string, base: string): Promise<WorkspaceBranchStatus> {
+/** Ahead / behind of a worktree (already scoped: `runner` is the client of its server). */
+export async function readBranchStatus(runner: RunnerClient, worktreeId: string, base: string): Promise<WorkspaceBranchStatus> {
   const ab = await runner.aheadBehind({ params: { worktreeId }, query: { base } }, { timeoutMs: 10_000 });
   return { branch: ab.branch, base: ab.base, ahead: ab.ahead, behind: ab.behind, upstream: ab.upstream, dirtyFiles: ab.dirtyFiles };
 }
@@ -125,7 +127,7 @@ async function readSiblings(context: SessionContext): Promise<SiblingSession[]> 
   }));
 }
 
-export async function readLatestPullRequest(projectId: string, headBranch: string | null): Promise<WorkspacePullRequest | null> {
+async function readLatestPullRequest(projectId: string, headBranch: string | null): Promise<WorkspacePullRequest | null> {
   if (!headBranch) return null;
   const [row] = await db
     .select()
@@ -153,23 +155,31 @@ async function countAllowed(sessionId: string): Promise<number> {
   return rows.length;
 }
 
-async function liveCount(): Promise<number | null> {
+/** Live sessions of ONE server (archived ones excluded). */
+async function liveCount(environmentId: string): Promise<number> {
   const rows = await db
     .select({ id: sessions.id })
     .from(sessions)
-    .where(inArray(sessions.status, ['running', 'waiting_permission', 'waiting_input']));
+    .where(
+      and(
+        eq(sessions.environmentId, environmentId),
+        inArray(sessions.status, ['running', 'waiting_permission', 'waiting_input']),
+        isNull(sessions.archivedAt),
+      ),
+    );
   return rows.length;
 }
 
 /**
- * Everything the Workspace needs for its first paint. Returns null for an unknown session, an
- * archived session or a session of an archived project (the page answers 404).
+ * Everything the Workspace needs for its first paint. Returns null for an unknown session, a
+ * session of another space, an archived session or a session of an archived project (the page
+ * answers 404, the same for all of them).
  */
-export async function getWorkspaceData(sessionId: string, user: Pick<CurrentUser, 'name' | 'email'>): Promise<WorkspaceData | null> {
-  const context = await findSessionContext(sessionId);
+export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user'>, sessionId: string): Promise<WorkspaceData | null> {
+  const context = await findSessionContext(ctx, sessionId);
   if (!context || context.session.status === 'archived' || context.session.archivedAt) return null;
-  const { session, project, worktree } = context;
-  const settings = await getAppSettings();
+  const { scope, session, project, worktree } = context;
+  const { runner } = scope;
   const base = worktree?.baseBranch ?? project.defaultBranch;
   const worktreePresent = Boolean(worktree && !worktree.removedAt && worktree.status !== 'removed');
 
@@ -186,17 +196,18 @@ export async function getWorkspaceData(sessionId: string, user: Pick<CurrentUser
 
   const [dto, events, changes, branch, claudeMd, siblings, pullRequest, allowedCommands, live] = await Promise.all([
     guard(runner.getSession({ params: { sessionId } }, { timeoutMs: 8_000 })),
-    guard(readSessionEvents(sessionId)),
+    guard(readSessionEvents(runner, sessionId)),
     worktreePresent && worktree ? guard(runner.worktreeChanges({ params: { worktreeId: worktree.id } }, { timeoutMs: 15_000 })) : null,
-    worktreePresent && worktree ? guard(readBranchStatus(worktree.id, base)) : null,
+    worktreePresent && worktree ? guard(readBranchStatus(runner, worktree.id, base)) : null,
     worktreePresent && worktree && session.status === 'new'
       ? guard(runner.readClaudeMd({ params: { projectId: project.id }, query: { worktreeId: worktree.id } }, { timeoutMs: 8_000 }))
       : null,
     readSiblings(context),
     readLatestPullRequest(project.id, worktree?.branch ?? null),
     countAllowed(sessionId),
-    liveCount(),
+    liveCount(scope.environmentId),
   ]);
+  const [max, identity] = await Promise.all([environmentMaxSessions(scope.environmentId, 4), getGitIdentity(ctx.user)]);
 
   const permission: PermissionRequestDto | null = dto?.pendingPermission ?? null;
 
@@ -234,12 +245,13 @@ export async function getWorkspaceData(sessionId: string, user: Pick<CurrentUser
     branch,
     changes,
     siblings: siblings.map((s) => (s.current && dto ? { ...s, status: dto.status } : s)),
-    capacity: { live: live ?? 0, max: settings.maxConcurrentSessions },
+    capacity: { live, max },
     claudeMd: claudeMd ? { exists: claudeMd.exists, lines: claudeMd.lines } : null,
     pullRequest,
     allowedCommands,
     runner: runnerDown ? 'unavailable' : 'available',
-    author: { name: user.name, email: user.email },
+    author: identity ?? { name: ctx.user.name, email: ctx.user.email },
+    environment: { id: scope.environmentId, name: scope.environmentName },
     generatedAt: new Date().toISOString(),
   };
 }

@@ -1,24 +1,42 @@
 import 'server-only';
 import { projects } from '@nuera/db/schema';
 import { isValidBranchName, isValidRepoFullName, slugify } from '@nuera/shared/paths';
-import { and, eq, isNull, like } from 'drizzle-orm';
+import { and, eq, isNull, like, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { getGitAuthForRepo, getOctokitForRepo, getRepo, listAccessibleRepos, listBranches, parseFullName } from '@/server/github';
-import { RunnerError, runner } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
+import {
+  getGitAuthForProject,
+  getGitAuthForRepo,
+  getOctokitForRepo,
+  getRepo,
+  listAccessibleRepos,
+  listBranches,
+  parseFullName,
+  resolveSourceForRepo,
+} from '@/server/github';
+import { RunnerError, type RunnerClient } from '@/server/runner/client';
+import { requireEnvironment, type RequestContext } from '@/server/tenancy/context';
+import { auditIn, ofSpace } from '@/server/tenancy/scope';
+import { requireProject, type ProjectContext } from './access';
 import { ProjectError } from './errors';
 import { getProjectsDisk } from './list';
-import { requireProjectRow } from './queries';
-import type { AddReposResult, CreateProjectResult, DestinationView, ProjectCommands, RepoPreview } from './types';
+import type { AddRepoAccount, AddRepoItem, AddRepoSource, AddReposResult, CreateProjectResult, DestinationView, ProjectCommands, RepoPreview } from './types';
 
-type Actor = { id: string };
+/*
+ * Add flow (A1 → D03 → A2/A4) in the space of the request context, on ITS server: the repository
+ * list and the « Déjà cloné » marks come from the space's GitHub sources and projects, the
+ * destination is checked by the space's runner, slugs, paths and tracked repositories are unique
+ * per server, and nothing in an answer ever names a project of another space.
+ */
 
 export const repoFullNameSchema = z
   .string()
   .trim()
   .refine(isValidRepoFullName, { message: 'dépôt GitHub invalide (propriétaire/dépôt)' });
+
+/** Id of a GitHub source of the space (`?source=`, body `sourceId`). */
+export const githubSourceIdSchema = z.uuid('source GitHub invalide');
 
 const commandField = z
   .string()
@@ -30,6 +48,11 @@ const commandField = z
 
 export const createProjectInputSchema = z.object({
   fullName: repoFullNameSchema,
+  /**
+   * GitHub source to read and clone with, when the repository is reachable through several sources
+   * of the space (D03 « Source GitHub »). Absent: the source GitHub resolves for the repository.
+   */
+  sourceId: githubSourceIdSchema.optional(),
   /** Branch to check out (default: the repository's default branch). */
   branch: z.string().trim().min(1).max(250).refine(isValidBranchName, { message: 'nom de branche invalide' }).optional(),
   name: z.string().trim().min(1, 'nom requis').max(120, '120 caractères au maximum'),
@@ -51,42 +74,81 @@ export const destinationCheckInputSchema = z.object({
   fullName: repoFullNameSchema.optional(),
 });
 
+type SpaceContext = Pick<RequestContext, 'space'>;
+
+/** GitHub address of a repository in the space, read through `sourceId` when given. */
+function repoRef(ctx: SpaceContext, fullName: string, sourceId?: string | null) {
+  return { spaceId: ctx.space.id, fullName, ...(sourceId ? { sourceId } : {}) };
+}
+
 // ---------------------------------------------------------------------------------------------
 // A1 — repositories
 // ---------------------------------------------------------------------------------------------
 
+/** Non-archived projects of the space by repository (« Déjà cloné »), case-insensitive. */
+async function trackedInSpace(ctx: SpaceContext): Promise<Map<string, { id: string; name: string }>> {
+  const rows = await db
+    .select({ id: projects.id, name: projects.name, fullName: projects.githubFullName })
+    .from(projects)
+    .where(ofSpace(ctx, isNull(projects.archivedAt)));
+  return new Map(rows.map((row) => [row.fullName.toLowerCase(), { id: row.id, name: row.name }]));
+}
+
 /**
- * A1 « Choix du dépôt »: repositories the GitHub App can read, grouped by account, with « Déjà
- * cloné ». GitHub not connected (or the app installed nowhere) is a STATE, not an error: the step
- * shows the T7-style call to action towards Intégrations.
+ * A1 « Choix du dépôt »: repositories the GitHub sources of the space can read (one entry per
+ * repository, with every source reaching it), grouped by account, with « Déjà cloné » for the
+ * projects of THIS space. GitHub not connected (no source, or installed nowhere) is a STATE, not an
+ * error: the step shows the T7-style call to action towards Intégrations. A source that could not
+ * be listed is reported (`failures`) while the others still are.
  */
-export async function listAddProjectRepos(): Promise<AddReposResult> {
+export async function listAddProjectRepos(ctx: SpaceContext): Promise<AddReposResult> {
+  let result: Awaited<ReturnType<typeof listAccessibleRepos>>;
   try {
-    const result = await listAccessibleRepos();
-    return {
-      connected: true,
-      total: result.total,
-      accounts: result.accounts.map((account) => ({ login: account.login, count: account.count, manageUrl: account.manageUrl })),
-      repos: result.repos.map((repo) => ({
-        id: repo.id,
-        fullName: repo.fullName,
-        owner: repo.owner,
-        name: repo.name,
-        private: repo.private,
-        language: repo.language,
-        pushedAt: repo.pushedAt ?? repo.updatedAt,
-        defaultBranch: repo.defaultBranch,
-        archived: repo.archived,
-        clonedProject: repo.clonedProject ? { id: repo.clonedProject.id, name: repo.clonedProject.name } : null,
-      })),
-      manageAccessUrl: result.manageAccessUrl,
-    };
+    result = await listAccessibleRepos({ spaceId: ctx.space.id });
   } catch (error) {
     if (error instanceof AppError && error.code === 'CONFLICT') {
       return { connected: false, message: error.message, detail: error.detail ?? null };
     }
     throw error;
   }
+  const tracked = await trackedInSpace(ctx);
+
+  const sources: AddRepoSource[] = result.sources.map((source) => ({ id: source.id, label: source.label }));
+  const accounts: AddRepoAccount[] = result.accounts.map((account) => ({
+    key: `${account.sourceId ?? ''}:${account.login.toLowerCase()}`,
+    login: account.login,
+    count: account.count,
+    manageUrl: account.manageUrl,
+    sourceId: account.sourceId ?? '',
+    sourceLabel: account.sourceLabel ?? account.login,
+  }));
+  const repos: AddRepoItem[] = result.repos.map((repo) => {
+    const via: AddRepoSource[] = [];
+    for (const item of repo.sources) if (!via.some((known) => known.id === item.sourceId)) via.push({ id: item.sourceId, label: item.sourceLabel });
+    return {
+      id: repo.id,
+      fullName: repo.fullName,
+      owner: repo.owner,
+      name: repo.name,
+      private: repo.private,
+      language: repo.language,
+      pushedAt: repo.pushedAt ?? repo.updatedAt,
+      defaultBranch: repo.defaultBranch,
+      archived: repo.archived,
+      clonedProject: tracked.get(repo.fullName.toLowerCase()) ?? null,
+      sourceId: repo.sourceId,
+      sources: via,
+    };
+  });
+  return {
+    connected: true,
+    total: repos.length,
+    sources,
+    accounts,
+    repos,
+    manageAccessUrl: result.manageAccessUrl,
+    failures: result.failures.map((failure) => ({ label: failure.label, message: failure.message })),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -103,14 +165,14 @@ const LOCKFILES: Array<{ file: string; manager: 'npm' | 'pnpm' | 'yarn' | 'bun';
 ];
 
 /**
- * Root of the repository through the GitHub contents API (read token): CLAUDE.md, lockfile and the
- * package.json scripts, with the same rules as the runner's post-clone inspection. Null when GitHub
- * does not serve it (the runner detects everything after the clone anyway).
+ * Root of the repository through the GitHub contents API (read token of the space's source):
+ * CLAUDE.md, lockfile and the package.json scripts, with the same rules as the runner's post-clone
+ * inspection. Null when GitHub does not serve it (the runner detects everything after the clone).
  */
-async function inspectRepository(fullName: string, ref: string): Promise<RepoPreview['inspection']> {
+async function inspectRepository(ctx: SpaceContext, fullName: string, sourceId: string | null, ref: string): Promise<RepoPreview['inspection']> {
   const { owner, repo } = parseFullName(fullName);
   try {
-    const octokit = await getOctokitForRepo(fullName);
+    const octokit = await getOctokitForRepo(repoRef(ctx, fullName, sourceId));
     const { data } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path: '', ref });
     if (!Array.isArray(data)) return null;
     const files = new Set(data.filter((entry) => entry.type === 'file').map((entry) => entry.name));
@@ -142,19 +204,24 @@ async function inspectRepository(fullName: string, ref: string): Promise<RepoPre
   }
 }
 
-async function existingProjectAt(path: string): Promise<DestinationView['existingProject']> {
+/** Nuera project of THIS space registered at `path` on `environmentId` (A4 « Ouvrir le projet existant »). */
+async function existingProjectAt(ctx: SpaceContext, environmentId: string, path: string): Promise<DestinationView['existingProject']> {
   const [row] = await db
     .select({ id: projects.id, name: projects.name, archivedAt: projects.archivedAt })
     .from(projects)
-    .where(eq(projects.path, path))
+    .where(ofSpace(ctx, eq(projects.environmentId, environmentId), eq(projects.path, path)))
     .limit(1);
   return row ? { id: row.id, name: row.name, archived: row.archivedAt !== null } : null;
 }
 
-/** Destination check by the runner (never writes anything) + the Nuera project already there. */
-export async function checkProjectDestination(input: z.input<typeof destinationCheckInputSchema>): Promise<DestinationView> {
+/** Destination check by `runner` (never writes anything) + the project of the space already there. */
+async function checkDestinationOn(
+  ctx: SpaceContext,
+  server: { id: string; runner: RunnerClient },
+  input: z.input<typeof destinationCheckInputSchema>,
+): Promise<DestinationView> {
   const parsed = destinationCheckInputSchema.parse(input);
-  const check = await runner.checkDestination({ body: { path: parsed.path, ...(parsed.fullName ? { fullName: parsed.fullName } : {}) } });
+  const check = await server.runner.checkDestination({ body: { path: parsed.path, ...(parsed.fullName ? { fullName: parsed.fullName } : {}) } });
   return {
     path: check.path,
     available: check.available,
@@ -165,8 +232,20 @@ export async function checkProjectDestination(input: z.input<typeof destinationC
     existingClone: check.existingClone
       ? { fullName: check.existingClone.fullName, branch: check.existingClone.branch, sameRepository: check.existingClone.sameRepository }
       : null,
-    existingProject: check.exists ? await existingProjectAt(check.path) : null,
+    existingProject: check.exists ? await existingProjectAt(ctx, server.id, check.path) : null,
   };
+}
+
+/**
+ * D03 live check / A4, on the server of the space (CONFLICT NO_ENVIRONMENT when none is assigned).
+ * `existingProject` only ever names a project of the space.
+ */
+export async function checkProjectDestination(
+  ctx: Pick<RequestContext, 'space' | 'environment'>,
+  input: z.input<typeof destinationCheckInputSchema>,
+): Promise<DestinationView> {
+  const { environment, runner } = requireEnvironment(ctx);
+  return checkDestinationOn(ctx, { id: environment.id, runner }, input);
 }
 
 /** Folder name proposed for a repository (`roux-conseil`), as the runner resolves it under its root. */
@@ -176,24 +255,28 @@ export function defaultFolderName(fullName: string): string {
 
 /**
  * D03 « Configuration »: what the step shows about the chosen repository — branches, visibility,
- * language, size, CLAUDE.md and lockfile when GitHub serves the root, the default destination
- * (checked by the runner) and the free disk space. Each part degrades on its own.
+ * language, size, CLAUDE.md and lockfile when GitHub serves the root (through the space's source,
+ * `sourceId` when the owner picked one), the default destination (checked by the space's runner)
+ * and its free disk space. Each part degrades on its own.
  */
-export async function getRepoPreview(fullName: string): Promise<RepoPreview> {
+export async function getRepoPreview(ctx: Pick<RequestContext, 'space' | 'environment'>, fullName: string, sourceId?: string | null): Promise<RepoPreview> {
   const name = repoFullNameSchema.parse(fullName);
-  const info = await getRepo(name);
+  const source = sourceId ? githubSourceIdSchema.parse(sourceId) : null;
+  const info = await getRepo(repoRef(ctx, name, source));
+  const resolved = source ?? (await resolveSourceForRepo({ spaceId: ctx.space.id, fullName: info.fullName }).catch(() => null))?.sourceId ?? null;
   const [branches, sizeBytes, disk, destination] = await Promise.all([
-    listBranches(name)
+    listBranches(repoRef(ctx, name, resolved))
       .then((list) => list.map((branch) => branch.name))
       .catch(() => [info.defaultBranch]),
-    repositorySize(name),
-    getProjectsDisk(),
-    checkProjectDestination({ path: defaultFolderName(name), fullName: name }).catch(() => null),
+    repositorySize(ctx, name, resolved),
+    getProjectsDisk(ctx),
+    ctx.environment ? checkProjectDestination(ctx, { path: defaultFolderName(name), fullName: name }).catch(() => null) : Promise.resolve(null),
   ]);
-  const inspection = await inspectRepository(name, info.defaultBranch);
+  const inspection = await inspectRepository(ctx, name, resolved, info.defaultBranch);
   const sorted = [info.defaultBranch, ...branches.filter((branch) => branch !== info.defaultBranch).sort((a, b) => a.localeCompare(b))];
   return {
     fullName: info.fullName,
+    sourceId: resolved,
     private: info.private,
     language: info.language,
     pushedAt: info.pushedAt,
@@ -206,10 +289,10 @@ export async function getRepoPreview(fullName: string): Promise<RepoPreview> {
   };
 }
 
-async function repositorySize(fullName: string): Promise<number | null> {
+async function repositorySize(ctx: SpaceContext, fullName: string, sourceId: string | null): Promise<number | null> {
   const { owner, repo } = parseFullName(fullName);
   try {
-    const octokit = await getOctokitForRepo(fullName, { metadata: 'read' });
+    const octokit = await getOctokitForRepo(repoRef(ctx, fullName, sourceId), { metadata: 'read' });
     const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
     const size = (data as { size?: unknown }).size;
     // GitHub reports kilobytes.
@@ -220,12 +303,16 @@ async function repositorySize(fullName: string): Promise<number | null> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// D03 « Cloner sur VPS-3 » → A2
+// D03 « Cloner sur {serveur} » → A2
 // ---------------------------------------------------------------------------------------------
 
-async function uniqueSlug(base: string): Promise<string> {
+/** Free slug on the server (`roux-conseil`, then `roux-conseil-2`…): unique per server only. */
+async function uniqueSlug(environmentId: string, base: string): Promise<string> {
   const root = slugify(base) || 'projet';
-  const rows = await db.select({ slug: projects.slug }).from(projects).where(like(projects.slug, `${root}%`));
+  const rows = await db
+    .select({ slug: projects.slug })
+    .from(projects)
+    .where(and(eq(projects.environmentId, environmentId), like(projects.slug, `${root}%`)));
   const taken = new Set(rows.map((row) => row.slug));
   if (!taken.has(root)) return root;
   for (let i = 2; i < 1000; i += 1) if (!taken.has(`${root}-${i}`)) return `${root}-${i}`;
@@ -249,20 +336,48 @@ function destinationConflict(check: DestinationView): ProjectError {
   });
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  const code = (error as { code?: unknown; cause?: { code?: unknown } } | null)?.code ?? (error as { cause?: { code?: unknown } } | null)?.cause?.code;
-  return code === '23505';
+/** « owner/repo est déjà cloné dans votre espace (« Projet »). » — only ever a project of the space. */
+function alreadyTracked(fullName: string, project: { id: string; name: string }): ProjectError {
+  return new ProjectError('CONFLICT', `${fullName} est déjà cloné dans votre espace (« ${project.name} »).`, {
+    reason: 'ALREADY_TRACKED',
+    untouched: "Rien n'a été cloné.",
+    data: { existingProject: { id: project.id, name: project.name, archived: false } },
+  });
+}
+
+/** Unique violation (23505) and the constraint it hit. */
+function uniqueViolation(error: unknown): { constraint: string | null } | null {
+  const candidates = [error, (error as { cause?: unknown } | null)?.cause];
+  for (const candidate of candidates) {
+    const value = candidate as { code?: unknown; constraint_name?: unknown; constraint?: unknown } | null | undefined;
+    if (value?.code === '23505') {
+      const constraint = typeof value.constraint_name === 'string' ? value.constraint_name : typeof value.constraint === 'string' ? value.constraint : null;
+      return { constraint };
+    }
+  }
+  return null;
+}
+
+/** Project of the space tracking `fullName` (not archived), if any. */
+async function trackedProject(ctx: SpaceContext, fullName: string): Promise<{ id: string; name: string } | null> {
+  const [row] = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(ofSpace(ctx, isNull(projects.archivedAt), sql`lower(${projects.githubFullName}) = lower(${fullName})`))
+    .limit(1);
+  return row ?? null;
 }
 
 /** Starts the clone of an existing project row (create or retry). Throws with the runner reason. */
 async function startClone(
+  ctx: ProjectContext,
+  server: { id: string; runner: RunnerClient },
   project: { id: string; githubFullName: string; path: string },
+  extraHeader: string,
   options: { branch?: string | undefined; installDeps: boolean; installCommand?: string | null | undefined },
-  actor: Actor,
 ): Promise<string> {
-  const { extraHeader } = await getGitAuthForRepo(project.githubFullName, 'read');
   try {
-    const started = await runner.cloneRepo({
+    const started = await server.runner.cloneRepo({
       body: {
         projectId: project.id,
         fullName: project.githubFullName,
@@ -271,7 +386,7 @@ async function startClone(
         extraHeader,
         installDeps: options.installDeps,
         ...(options.installCommand ? { installCommand: options.installCommand } : {}),
-        actorUserId: actor.id,
+        actorUserId: ctx.user.id,
       },
     });
     return started.operationId;
@@ -286,7 +401,7 @@ async function startClone(
         fileCount: data.fileCount ?? 0,
         suggestedPath: data.suggestedPath ?? null,
         existingClone: data.existingClone ?? null,
-        existingProject: await existingProjectAt(data.path ?? project.path),
+        existingProject: await existingProjectAt(ctx, server.id, data.path ?? project.path),
       });
     }
     throw error;
@@ -294,40 +409,42 @@ async function startClone(
 }
 
 /**
- * Creates the project row (status `cloning`, unique slug, path validated by the runner) then
- * starts `runner.cloneRepo` with a READ token of that repository only. Nothing is written when the
- * destination is not usable (A4: reason DESTINATION_NOT_EMPTY + suggestions); a runner refusal
- * removes the row again (nothing was cloned).
+ * Creates the project row on the server of the space (status `cloning`, slug unique on that
+ * server, path validated by its runner, GitHub source bound) then starts its `cloneRepo` with a
+ * READ token of that repository only. Nothing is written when the repository is already tracked
+ * in the space or the destination is not usable (A4: reason DESTINATION_NOT_EMPTY + suggestions);
+ * a runner refusal removes the row again (nothing was cloned).
  */
-export async function createProject(input: CreateProjectInput, actor: Actor): Promise<CreateProjectResult> {
+export async function createProject(ctx: ProjectContext, input: CreateProjectInput): Promise<CreateProjectResult> {
   const parsed = createProjectInputSchema.parse(input);
-  const info = await getRepo(parsed.fullName);
+  const { environment, runner } = requireEnvironment(ctx);
+  const server = { id: environment.id, runner };
+  const info = await getRepo(repoRef(ctx, parsed.fullName, parsed.sourceId));
 
-  const [tracked] = await db
-    .select({ id: projects.id, name: projects.name })
-    .from(projects)
-    .where(and(eq(projects.githubFullName, info.fullName), isNull(projects.archivedAt)))
-    .limit(1);
-  if (tracked) {
-    throw new ProjectError('CONFLICT', `${info.fullName} est déjà cloné sur VPS-3 (« ${tracked.name} »).`, {
-      reason: 'ALREADY_TRACKED',
-      untouched: "Rien n'a été cloné.",
-      data: { existingProject: { id: tracked.id, name: tracked.name, archived: false } },
-    });
-  }
+  const tracked = await trackedProject(ctx, info.fullName);
+  if (tracked) throw alreadyTracked(info.fullName, tracked);
 
-  const check = await checkProjectDestination({ path: parsed.destination, fullName: info.fullName });
+  // The chosen source (checked in the space) or the first one reaching the repository.
+  const binding = await resolveSourceForRepo(repoRef(ctx, info.fullName, parsed.sourceId));
+  const sourceId = binding.sourceId;
+
+  const check = await checkDestinationOn(ctx, server, { path: parsed.destination, fullName: info.fullName });
   if (!check.available) throw destinationConflict(check);
 
   const branch = parsed.branch && parsed.branch !== info.defaultBranch ? parsed.branch : undefined;
   const commands = Object.fromEntries(Object.entries(parsed.commands).filter(([, value]) => typeof value === 'string' && value)) as ProjectCommands;
-  const slug = await uniqueSlug(parseFullName(info.fullName).repo);
+  const slug = await uniqueSlug(environment.id, parseFullName(info.fullName).repo);
 
   let row: typeof projects.$inferSelect | undefined;
   try {
     [row] = await db
       .insert(projects)
       .values({
+        spaceId: ctx.space.id,
+        environmentId: environment.id,
+        githubSourceId: sourceId,
+        githubInstallationId: binding.installationId,
+        createdByUserId: ctx.user.id,
         slug,
         name: parsed.name,
         description: info.description,
@@ -347,27 +464,34 @@ export async function createProject(input: CreateProjectInput, actor: Actor): Pr
       })
       .returning();
   } catch (error) {
-    if (isUniqueViolation(error)) throw destinationConflict({ ...check, available: false, existingProject: await existingProjectAt(check.path) });
+    const violation = uniqueViolation(error);
+    if (violation) {
+      // Lost a race with a concurrent creation in the space (same repository or same folder).
+      const again = violation.constraint === 'projects_environment_repo_active_idx' ? await trackedProject(ctx, info.fullName) : null;
+      if (again) throw alreadyTracked(info.fullName, again);
+      throw destinationConflict({ ...check, available: false, existingProject: await existingProjectAt(ctx, environment.id, check.path) });
+    }
     throw error;
   }
   if (!row) throw new AppError('INTERNAL');
 
   let operationId: string;
   try {
-    operationId = await startClone(row, { branch, installDeps: parsed.installDeps, installCommand: commands.install }, actor);
+    const { extraHeader } = await getGitAuthForRepo(repoRef(ctx, info.fullName, sourceId), 'read');
+    operationId = await startClone(ctx, server, row, extraHeader, { branch, installDeps: parsed.installDeps, installCommand: commands.install });
   } catch (error) {
     // Nothing was cloned: the project must not stay in the list as « Clonage… ».
     await db.delete(projects).where(eq(projects.id, row.id)).catch(() => undefined);
     throw error;
   }
 
-  await audit({
+  await auditIn(ctx, {
     action: 'project.created',
     summary: `projet ${parsed.name} ajouté : clonage de ${info.fullName}${branch ? ` (${branch})` : ''} dans ${check.path}`,
     targetType: 'project',
     targetId: row.id,
-    metadata: { fullName: info.fullName, path: check.path, branch: branch ?? info.defaultBranch, installDeps: parsed.installDeps, operationId },
-    actorUserId: actor.id,
+    environmentId: environment.id,
+    metadata: { fullName: info.fullName, path: check.path, branch: branch ?? info.defaultBranch, installDeps: parsed.installDeps, operationId, sourceId },
   });
   return { projectId: row.id, operationId };
 }
@@ -379,51 +503,40 @@ export const retryCloneInputSchema = z.object({
 
 /**
  * Retries the clone of a project whose clone FAILED (status `error`: the runner left nothing on
- * disk), optionally into another folder. A project whose dependencies failed is `ready`: its
- * installation is re-run from the project page (« Lancer » Installation).
+ * disk), on the project's own server, optionally into another folder. A project whose
+ * dependencies failed is `ready`: its installation is re-run from the project page.
  */
-export async function retryProjectClone(projectId: string, input: z.input<typeof retryCloneInputSchema>, actor: Actor): Promise<CreateProjectResult> {
+export async function retryProjectClone(ctx: ProjectContext, projectId: string, input: z.input<typeof retryCloneInputSchema>): Promise<CreateProjectResult> {
   const parsed = retryCloneInputSchema.parse(input);
-  const project = await requireProjectRow(projectId);
+  const handle = await requireProject(ctx, projectId);
+  const project = handle.row;
   if (project.archivedAt) throw new AppError('CONFLICT', 'Ce projet est archivé.');
   if (project.status === 'cloning') throw new AppError('CONFLICT', 'Le clonage de ce projet est déjà en cours.');
-  if (project.status !== 'error') throw new AppError('CONFLICT', 'Ce projet est déjà cloné sur VPS-3.');
-  const check = await checkProjectDestination({ path: parsed.destination ?? project.path, fullName: project.githubFullName });
+  if (project.status !== 'error') throw new AppError('CONFLICT', `Ce projet est déjà cloné sur ${handle.environment.name}.`);
+  const server = { id: handle.environment.id, runner: handle.runner };
+  const check = await checkDestinationOn(ctx, server, { path: parsed.destination ?? project.path, fullName: project.githubFullName });
   if (!check.available) throw destinationConflict(check);
   if (check.path !== project.path) {
     try {
-      await db.update(projects).set({ path: check.path }).where(eq(projects.id, project.id));
+      await db.update(projects).set({ path: check.path }).where(and(eq(projects.id, project.id), eq(projects.spaceId, ctx.space.id)));
     } catch (error) {
-      if (isUniqueViolation(error)) throw destinationConflict({ ...check, available: false, existingProject: await existingProjectAt(check.path) });
+      if (uniqueViolation(error)) throw destinationConflict({ ...check, available: false, existingProject: await existingProjectAt(ctx, server.id, check.path) });
       throw error;
     }
   }
-  const operationId = await startClone(
-    { id: project.id, githubFullName: project.githubFullName, path: check.path },
-    {
-      branch: project.currentBranch && project.currentBranch !== project.defaultBranch ? project.currentBranch : undefined,
-      installDeps: project.options.installDeps,
-      installCommand: project.commands.install,
-    },
-    actor,
-  );
-  await audit({
+  const { extraHeader } = await getGitAuthForProject(project, 'read');
+  const operationId = await startClone(ctx, server, { id: project.id, githubFullName: project.githubFullName, path: check.path }, extraHeader, {
+    branch: project.currentBranch && project.currentBranch !== project.defaultBranch ? project.currentBranch : undefined,
+    installDeps: project.options.installDeps,
+    installCommand: project.commands.install,
+  });
+  await auditIn(ctx, {
     action: 'project.clone_retried',
     summary: `nouveau clonage de ${project.githubFullName} pour ${project.name} dans ${check.path}`,
     targetType: 'project',
     targetId: project.id,
+    environmentId: server.id,
     metadata: { path: check.path, operationId },
-    actorUserId: actor.id,
   });
   return { projectId: project.id, operationId };
-}
-
-/** A2 reopened (`?operation=`): the operation of a project's clone, null when the runner does not know it. */
-export async function getCloneOperation(operationId: string) {
-  try {
-    return await runner.getOperation({ params: { operationId } });
-  } catch (error) {
-    if (error instanceof RunnerError && error.code === 'NOT_FOUND') return null;
-    throw error;
-  }
 }

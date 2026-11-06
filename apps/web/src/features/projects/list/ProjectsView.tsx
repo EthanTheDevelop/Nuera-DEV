@@ -35,6 +35,7 @@ import { FailureBanner, type Failure } from '../FailureBanner';
 import { projectsSubtitle } from '../format';
 import { useServerName, useThrottledRefresh } from '../hooks';
 import { NewBranchDialog } from '../NewBranchDialog';
+import { NO_SERVER_TEXT, NO_SERVER_TITLE } from '../add/NoServerAddProject';
 
 export interface ProjectsViewProps {
   data: ProjectListResult;
@@ -58,7 +59,7 @@ type SyncFailure = { project: ProjectListItem; failure: Failure };
  */
 export function ProjectsView({ data, query }: ProjectsViewProps) {
   const router = useRouter();
-  const serverName = useServerName();
+  const serverName = useServerName(data.environment?.name);
   const throttledRefresh = useThrottledRefresh();
   // While the add-project modal is open over the list (/projets/nouveau), a refresh would re-render
   // the intercepted route as the full page: refreshes wait until the list is the current page again.
@@ -232,6 +233,8 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
   ];
 
   const hasAnyProject = data.counts.all + data.counts.archived > 0;
+  // No server assigned to the space: nothing can be cloned (no « Ajouter un projet » leading nowhere).
+  const noServer = data.environment === null;
   const filtered = query.q !== '' || query.filter !== 'tous';
 
   return (
@@ -240,16 +243,18 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
         title="Projets"
         subtitle={
           <>
-            <span className="hidden nav:inline">{projectsSubtitle(data.counts.all, data.disk, serverName, 'long')}</span>
-            <span className="nav:hidden">{projectsSubtitle(data.counts.all, data.disk, serverName, 'short')}</span>
+            <span className="hidden nav:inline">{noServer ? NO_SERVER_TITLE : projectsSubtitle(data.counts.all, data.disk, serverName, 'long')}</span>
+            <span className="nav:hidden">{noServer ? NO_SERVER_TITLE : projectsSubtitle(data.counts.all, data.disk, serverName, 'short')}</span>
           </>
         }
         actions={
-          <Button variant="accent" href={ADD_HREF}>
-            Ajouter un projet
-          </Button>
+          noServer ? null : (
+            <Button variant="accent" href={ADD_HREF}>
+              Ajouter un projet
+            </Button>
+          )
         }
-        mobileAction={<IconButton icon="plus" label="Ajouter un projet" variant="accent" size="md" href={ADD_HREF} iconSize={20} />}
+        mobileAction={noServer ? null : <IconButton icon="plus" label="Ajouter un projet" variant="accent" size="md" href={ADD_HREF} iconSize={20} />}
       />
 
       {/* T1 / T3 / T4 banners: clone jobs running, finished in this tab, failed. */}
@@ -322,7 +327,11 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
         </div>
       ) : null}
 
-      {!hasAnyProject ? (
+      {!hasAnyProject && noServer ? (
+        <EmptyState icon="server" title={NO_SERVER_TITLE}>
+          {NO_SERVER_TEXT}
+        </EmptyState>
+      ) : !hasAnyProject ? (
         <EmptyState
           icon="projets"
           title="Aucun projet pour l'instant"
@@ -492,6 +501,7 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
         onOpenChange={(open) => !open && setArchiveTarget(null)}
         project={archiveTarget}
         onArchived={refresh}
+        serverName={serverName}
       />
       {branchTarget ? (
         <NewBranchDialog
@@ -499,6 +509,7 @@ export function ProjectsView({ data, query }: ProjectsViewProps) {
           onOpenChange={(open) => !open && setBranchTarget(null)}
           project={branchTarget}
           onCreated={refresh}
+          serverName={serverName}
         />
       ) : null}
       <NewSessionDialog

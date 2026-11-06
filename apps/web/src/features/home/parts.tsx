@@ -146,21 +146,27 @@ export function HomeProjectRow({
 const PART_ERROR_TEXT: Record<HomePartError, string> = {
   runner_unavailable: 'Le serveur ne répond pas : ces informations reviendront dès son retour.',
   failed: "Ces informations n'ont pas pu être lues.",
+  no_environment: "Aucun serveur ne vous est encore attribué : ces informations apparaîtront dès qu'un administrateur vous en attribue un.",
 };
 
-/** Inline failure of one tile (the rest of the page keeps working). */
+/**
+ * Inline failure of one tile (the rest of the page keeps working). No « Réessayer » while no server
+ * is assigned: retrying cannot change that, an administrator does.
+ */
 export function PartUnavailable({ error, title, onRetry, className }: { error: HomePartError; title: string; onRetry: () => void; className?: string }) {
   return (
     <div role="status" className={cn('flex flex-col items-start gap-2 py-2', className)}>
       <p className="m-0 flex items-start gap-2 font-sans text-app-13 leading-[18px] text-muted">
-        <Icon name="alert" size={16} className="mt-px shrink-0 text-warn" />
+        <Icon name={error === 'no_environment' ? 'server' : 'alert'} size={16} className={cn('mt-px shrink-0', error === 'no_environment' ? 'text-muted' : 'text-warn')} />
         <span>
           {title}. {PART_ERROR_TEXT[error]}
         </span>
       </p>
-      <CompactButton variant="discret" icon="refresh" onClick={onRetry}>
-        Réessayer
-      </CompactButton>
+      {error === 'no_environment' ? null : (
+        <CompactButton variant="discret" icon="refresh" onClick={onRetry}>
+          Réessayer
+        </CompactButton>
+      )}
     </div>
   );
 }

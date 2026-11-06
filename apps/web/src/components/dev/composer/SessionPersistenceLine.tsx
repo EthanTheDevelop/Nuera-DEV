@@ -17,7 +17,7 @@ export interface PersistenceText {
 /**
  * Copy of the persistence line under the composer (D05, W1, W3, W7 — states-workspace.md §4):
  * - new → « La session démarre au premier envoi et continuera sans ce navigateur. »
- * - live → « Session vivante sur VPS-3 : fermer cet onglet ou changer d'appareil ne l'arrête pas. »
+ * - live → « Session vivante sur {serveur de la session} : fermer cet onglet ou changer d'appareil ne l'arrête pas. »
  * - ended → « Conversation enregistrée par Claude Code : reprenable plus tard depuis Sessions. »
  * - reconnecting → « Dernier signe du serveur il y a 12 s · la demande d'autorisation attend toujours. »
  */

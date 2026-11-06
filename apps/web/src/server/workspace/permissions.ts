@@ -1,20 +1,22 @@
 import 'server-only';
 import { permissionRequests, projects, sessions } from '@nuera/db/schema';
 import type { PermissionRequestDto } from '@nuera/shared/runner';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { PermissionDecisionInput, PermissionOptionId } from '@/features/workspace/lib/contract';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
-import { runner } from '@/server/runner/client';
-import { audit } from '@/server/security/audit';
-import type { WorkspaceActor } from './session-actions';
+import { assertCanDriveSession } from '@/server/sessions';
+import type { RequestContext } from '@/server/tenancy/context';
+import { auditIn, NOT_FOUND_MESSAGES, scopeOfPermission } from '@/server/tenancy/scope';
 
 /**
  * « Autoriser » / « Toujours pour … » / « Refuser » of `Dev · Demande d'autorisation` (D05, M05,
  * S1, S5). The decision is handed to the CLI's own PermissionRequest hook by the runner (official
  * format, the CLI's rule suggestion used verbatim for « Toujours »): the permission mode is never
- * bypassed. Audited `permission.decision` — the security journal (D08) shows
- * « « toujours autoriser » npm run test · Nuera OS ».
+ * bypassed. The request must belong to a session of the space (an id of another space answers
+ * like an unknown id, before any runner call) and the decision goes to the runner of the session's
+ * server. Audited `permission.decision` in the space, with the account that decided — the
+ * journal (D08) shows « « toujours autoriser » npm run test · Nuera OS ».
  */
 
 export const PERMISSION_AUDIT_ACTION = 'permission.decision';
@@ -55,10 +57,11 @@ export function alwaysPrefix(alwaysLabel: string | null | undefined): string | n
 }
 
 export async function decidePermission(
+  ctx: Pick<RequestContext, 'user' | 'space' | 'environment'>,
   permissionId: string,
   input: PermissionDecisionInput,
-  actor: WorkspaceActor,
 ): Promise<PermissionRequestDto> {
+  const scope = await scopeOfPermission(ctx, permissionId);
   const [row] = await db
     .select({
       id: permissionRequests.id,
@@ -74,10 +77,11 @@ export async function decidePermission(
     })
     .from(permissionRequests)
     .innerJoin(sessions, eq(sessions.id, permissionRequests.sessionId))
-    .innerJoin(projects, eq(projects.id, sessions.projectId))
-    .where(eq(permissionRequests.id, permissionId))
+    .innerJoin(projects, and(eq(projects.id, sessions.projectId), eq(projects.environmentId, sessions.environmentId)))
+    .where(and(eq(permissionRequests.id, scope.permissionId), eq(projects.spaceId, ctx.space.id)))
     .limit(1);
-  if (!row || row.projectArchivedAt) throw new AppError('NOT_FOUND', "Demande d'autorisation introuvable.");
+  if (!row || row.projectArchivedAt) throw new AppError('NOT_FOUND', NOT_FOUND_MESSAGES.permission);
+  assertCanDriveSession(ctx, scope);
   if (input.optionId === 'allow_always' && !(Array.isArray(row.suggestions) && row.suggestions.length > 0)) {
     throw new AppError('VALIDATION', "Le CLI n'a proposé aucune règle « toujours » pour cette demande.", {
       untouched: "Rien n'a été transmis au CLI.",
@@ -85,17 +89,17 @@ export async function decidePermission(
   }
 
   const decision = decisionFromOption(input.optionId);
-  const dto = await runner.permissionDecision({
-    params: { permissionId },
+  const dto = await scope.runner.permissionDecision({
+    params: { permissionId: scope.permissionId },
     body: {
       behavior: decision.behavior,
       always: decision.always,
       ...(decision.behavior === 'deny' && input.message ? { message: input.message } : {}),
-      decidedByUserId: actor.id,
+      decidedByUserId: ctx.user.id,
     },
   });
 
-  await audit({
+  await auditIn(ctx, {
     action: PERMISSION_AUDIT_ACTION,
     summary: permissionAuditSummary({
       optionId: input.optionId,
@@ -106,9 +110,9 @@ export async function decidePermission(
     }),
     targetType: 'session',
     targetId: row.sessionId,
-    actorUserId: actor.id,
+    environmentId: scope.environmentId,
     metadata: {
-      permissionId,
+      permissionId: scope.permissionId,
       projectId: row.projectId,
       tool: dto.toolName,
       target: dto.target,

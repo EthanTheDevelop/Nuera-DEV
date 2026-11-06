@@ -3,13 +3,13 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PageHeader, useOptionalShellData } from '@/components/shell';
-import { Banner, ErrorPanel } from '@/components/ui';
+import { Banner, EmptyState, ErrorPanel } from '@/components/ui';
 import { useLiveEvent, useLiveEvents } from '@/hooks/useLiveEvents';
 import { NewSessionButton } from '../NewSessionButton';
 import { useSessionActions } from '../useSessionActions';
 import type { HistoryUrlState, SessionCapacity, SessionListItem, SessionListPage } from '../lib/contract';
 import { capacityFullReason } from '../lib/form';
-import { applyStatusEvent, liveCount } from '../lib/view';
+import { applyStatusEvent, liveCount, NO_SERVER_REASON, NO_SERVER_TEXT, NO_SERVER_TITLE, serverLabel } from '../lib/view';
 import { ActiveSessions } from './ActiveSessions';
 import { CapacityTile } from './CapacityTile';
 import { HistorySection } from './HistorySection';
@@ -33,7 +33,9 @@ export interface SessionsViewProps {
 export function SessionsView({ filters, capacity, active, history, projects }: SessionsViewProps) {
   const router = useRouter();
   const shell = useOptionalShellData();
-  const serverName = shell?.server.name ?? 'VPS-3';
+  // The server of the space as the capacity read it (the shell's while it failed).
+  const serverName = serverLabel(capacity.ok ? capacity.data.environment?.name : null, shell?.server.name);
+  const unassigned = capacity.ok && capacity.data.source === 'unassigned';
   const live = useLiveEvents();
   const metrics = live.metrics ?? shell?.server.metrics ?? null;
 
@@ -73,7 +75,11 @@ export function SessionsView({ filters, capacity, active, history, projects }: S
     return { ...capacity.data, active: liveCount(items) };
   }, [capacity, active, items]);
   const full = capacityValue ? capacityValue.active >= capacityValue.max : false;
-  const disabledReason = full && capacityValue ? capacityFullReason(capacityValue.active, capacityValue.max) : null;
+  const disabledReason = unassigned
+    ? NO_SERVER_REASON
+    : full && capacityValue
+      ? capacityFullReason(capacityValue.active, capacityValue.max)
+      : null;
   const unverified = (active.ok && !active.data.verified) || (history.ok && !history.data.verified);
 
   return (
@@ -96,7 +102,11 @@ export function SessionsView({ filters, capacity, active, history, projects }: S
         </Banner>
       ) : null}
 
-      {capacity.ok && capacityValue ? (
+      {unassigned ? (
+        <EmptyState icon="server" title={NO_SERVER_TITLE}>
+          {NO_SERVER_TEXT}
+        </EmptyState>
+      ) : capacity.ok && capacityValue ? (
         <CapacityTile capacity={capacityValue} metrics={metrics} />
       ) : !capacity.ok ? (
         <ErrorPanel title="La capacité n'a pas pu être lue" excerpt={capacity.error.message} untouched="Aucune session n'a été modifiée." onRetry={() => router.refresh()} retryLabel="Réessayer" />

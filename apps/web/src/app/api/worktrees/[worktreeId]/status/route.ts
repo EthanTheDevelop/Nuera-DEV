@@ -8,5 +8,5 @@ export const runtime = 'nodejs';
 
 export const GET = apiRoute({
   params: worktreeParamsSchema,
-  handler: ({ params }) => withWorkspaceErrors(() => getWorktreeStatus(params.worktreeId)),
+  handler: ({ params, ctx }) => withWorkspaceErrors(() => getWorktreeStatus(ctx, params.worktreeId)),
 });

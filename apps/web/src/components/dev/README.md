@@ -11,7 +11,7 @@ aucun accès aux données, aucune donnée d'exemple (sauf dans `gallery/`, rése
   `…` U+2026). Les états non dessinés ont une copie sobre, signalée dans le tableau.
 - Rien de mort : un bouton n'est rendu que si son action existe (`href` ou `onClick`) ; sinon il est absent ou
   désactivé avec la raison affichée (`disabledReason`).
-- Galerie : `/kit/composites` (développement uniquement ; propriétaire connecté, ou `NUERA_KIT_PUBLIC=1`).
+- Galerie : `/kit/composites` (développement uniquement ; compte connecté, ou `NUERA_KIT_PUBLIC=1`).
 
 ## Inventaire
 
