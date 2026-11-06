@@ -1,12 +1,12 @@
 'use client';
 
-import { DIFF_PHONE_HINT, DiffFilePager, DiffView, BranchStatusBar, useKeyboardInset } from '@/components/dev';
+import { DIFF_PHONE_HINT, DiffFilePager, DiffView, BranchStatusBar, useKeyboardInset, usageLimitLabel } from '@/components/dev';
 import { ConnectionLostBanner } from '@/components/shell';
-import { CompactButton, EmptyState, ErrorPanel, IconButton, Sheet, SheetContent, SkeletonList, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui';
+import { CompactButton, EmptyState, ErrorPanel, IconButton, Sheet, SheetContent, SkeletonList, Switch, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
 import { useNow } from '@/hooks/useNow';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { CommitForm } from './commit/CommitForm';
 import { STEP_LABEL, useCommitFlow } from './commit/useCommitFlow';
 import { SessionStatus } from './header/SessionHeader';
@@ -17,13 +17,17 @@ import { FileExplorer } from './panel/FileExplorer';
 import { toDiffViewFile, useFileDiff, useSelectedChange } from './panel/useFileDiff';
 import { ComposerArea } from './session/ComposerArea';
 import { ActionErrorBanner } from './session/SessionColumn';
+import { PreviewPanel } from './preview/PreviewPanel';
 import { SessionTerminal } from './session/SessionTerminal';
+import { UsageLimitBanner, useAutoResume } from './session/UsageLimitBanner';
 import { Thread } from './thread/Thread';
 import { useWorkspace } from './WorkspaceContext';
 
 function ActionsSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const ws = useWorkspace();
   const menu = useSessionMenu();
+  const auto = useAutoResume();
+  const autoLabel = useId();
   const terminal = ws.url.view === 'terminal';
   const close = () => onOpenChange(false);
   const row = (label: string, onClick: () => void, icon: Parameters<typeof CompactButton>[0]['icon'], options: { disabled?: boolean; loading?: boolean } = {}) => (
@@ -62,6 +66,12 @@ function ActionsSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                   menu.openStop();
                 }, 'stop')
               : null}
+            <div className="flex min-h-11 items-center gap-3 rounded-md border border-border px-3 py-2">
+              <span id={autoLabel} className="min-w-0 flex-1 font-sans text-app-14 text-text">
+                Reprise automatique après la limite
+              </span>
+              <Switch checked={auto.enabled} disabled={auto.disabled} aria-labelledby={autoLabel} onCheckedChange={(checked) => void auto.setEnabled(checked)} />
+            </div>
             <CompactButton variant="discret" size="lg" block icon="projets" href={`/projets/${encodeURIComponent(ws.data.project.id)}`}>
               Ouvrir le projet
             </CompactButton>
@@ -107,7 +117,13 @@ function PhoneHeader() {
       </header>
       <div className="flex h-[39px] shrink-0 items-center gap-2 bg-bg px-4 pt-1.5 pb-2.5">
         <SessionStatus className="shrink-0" />
-        <p className="m-0 min-w-0 flex-1 truncate font-mono text-app-11 text-muted">{phoneStatusMeta(session, ws.host, now)}</p>
+        {usageLimitLabel(session.limit, now) ? (
+          <p className="m-0 min-w-0 flex-1 truncate font-sans text-app-12 font-medium text-warn" data-testid="limite-entete">
+            {usageLimitLabel(session.limit, now)}
+          </p>
+        ) : (
+          <p className="m-0 min-w-0 flex-1 truncate font-mono text-app-11 text-muted">{phoneStatusMeta(session, ws.host, now)}</p>
+        )}
       </div>
       <SessionSwitcherSheet open={switcher} onOpenChange={setSwitcher} />
       <ActionsSheet open={actions} onOpenChange={setActions} />
@@ -208,6 +224,7 @@ export function PhoneWorkspace() {
   if (tab === 'fichiers') content = <FileExplorer variant="phone" />;
   else if (tab === 'diff') content = <PhoneDiff />;
   else if (tab === 'git') content = <PhoneGit flow={git} />;
+  else if (tab === 'apercu') content = <PreviewPanel variant="phone" />;
   else
     content = (
       <>
@@ -215,6 +232,7 @@ export function PhoneWorkspace() {
           <ConnectionLostBanner context="workspace" nextRetryAt={live.nextRetryAt} onRetry={live.retryNow} serverName={ws.host} className="shrink-0 rounded-none" />
         ) : null}
         <ActionErrorBanner className="mx-4 mt-3 shrink-0" />
+        <UsageLimitBanner className="mx-4 mt-3 w-auto shrink-0" />
         {ws.url.view === 'terminal' ? <SessionTerminal variant="phone" /> : <Thread variant="phone" />}
       </>
     );
@@ -233,17 +251,19 @@ export function PhoneWorkspace() {
       >
         <div className="shrink-0 border-b border-border bg-bg px-4 pb-2.5">
           <TabsList variant="segmented" aria-label="Onglets du Workspace">
-            <TabsTrigger value="session">Session</TabsTrigger>
-            <TabsTrigger value="fichiers">Fichiers</TabsTrigger>
-            <TabsTrigger value="diff" {...(count > 0 ? { count } : {})}>
+            {/* Five equal tabs: tighter padding so they keep their labels at 360 px. */}
+            <TabsTrigger value="session" className="px-1">Session</TabsTrigger>
+            <TabsTrigger value="fichiers" className="px-1">Fichiers</TabsTrigger>
+            <TabsTrigger value="diff" className="px-1" {...(count > 0 ? { count } : {})}>
               Diff
             </TabsTrigger>
-            <TabsTrigger value="git">Git</TabsTrigger>
+            <TabsTrigger value="git" className="px-1">Git</TabsTrigger>
+            <TabsTrigger value="apercu" className="px-1">Aperçu</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent
           value={tab}
-          className={tab === 'session' || tab === 'fichiers' ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3'}
+          className={tab === 'session' || tab === 'fichiers' || tab === 'apercu' ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3'}
         >
           {content}
         </TabsContent>

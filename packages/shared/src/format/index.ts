@@ -42,6 +42,25 @@ export function formatTime(value: DateInput): string {
   );
 }
 
+/** « 15 h 00 » — a time of day written out (usage limit reset, scheduled resumption). */
+export function formatClock(value: DateInput): string {
+  const parts = new Intl.DateTimeFormat(LOCALE, { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(
+    toDate(value),
+  );
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${Number(get('hour'))} h ${get('minute')}`;
+}
+
+/** « 15 h 00 » today, « demain 9 h 30 », else « lun. 9 nov. 9 h 30 » (reset time of a usage limit). */
+export function formatClockDay(value: DateInput, now: DateInput = new Date()): string {
+  const d = toDate(value);
+  const diff = dayDiff(toDate(now), d);
+  if (diff === 0) return formatClock(d);
+  if (diff === 1) return `demain ${formatClock(d)}`;
+  const wd = new Intl.DateTimeFormat(LOCALE, { timeZone: TIME_ZONE, weekday: 'short' }).format(d);
+  return `${wd} ${formatShortDate(d, now)} ${formatClock(d)}`;
+}
+
 /** « 28 oct. » (adds the year when different from the reference year: « 28 oct. 2025 »). */
 export function formatShortDate(value: DateInput, now: DateInput = new Date()): string {
   const d = toDate(value);

@@ -96,6 +96,36 @@ actions du propriétaire : `docs/DEPLOY.md` §12 à §14. Écarts de chaque lot 
   OK ; Playwright par lot sur sa propre pile (accueil 12, sessions 19, projets 14, workspace 21, intégrations 15,
   paramètres 24, terminal 13, smoke + auth 20) ; captures 1440/390 comparées aux exports Figma.
 
+## Aperçu (6 novembre 2026)
+
+Site du serveur de développement d'un worktree dans le Workspace (onglet du panneau, vue agrandie `?vue=apercu`,
+onglet téléphone), servi par une origine séparée `PREVIEW_HOST` (même conteneur web, `src/proxy.ts`), passage de main
+signé à usage unique `POST /api/previews`, cookie `nuera_apercu` propre à l'hôte d'aperçu, relais runner
+`/v1/runs/:id/preview/*` limité au port détecté d'un `dev` vivant. Tests : runner `test/preview.test.ts`, web
+`server/preview/preview.test.ts`, `lib/preview.test.ts`, `proxy.test.ts`, e2e `apercu.spec.ts` (bureau + téléphone).
+Sécurité : `docs/SECURITY.md` §8 bis ; déploiement : `docs/DEPLOY.md` (domaine d'aperçu par environnement).
+
+Correctif (vrai `next dev`, cadre blanc sur iPhone) : l'hôte d'aperçu n'est plus relayé par un route handler mais par
+une réécriture externe de Next vers le runner (`server/preview/gate.ts`) : le Next de Nuera Dev ne traite plus les
+requêtes RSC du site prévisualisé (boucle de redirections `?_rsc=`, `x-nextjs-rewritten-path` faux), le WebSocket de
+rechargement à chaud traverse la chaîne (sans lui `next dev` 16 ne s'hydrate pas et recharge la page en boucle), le
+runner écrit les pages d'erreur et le script de position ; la barre d'outils signale un cadre resté sans page 15 s.
+Tests : e2e « un vrai next dev » (`apercu.spec.ts`), runner « direct mode » et WebSocket, `gate` (web).
+
+## Reprise automatique après la limite d'utilisation (lot Z1, 6 novembre 2026)
+
+Quand le CLI officiel s'arrête sur la limite de l'abonnement (`StopFailure` `rate_limit`, avis « 5-hour limit
+reached ∙ resets 3pm » du journal ou de l'écran, `resets_at` de la status line — rien d'autre, aucune estimation),
+le runner l'enregistre (`sessions.usage_limit`, migration `0006`) et, si l'option est active, tape l'instruction de
+reprise 2 min après la levée (ou `claude --resume` si le CLI a disparu) ; 5 tentatives au plus, levée inconnue : un
+essai toutes les 30 min pendant 6 h ; persistant au redémarrage ; annulé par une instruction, un arrêt, un archivage
+ou l'option coupée. Défaut de l'espace désactivé + « Instruction de reprise » (Paramètres › Claude Code), choix par
+session (`sessions.auto_resume`). Web : bandeau du Workspace, badge, menu « … », feuille téléphone, Sessions, Accueil,
+route `POST /api/sessions/[id]/auto-resume`, journal `session.auto_resume_*`. Tests : runner `usage-limit.test.ts`,
+`restricted.test.ts` ; db migrations ; web `settings.test.ts`, `sessions.test.ts`, `internal.test.ts`, isolation,
+`usage-limit.test.ts` ; e2e `reprise.spec.ts` (pile `reprise`, web 3640, bureau + téléphone) et
+`parcours-2-session-en-direct.spec.ts`. Détails : `docs/MULTICOMPTE.md` §14, lot Z1.
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :
@@ -108,6 +138,8 @@ actions du propriétaire : `docs/DEPLOY.md` §12 à §14. Écarts de chaque lot 
   `docs/SECURITY.md` §11.
 - Propriétaire : création de la GitHub App, connexion Claude Max, puis restriction de la base du serveur par défaut
   (`docs/DEPLOY.md` §14) et, pour chaque autre personne, un serveur supplémentaire (§13).
+- Aperçu : ajouter le domaine d'aperçu au service web et `PREVIEW_HOST` dans chaque environnement Coolify
+  (`docs/DEPLOY.md`) ; pas de rechargement à chaud (aucun WebSocket à travers un route handler).
 - À vérifier sur le serveur réel (Linux) : backend tmux (suite `tmux.test.ts`, adoption entre serveurs, session tmux
   lancée pour une autre ligne), `0005` appliquée en superutilisateur, hooks du CLI
   réel, `claude auth status --json` (docs/research/claude-code.md §15), images multi-comptes (DEPLOY §11).

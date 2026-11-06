@@ -1,8 +1,9 @@
 'use client';
 
-import { SessionStatusBadge } from '@/components/dev';
+import { SessionStatusBadge, usageLimitLabel } from '@/components/dev';
 import { Icon, type IconName } from '@/components/icons';
 import {
+  Badge,
   CompactButton,
   DropdownMenu,
   DropdownMenuContent,
@@ -21,6 +22,7 @@ import { useWorkspace } from '../WorkspaceContext';
 import { headerMeta, sessionDurationMs } from '../lib/thread';
 import { useSessionMenu } from './SessionActions';
 import { SessionSwitcherPopover } from './SessionSwitcher';
+import { useAutoResume } from '../session/UsageLimitBanner';
 
 function Chip({ icon, children, muted, title }: { icon: IconName; children: ReactNode; muted?: boolean; title?: string }) {
   return (
@@ -63,6 +65,8 @@ export function SessionHeader() {
   const { project, worktree } = ws.data;
   const now = useNow(30_000, ws.initialNow);
   const menu = useSessionMenu();
+  const auto = useAutoResume();
+  const limitLabel = usageLimitLabel(session.limit, now);
   const panelShown = ws.url.panel !== 'ferme' && !ws.url.review;
   const meta = headerMeta(session, ws.host, now);
   const commitDisabledReason =
@@ -84,6 +88,11 @@ export function SessionHeader() {
             {session.title}
           </h1>
           <SessionStatus className="shrink-0" />
+          {limitLabel ? (
+            <Badge tone="warn" icon="clock" className="shrink-0" data-testid="limite-entete">
+              {limitLabel}
+            </Badge>
+          ) : null}
         </div>
         <div className="flex h-[23px] min-w-0 items-center gap-2 overflow-hidden">
           <Chip icon="github" muted title={project.fullName}>
@@ -147,6 +156,16 @@ export function SessionHeader() {
               Arrêter la session
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuItem
+            icon="refresh"
+            role="menuitemcheckbox"
+            aria-checked={auto.enabled}
+            disabled={auto.disabled}
+            aside={<span className="shrink-0 font-sans text-app-12 text-muted">{auto.enabled ? 'activée' : 'désactivée'}</span>}
+            onSelect={() => void auto.setEnabled(!auto.enabled)}
+          >
+            Reprise automatique après la limite
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuLinkItem icon="projets" href={`/projets/${encodeURIComponent(project.id)}`}>
             Ouvrir le projet

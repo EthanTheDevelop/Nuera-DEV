@@ -1,6 +1,6 @@
 import 'server-only';
 import { projects, sessions } from '@nuera/db/schema';
-import type { SessionDto, SessionLaunchOptions } from '@nuera/shared/runner';
+import { parseUsageLimit, type AutoResumeOptions, type SessionDto, type SessionLaunchOptions } from '@nuera/shared/runner';
 import { and, eq, notInArray } from 'drizzle-orm';
 import {
   LIVE_STATUSES,
@@ -15,7 +15,7 @@ import { db } from '@/server/db';
 import { AppError, formatZodIssues } from '@/server/errors';
 import { buildSessionMcpConfig } from '@/server/mcp';
 import { RunnerError, isRunnerUnavailable } from '@/server/runner/client';
-import { getEffectiveSessionPolicy } from '@/server/settings';
+import { getEffectiveSessionPolicy, type EffectiveSessionPolicy } from '@/server/settings';
 import type { RequestContext } from '@/server/tenancy/context';
 import { auditIn, NOT_FOUND_MESSAGES, scopeOfSession, type ProjectScope, type SessionScope } from '@/server/tenancy/scope';
 import { assertCanDriveSession, readScopedProject, type ProjectRow } from './access';
@@ -45,6 +45,8 @@ export const SESSION_AUDIT_ACTIONS = {
   stop: 'session.stop',
   archive: 'session.archive',
   rename: 'session.rename',
+  autoResumeChanged: 'session.auto_resume_changed',
+  resumeNow: 'session.auto_resume_now',
 } as const;
 
 const PERMISSION_LABELS: Record<string, string> = {
@@ -69,6 +71,8 @@ async function readScopedSession(ctx: SessionActorContext, sessionId: string) {
       status: sessions.status,
       projectId: sessions.projectId,
       archivedAt: sessions.archivedAt,
+      autoResume: sessions.autoResume,
+      usageLimit: sessions.usageLimit,
       projectName: projects.name,
     })
     .from(sessions)
@@ -89,7 +93,12 @@ async function readScopedSession(ctx: SessionActorContext, sessionId: string) {
  * (`environments`). A launch value would only be kept in `launch.json` as a stricter cap that a
  * later raise of the server's limits could not lift.
  */
-export async function buildLaunchOptions(ctx: Pick<RequestContext, 'user'>, scope: Pick<ProjectScope, 'projectId' | 'spaceId'>): Promise<SessionLaunchOptions> {
+export async function buildLaunchOptions(
+  ctx: Pick<RequestContext, 'user'>,
+  scope: Pick<ProjectScope, 'projectId' | 'spaceId'>,
+  /** « Reprise automatique » chosen for the session (`sessions.auto_resume`); null/absent = the space default. */
+  session: { autoResume?: boolean | null } = {},
+): Promise<SessionLaunchOptions> {
   const [policy, mcp, projectEnv, gitIdentity] = await Promise.all([
     getEffectiveSessionPolicy(scope.spaceId),
     buildSessionMcpConfig(scope.projectId),
@@ -104,7 +113,13 @@ export async function buildLaunchOptions(ctx: Pick<RequestContext, 'user'>, scop
     permissionWaitSeconds: policy.permissionWaitSeconds,
     blockBypassPermissions: policy.blockBypassPermissions,
     gitIdentity,
+    autoResume: autoResumeOptions(policy, session.autoResume),
   };
+}
+
+/** Effective « Reprise automatique après la limite d'utilisation » of a session, for its runner. */
+function autoResumeOptions(policy: Pick<EffectiveSessionPolicy, 'autoResumeAfterLimit' | 'autoResumeInstruction'>, override: boolean | null | undefined): AutoResumeOptions {
+  return { enabled: override ?? policy.autoResumeAfterLimit, instruction: policy.autoResumeInstruction };
 }
 
 type RunnerWorktreeSpec = { mode: 'new'; branch: string; base?: string } | { mode: 'existing'; worktreeId: string } | { mode: 'primary' };
@@ -253,7 +268,7 @@ export async function startNewSession(ctx: SessionActorContext, sessionId: strin
     throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus démarrer.', { untouched: "L'historique reste lisible." });
   }
   if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
-  const launch = await buildLaunchOptions(ctx, scope);
+  const launch = await buildLaunchOptions(ctx, scope, row);
   return scope.runner.startSession({ params: { sessionId: scope.sessionId }, body: { launch } });
 }
 
@@ -280,7 +295,7 @@ export async function resumeSession(ctx: SessionActorContext, sessionId: string)
   if (scope.projectArchivedAt) throw new AppError('NOT_FOUND', 'Projet introuvable.');
   const current = await scope.runner.getSession({ params: { sessionId: scope.sessionId } });
   if (current.live) return actionResult(ctx, scope);
-  const launch = await buildLaunchOptions(ctx, scope);
+  const launch = await buildLaunchOptions(ctx, scope, row);
   const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch } });
   await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.resume,
@@ -335,7 +350,8 @@ export async function archiveSession(ctx: SessionActorContext, sessionId: string
   }
   const [updated] = await db
     .update(sessions)
-    .set({ status: 'archived', archivedAt: new Date() })
+    // An archived session never resumes by itself: a limit in play is dropped with it.
+    .set({ status: 'archived', archivedAt: new Date(), usageLimit: null })
     .where(
       and(
         eq(sessions.id, scope.sessionId),
@@ -395,5 +411,69 @@ export async function renameSession(ctx: SessionActorContext, sessionId: string,
     });
     await announceStatus(scope);
   }
+  return actionResult(ctx, scope);
+}
+
+/**
+ * « Reprise automatique après la limite d'utilisation » of one session (« … » menu, banner switch):
+ * `true` / `false` for this session only, `null` = back to the space default. The runner of its
+ * server gets the effective value first (it reschedules or cancels a limit in play); only then is
+ * the choice written. Audited `session.auto_resume_changed`.
+ */
+export async function setSessionAutoResume(ctx: SessionActorContext, sessionId: string, enabled: boolean | null): Promise<SessionActionResult> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  if (row.status === 'archived' || row.archivedAt) {
+    throw new AppError('CONFLICT', 'Session archivée : elle ne reprend plus.', { untouched: 'Réglage inchangé.' });
+  }
+  const policy = await getEffectiveSessionPolicy(scope.spaceId);
+  const effective = autoResumeOptions(policy, enabled);
+  await scope.runner.setSessionAutoResume({ params: { sessionId: scope.sessionId }, body: effective }, { timeoutMs: 10_000 });
+  if (enabled !== row.autoResume) {
+    await db
+      .update(sessions)
+      .set({ autoResume: enabled })
+      .where(and(eq(sessions.id, scope.sessionId), eq(sessions.environmentId, scope.environmentId)));
+  }
+  const choice = enabled === null ? `défaut de l'espace (${effective.enabled ? 'activée' : 'désactivée'})` : enabled ? 'activée' : 'désactivée';
+  await auditIn(ctx, {
+    action: SESSION_AUDIT_ACTIONS.autoResumeChanged,
+    summary: `reprise automatique après la limite : ${choice} · « ${row.title} »`,
+    targetType: 'session',
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
+    metadata: { projectId: row.projectId, from: row.autoResume, to: enabled, effective: effective.enabled },
+  });
+  return actionResult(ctx, scope);
+}
+
+/**
+ * « Reprendre maintenant » (usage-limit banner): the owner does not wait for the scheduled time —
+ * the instruction of reprise is typed now like any instruction of the owner (a CLI gone is resumed
+ * with `claude --resume` first), which cancels the schedule. The limit may still be there: the CLI
+ * then says so again. Audited `session.auto_resume_now`.
+ */
+export async function resumeAfterLimitNow(
+  ctx: SessionActorContext,
+  sessionId: string,
+  send: (text: string) => Promise<unknown>,
+): Promise<SessionActionResult> {
+  const { scope, row } = await readScopedSession(ctx, sessionId);
+  if (row.status === 'archived' || row.archivedAt) {
+    throw new AppError('CONFLICT', 'Session archivée : elle ne reprend plus.', { untouched: "Aucune instruction n'a été envoyée." });
+  }
+  const limit = parseUsageLimit(row.usageLimit);
+  if (!limit?.active) {
+    throw new AppError('CONFLICT', "Aucune limite d'utilisation n'arrête cette session.", { untouched: "Aucune instruction n'a été envoyée." });
+  }
+  const policy = await getEffectiveSessionPolicy(scope.spaceId);
+  await send(policy.autoResumeInstruction);
+  await auditIn(ctx, {
+    action: SESSION_AUDIT_ACTIONS.resumeNow,
+    summary: `session reprise après la limite d'utilisation (sans attendre) : « ${row.title} »`,
+    targetType: 'session',
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
+    metadata: { projectId: row.projectId, resetsAt: limit.resetsAt, scheduledAt: limit.autoResume?.nextAttemptAt ?? null },
+  });
   return actionResult(ctx, scope);
 }

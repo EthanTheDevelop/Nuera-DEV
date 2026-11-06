@@ -148,6 +148,13 @@ describe('Composer', () => {
     expect(html(<Composer state="ready" modeLabel={MODE} onSubmit={noop} />)).not.toContain('Joindre un fichier');
   });
 
+  it('has a dictation microphone, inactive until the browser is checked (SSR)', () => {
+    const out = html(<Composer state="ready" modeLabel={MODE} onSubmit={noop} />);
+    expect(out).toContain('aria-label="Dicter l&#x27;instruction"');
+    expect(out).toContain('aria-pressed="false"');
+    expect(out).toContain('data-dictation="pending"');
+  });
+
   it('names the hints with their visible text (WCAG 2.5.3)', () => {
     const out = html(<Composer state="ready" modeLabel={MODE} onSubmit={noop} />);
     expect(out).toContain('aria-label="/ commandes : ');

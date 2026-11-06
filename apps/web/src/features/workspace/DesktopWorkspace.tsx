@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { CommitDialog } from './commit/CommitDialog';
 import { SessionHeader } from './header/SessionHeader';
 import { ContextPanel } from './panel/ContextPanel';
+import { PreviewPanel } from './preview/PreviewPanel';
 import { ReviewMode } from './review/ReviewMode';
 import { SessionColumn } from './session/SessionColumn';
 import { useWorkspace } from './WorkspaceContext';
@@ -28,7 +29,11 @@ function useEscapeInterrupts() {
   }, [canInterrupt, interrupt, url.view]);
 }
 
-/** D05 desktop composition (1440): header, session column + 460 px context panel, or W4 review. */
+/**
+ * D05 desktop composition (1440): header, session column + 460 px context panel, or W4 review.
+ * `?vue=apercu` (« Inverser ») swaps them: the preview in the middle, the conversation and composer in the
+ * 460 px column, so the owner keeps prompting while looking at the site.
+ */
 export function DesktopWorkspace() {
   const ws = useWorkspace();
   useEscapeInterrupts();
@@ -41,8 +46,20 @@ export function DesktopWorkspace() {
           <ReviewMode />
         ) : (
           <>
-            <SessionColumn />
-            {panelShown ? <ContextPanel /> : null}
+            {ws.url.view === 'apercu' ? (
+              // « Inverser » : le rendu au centre, la conversation (et la saisie) à droite, à la place du panneau.
+              <>
+                <PreviewPanel variant="main" />
+                <div className="flex w-[460px] min-w-0 shrink-0 border-l border-border">
+                  <SessionColumn compact />
+                </div>
+              </>
+            ) : (
+              <>
+                <SessionColumn />
+                {panelShown ? <ContextPanel /> : null}
+              </>
+            )}
           </>
         )}
       </div>

@@ -20,6 +20,7 @@ import { defaultTmuxSocket, PtyBackend, TmuxBackend, type SessionBackend } from 
 import { DiskUsage } from './system/disk-usage';
 import { SessionEventStore } from './sessions/event-store';
 import { SessionManager } from './sessions/manager';
+import { ComposerTools } from './sessions/composer-tools';
 import { diskUsage, MetricsCollector } from './system/metrics';
 import { Scheduler } from './system/scheduler';
 import { UptimeTracker } from './system/uptime';
@@ -42,6 +43,8 @@ export interface RunnerServices {
   store: SessionEventStore;
   terminals: TerminalManager;
   sessions: SessionManager;
+  /** Composer « Joindre » and skills of the palette (disk side). */
+  composer: ComposerTools;
   runs: RunManager;
   claude: ClaudeCli;
   metrics: MetricsCollector;
@@ -163,6 +166,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     dataDir: paths.dataDir,
     claudeBin: config.claudeBin,
     claudeConfigDir: config.claudeConfigDir,
+    autoResume: config.autoResume,
     hookBaseUrl: () => `http://127.0.0.1:${hookPort.value}`,
     onAuthProblem: () => {
       claude.invalidate();
@@ -170,6 +174,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     },
   });
   sessionsRef = sessions;
+  const composer = new ComposerTools({ db, environment, git, gitCli, paths, claudeConfigDir: config.claudeConfigDir });
   const runs = new RunManager({ db, environment, bus, git, terminals, logger, claudeConfigDir: config.claudeConfigDir });
   runsRef = runs;
 
@@ -271,6 +276,7 @@ export async function createServices(config: RunnerConfig, options: { logger: Lo
     git,
     clone,
     files,
+    composer,
     ops,
     store,
     terminals,

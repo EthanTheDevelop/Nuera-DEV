@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import type { RunnerConfig } from './config';
 import { RunnerFatalError } from './environment';
 import { installBearerAuth, installEnvironmentGuard, installErrorHandling } from './http/route';
+import { registerPreviewProxy } from './preview/proxy';
 import { registerRoutes } from './routes';
 import { createServices, type RunnerServices } from './services';
 import { buildHookServer } from './sessions/hook-server';
@@ -58,6 +59,8 @@ export async function buildRunner(config: RunnerConfig, options: BuildRunnerOpti
   installBearerAuth(api, config.token);
   installEnvironmentGuard(api, environment);
   registerRoutes(api, services);
+  // « Aperçu »: raw relay to the dev server of a live `dev` run (any method, streamed bodies).
+  registerPreviewProxy(api, { runs: services.runs, logger, token: config.token, environment });
 
   const hooks = buildHookServer(services.sessions, logger);
 

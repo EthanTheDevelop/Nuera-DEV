@@ -156,10 +156,11 @@ compte. Chaque fonction de `server/admin` revérifie le rôle de l'acteur qu'ell
   Traefik/Coolify pour écraser `X-Real-IP`. **Lieu** : seulement avec un en-tête de confiance (`TRUSTED_CITY_HEADER`) ;
   sinon l'IP. Les administrateurs voient les IP de connexion de tous les comptes (journal d'instance, mention dans
   Paramètres).
-- **En-têtes HTTP** (`next.config.ts`) : CSP (`default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`,
+- **En-têtes HTTP** (`next.config.ts`, `src/lib/security-headers.ts` ; `frame-src` de l'aperçu ajouté par `src/proxy.ts`, §8 bis) : CSP (`default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`,
   `base-uri 'self'`, `form-action 'self'` + github.com pour le flux manifest ; `'unsafe-eval'` hors production
   seulement), `X-Frame-Options: DENY`, HSTS 2 ans en production, `Referrer-Policy: strict-origin-when-cross-origin`,
-  `Permissions-Policy`, `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy: same-origin`, pas de
+  `Permissions-Policy` (`microphone=(self)` pour la dictée des instructions, reconnaissance vocale du navigateur ;
+  `microphone=()` sur l'hôte d'aperçu, posé par `src/proxy.ts` ; caméra, géolocalisation, paiement coupés), `X-Content-Type-Options: nosniff`, `Cross-Origin-Opener-Policy: same-origin`, pas de
   `X-Powered-By`.
 
 ## 5. Secrets et rotation de `APP_ENCRYPTION_KEY`
@@ -313,6 +314,62 @@ des notifications, thème. Les décisions d'autorisation prises **dans le termin
   appeler par le web (conteneur le plus privilégié du réseau interne) une adresse interne de son choix, avec le
   statut en retour.
 
+## 8 bis. Aperçu (`PREVIEW_HOST`)
+
+Le site en développement d'un worktree (serveur `dev` du projet) s'affiche dans le Workspace. Son code n'est **pas de
+confiance** (Claude ou le dépôt l'écrivent) : il ne s'exécute jamais sur l'origine de l'application.
+
+- **Origine séparée** : `PREVIEW_HOST` (ex. `nuera-dev-apercu.perso.nuera.studio`), servie par le même conteneur web.
+  `src/proxy.ts` (matcher : toutes les requêtes, URL et en-têtes bruts : `skipProxyUrlNormalize`) envoie **toute**
+  requête de cet hôte, après la porte `server/preview/gate.ts`, au runner du serveur du lancement par une
+  **réécriture externe** de Next (Next relaie lui-même la requête et la réponse en flux, WebSocket compris, sans jamais
+  la traiter comme l'une des siennes : ni validation `?_rsc=`, ni en-têtes `x-nextjs-*`, ni fusion d'en-têtes), ou à
+  l'entrée (`/__nuera/entree`) ; le reste de `/__nuera/*` répond 404 ; aucune page ni route de l'application n'y est
+  joignable, et la route `/api/apercu/entree` répond 404 sur l'hôte de l'application (le route handler revérifie
+  l'hôte). Le jeton du runner voyage dans les en-têtes de **requête** posés par le proxy (jamais renvoyés au
+  navigateur) ; le runner remplace `x-middleware-rewrite` (adresse du runner, id du lancement) par le chemin demandé.
+  Vide : fonction désactivée, raison affichée dans le Workspace.
+- **Passage de main** : `POST /api/previews { runId, path? }` (`apiRoute` : compte + 2FA, Origin, Zod, 120 / 10 min,
+  cloisonnement `scopeOfRun` : un lancement d'un autre espace reçoit le 404 « Lancement introuvable. » sans appel au
+  runner) vérifie un lancement `dev` vivant avec port détecté et rend `https://PREVIEW_HOST/__nuera/entree?jeton=…`.
+  Jeton HMAC-SHA256 (clé dérivée par HKDF de `BETTER_AUTH_SECRET`, distincte de celle du cookie), 60 s, **usage
+  unique** (nonce retenu en mémoire du processus web), portant le compte, son accès web (ligne `session` de Better
+  Auth), le lancement et le premier chemin. L'entrée pose le cookie `nuera_apercu` (HttpOnly, `Path=/`, sans `Domain`
+  donc limité à l'hôte d'aperçu, 12 h, signé, compte + accès + lancement) puis redirige (303) ; `Referrer-Policy:
+  no-referrer` sur l'entrée.
+- **Chaque requête relayée** (porte du proxy) revérifie le cookie, puis le compte (existant, ni désactivé ni supprimé, 2FA si exigée),
+  l'accès web qui a ouvert l'aperçu (ligne présente, non expirée, politique d'inactivité et de durée : se déconnecter
+  ou révoquer l'accès ferme l'aperçu), la portée du lancement dans l'espace du compte et son type `dev` — verdict
+  positif gardé 5 s (une page charge des dizaines de fichiers), refus jamais gardés ; le runner vérifie à chaque
+  requête que le lancement est un `dev` **vivant de son serveur** avec un port détecté. Un WebSocket n'est accepté que
+  si son `Origin` est l'origine d'aperçu (un autre site porterait le cookie en `SameSite=None`). Runner injoignable
+  (sonde `GET /v1/health`, verdict positif gardé 5 s ; jeton suivant essayé pendant une rotation) : page « Aperçu
+  indisponible » au lieu de l'erreur nue de Next.
+- **Runner** (`/v1/runs/:runId/preview/*`, toute méthode, Bearer du serveur) : cible toujours
+  `127.0.0.1` (ou `::1`) **et le port de ce lancement** — la requête ne choisit que la méthode, le chemin (absolu,
+  jamais `//hôte`, sans espace ni caractère de contrôle) et le corps ; corps transmis en flux dans les deux sens
+  (10 Mo par requête, 256 Mo par réponse, 60 s sans octet, 10 min par échange) ; en-têtes hop-by-hop, `Host`,
+  `Authorization` du saut, `X-Forwarded-*`, `x-nuera-*` et cookies de Nuera Dev (`nuera.*`, `__Secure-nuera.*`,
+  `nuera_apercu`) jamais transmis ; `Host: localhost:<port>`, `Origin`/`Referer` de l'aperçu réécrits vers ceux du
+  serveur de développement, `Accept-Encoding: identity` ; réponse sans `X-Frame-Options`, CSP, HSTS ni `Alt-Svc` du
+  serveur de développement, `Location` vers lui rendue relative, `Set-Cookie` privé de `Domain`. Mode « direct »
+  (`x-nuera-preview-app-origin`, posé par la porte) : erreurs du runner en page française (jamais de JSON dans le
+  cadre), script de position ajouté aux pages HTML (`Content-Length` retiré), pas de marqueur `x-nuera-preview`.
+  **WebSocket** (`Upgrade: websocket` sur le même chemin, rechargement à chaud : `next dev` ne s'hydrate pas sans
+  lui et recharge la page en boucle) : mêmes contrôles (Bearer, serveur en service, lancement `dev` vivant, port
+  de boucle locale), octets relayés dans les deux sens, 1 h au plus, fermés à l'arrêt du runner.
+- **Encadrement** : réponses de l'hôte d'aperçu en `Content-Security-Policy: frame-ancestors <origine d'APP_URL>`
+  (posé par `src/proxy.ts`, prioritaire sur les en-têtes de `next.config.ts` ; `X-Frame-Options` remplacé par
+  `ALLOW-FROM <APP_URL>`, ignoré des navigateurs en présence de `frame-ancestors`) ; pages de l'application en
+  `frame-src <origine d'aperçu>` (CSP posée à l'exécution par `src/proxy.ts`, `next.config.ts` étant figé au build).
+  L'iframe : `sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads"`
+  (`allow-same-origin` = l'origine d'aperçu, distincte de l'application) ; elle ne peut pas naviguer la page parente.
+  Les pages HTML reçoivent un script d'une ligne qui publie leur chemin à l'application seule (`postMessage` vers
+  l'origine d'`APP_URL`) ; le Workspace n'accepte que les messages de son iframe et de l'origine d'aperçu.
+- **Cookie et site** : avec un hôte d'aperçu du même site que l'application (sous-domaines d'un même domaine, le cas
+  de production), le cookie est `SameSite=Lax`, `Secure` ; sinon (pile de test : `localhost` / `127.0.0.1`)
+  `SameSite=None; Secure`, ce qui suppose que le navigateur accepte les cookies tiers.
+
 ## 9. Notifications et push
 
 Une notification par destinataire (`createNotification(input, { spaceId?, userIds })`) : destinataires d'un événement
@@ -377,4 +434,6 @@ connectez-vous avec ce compte pour l'ouvrir. » ; « Se déconnecter » y ramèn
 | Diffusion du runner | Le runner republie `notification.created` sur son flux global ; le navigateur ne lit que le canal web du compte (seq 0) et l'ignore. Les destinataires sont de toute façon les membres de l'espace du serveur. | Suite : retirer cette diffusion (les suites `sessions.test.ts` et `http.test.ts` l'observent). |
 | Terminaux sans propriétaire | Un terminal ouvert par un runner plus ancien (sans `ownerUserId`) sur le serveur de l'espace est accepté : repose sur « un serveur = une personne ». | — |
 | Dédoublonnage des notifications | L'unicité `(user_id, dedup_key)` ignore l'espace : deux événements de même clé venant de deux portées se fusionnent (rare : un serveur non attribué ne fait tourner aucune session). | Les alertes d'instance nomment le serveur dans leur clé. |
+| Aperçu : même site | L'hôte d'aperçu partage le domaine de l'application (`*.perso.nuera.studio`) : le code prévisualisé peut écrire des cookies sur le domaine parent (`document.cookie` avec `Domain=`) que l'application recevrait (fixation ou effacement d'un cookie ; les cookies de session restent signés et vérifiés en base) ; les requêtes de l'aperçu vers l'application sont « same-site » (cookies `SameSite=Lax` envoyés), mais toute mutation exige l'Origin d'`APP_URL`. Les `Set-Cookie` du serveur de développement sont privés de `Domain`. | Prendre un domaine d'aperçu d'un autre domaine enregistrable pour une isolation complète (le cookie passe alors en `SameSite=None`) ; suite : préfixe `__Host-` pour les cookies de session de l'application. |
+| Aperçu : un seul processus web | Nonces des jetons à usage unique et verdicts d'accès (5 s) en mémoire. | Garder `web` à une réplique (comme ci-dessus). |
 | Tests | La suite tmux (adoption entre serveurs et refus d'une session tmux lancée pour une autre ligne compris) ne tourne que sous Linux ; le service worker et la garde multi-onglets ne sont testés que comme logique pure ; aucun essai contre les vrais GitHub, Coolify, Claude. | À exécuter sur le serveur réel avant la mise en production (`docs/DEPLOY.md` §11). |

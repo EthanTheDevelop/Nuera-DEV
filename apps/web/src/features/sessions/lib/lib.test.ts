@@ -31,6 +31,8 @@ function item(partial: Partial<SessionListItem> & { id: string }): SessionListIt
     lastActivityAt: null,
     archivedAt: null,
     durationMs: null,
+    limit: null,
+    autoResume: null,
     ...partial,
   };
 }
@@ -123,6 +125,16 @@ describe('view', () => {
     expect(sessionHref(items[1]!)).toBe('/workspace/devis-pdf#demande-perm');
     expect(sessionHref(items[0]!)).toBe('/workspace/crm-core');
     expect(cardActivity(item({ id: 'n', status: 'new' }))).toBe('Pas encore démarrée · aucune instruction envoyée');
+    const limit = {
+      active: true,
+      detectedAt: '2026-11-04T13:00:00Z',
+      resetsAt: '2026-11-04T14:00:00.000Z',
+      source: 'hook' as const,
+      window: 'five_hour' as const,
+      message: null,
+      autoResume: { enabled: true, nextAttemptAt: '2026-11-04T14:02:00.000Z', mode: 'reset' as const, attempts: 0, maxAttempts: 5, lastAttemptAt: null, giveUpAt: null, outcome: 'scheduled' as const },
+    };
+    expect(cardActivity(item({ id: 'l', status: 'waiting_input', limit, lastInstruction: 'Écris les tests' }), '2026-11-04T13:01:00Z')).toBe('Limite atteinte · reprise à 15 h 02');
   });
 
   it('maps history actions', () => {

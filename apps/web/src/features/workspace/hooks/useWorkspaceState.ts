@@ -3,7 +3,7 @@
 import type { RunnerEvent } from '@nuera/shared/events';
 import type { ChangesResponse, PermissionRequestDto, SessionEventItem } from '@nuera/shared/runner';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
 import { fetchChanges, fetchEvents, fetchWorktreeStatus } from '../api';
 import type { WorkspaceBranchStatus, WorkspaceData, WorkspacePullRequest, WorkspaceSession } from '../lib/contract';
@@ -124,6 +124,8 @@ export interface WorkspaceController {
   dispatch: (action: Action) => void;
   reloadThread: () => Promise<void>;
   refreshChanges: () => void;
+  /** Increments each time one of Claude's file-writing tools finishes (« Aperçu » auto-reload). */
+  claudeWrites: number;
 }
 
 /**
@@ -180,6 +182,7 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
     [],
   );
 
+  const [claudeWrites, setClaudeWrites] = useState(0);
   const reloading = useRef<Promise<void> | null>(null);
   const reloadThread = useCallback(
     async (afterVersion = 0) => {
@@ -220,7 +223,10 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
         case 'session.event':
           if (event.data.sessionId !== sessionId) return;
           dispatch({ type: 'items', items: [event.data.item] });
-          if (changesWorktree(event.data.item)) refreshChanges();
+          if (changesWorktree(event.data.item)) {
+            refreshChanges();
+            setClaudeWrites((n) => n + 1);
+          }
           break;
         case 'session.status':
           if (event.data.sessionId !== sessionId) return;
@@ -279,6 +285,7 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
     dispatch,
     reloadThread: () => reloadThread(0),
     refreshChanges,
+    claudeWrites,
   };
 }
 

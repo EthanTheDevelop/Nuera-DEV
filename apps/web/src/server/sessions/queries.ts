@@ -1,6 +1,6 @@
 import 'server-only';
 import { permissionRequests, projects, sessionEvents, sessions, worktrees } from '@nuera/db/schema';
-import type { SessionDto } from '@nuera/shared/runner';
+import { parseUsageLimit, type SessionDto } from '@nuera/shared/runner';
 import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   ACTIVE_STATUSES,
@@ -54,6 +54,8 @@ const columns = {
   currentActivity: sessions.currentActivity,
   lastInstruction: sessions.lastInstruction,
   errorMessage: sessions.errorMessage,
+  usageLimit: sessions.usageLimit,
+  autoResume: sessions.autoResume,
   planDone: sessions.planDone,
   planTotal: sessions.planTotal,
   transcriptPath: sessions.transcriptPath,
@@ -89,6 +91,8 @@ export type SessionRow = {
   currentActivity: string | null;
   lastInstruction: string | null;
   errorMessage: string | null;
+  usageLimit: Record<string, unknown> | null;
+  autoResume: boolean | null;
   planDone: number | null;
   planTotal: number | null;
   transcriptPath: string | null;
@@ -201,6 +205,9 @@ export function toListItem(
     lastActivityAt: dto?.lastActivityAt ?? iso(row.lastActivityAt),
     archivedAt: iso(row.archivedAt),
     durationMs,
+    // An archived session has no limit in play any more (its resumption is cancelled).
+    limit: status === 'archived' ? null : dto && dto.limit !== undefined ? dto.limit : parseUsageLimit(row.usageLimit),
+    autoResume: row.autoResume,
   };
 }
 

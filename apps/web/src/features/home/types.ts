@@ -6,6 +6,7 @@
  */
 import type { PermissionMode, SessionStatus, SyncState } from '@nuera/db';
 import type { ClaudeState, ServerAvailability } from '@/components/shell/types';
+import type { UsageLimit } from '@nuera/shared/runner';
 
 export type { ClaudeState, ServerAvailability, SessionStatus };
 
@@ -83,6 +84,8 @@ export interface HomeSession {
   lastActivityAt: string | null;
   /** Pending permission request of this session (oldest first), with its target. */
   pendingPermission: HomePendingPermission | null;
+  /** Stopped on the subscription usage limit (« Limite atteinte · reprise à 15 h 02 »), null = none. */
+  limit: UsageLimit | null;
 }
 
 export interface HomeSessions {

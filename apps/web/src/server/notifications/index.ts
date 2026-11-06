@@ -41,6 +41,8 @@ export const NOTIFICATION_KINDS = [
   'session_finished',
   'session_failed',
   'session_interrupted',
+  'session_usage_limit',
+  'session_auto_resumed',
   'operation_failed',
   'operation_succeeded',
   'integration_expiring',

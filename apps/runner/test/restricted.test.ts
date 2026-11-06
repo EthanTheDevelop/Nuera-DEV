@@ -233,6 +233,28 @@ describe.skipIf(!dbReady)('restricted database role of a server (grants and RLS 
     }
   }, 1_200_000);
 
+  it('records a usage-limit stop and its automatic resumption (sessions.usage_limit, 0006)', async () => {
+    const created = await call('POST', '/v1/sessions', {
+      projectId,
+      title: 'Limite restreinte',
+      worktree: { mode: 'new', branch: 'feature/limite-restreinte' },
+      launch: { autoResume: { enabled: true } },
+    });
+    expect(created.statusCode).toBe(200);
+    const id = (created.json() as SessionDto).id;
+    expect((await call('POST', `/v1/sessions/${id}/instruction`, { text: 'scenario:limit:900' })).statusCode).toBe(200);
+    const limited = await waitFor(async () => {
+      const s = (await call('GET', `/v1/sessions/${id}`)).json() as SessionDto;
+      return s.limit?.active && s.limit.autoResume?.outcome === 'scheduled' ? s : null;
+    }, { timeoutMs: 120_000, intervalMs: 300, label: 'limite enregistrée' });
+    expect(limited.errorCode).toBe('rate_limit');
+    const off = await call('POST', `/v1/sessions/${id}/auto-resume`, { enabled: false });
+    expect(off.statusCode).toBe(200);
+    expect((off.json() as SessionDto).limit?.autoResume).toMatchObject({ enabled: false, outcome: 'off' });
+    expect((await call('POST', `/v1/sessions/${id}/stop`, { force: true })).statusCode).toBe(200);
+    expect((await admin.select({ usageLimit: sessions.usageLimit }).from(sessions).where(eq(sessions.id, id)))[0]!.usageLimit).toBeNull();
+  }, 300_000);
+
   it('refuses a session id already taken (on its server or another one) before creating any worktree', async () => {
     const [foreign] = await admin
       .insert(sessions)

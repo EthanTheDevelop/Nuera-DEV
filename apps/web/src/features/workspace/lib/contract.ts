@@ -11,6 +11,7 @@ import type {
   GitStatus,
   PermissionRequestDto,
   SessionEventItem,
+  UsageLimit,
 } from '@nuera/shared/runner';
 import { isSafeRelativePath, isValidBranchName } from '@nuera/shared/paths';
 import { z } from 'zod';
@@ -52,6 +53,10 @@ export interface WorkspaceSession {
   endedAt: string | null;
   lastActivityAt: string | null;
   createdAt: string;
+  /** Stopped on the subscription usage limit and its automatic resumption (runner); null = none. */
+  limit: UsageLimit | null;
+  /** « Reprise automatique après la limite d'utilisation »: this session's choice (null = the space's). */
+  autoResume: { override: boolean | null; spaceDefault: boolean };
 }
 
 export interface WorkspaceProject {
@@ -143,6 +148,8 @@ export interface WorkspaceData {
   author: { name: string; email: string };
   /** Server holding the session (« VPS-3 »): where its CLI lives. */
   environment: { id: string; name: string };
+  /** « Aperçu »: origin of the preview host, or why the preview is off (PREVIEW_HOST empty…). */
+  preview: { enabled: true; origin: string } | { enabled: false; reason: string };
   generatedAt: string;
 }
 
@@ -269,13 +276,13 @@ export type { ChangesResponse, FileContent, FileDiff, GitStatus, PermissionReque
 // URL state (overview.md §6)
 // ---------------------------------------------------------------------------------------------
 
-export const VIEW_VALUES = ['conversation', 'terminal'] as const;
+export const VIEW_VALUES = ['conversation', 'terminal', 'apercu'] as const;
 export type WorkspaceView = (typeof VIEW_VALUES)[number];
 
-export const PANEL_VALUES = ['fichiers', 'modifications', 'tests', 'terminal', 'projet', 'ferme'] as const;
+export const PANEL_VALUES = ['fichiers', 'modifications', 'tests', 'apercu', 'terminal', 'projet', 'ferme'] as const;
 export type WorkspacePanel = (typeof PANEL_VALUES)[number];
 
-export const PHONE_TAB_VALUES = ['session', 'fichiers', 'diff', 'git'] as const;
+export const PHONE_TAB_VALUES = ['session', 'fichiers', 'diff', 'git', 'apercu'] as const;
 export type WorkspacePhoneTab = (typeof PHONE_TAB_VALUES)[number];
 
 export const DIFF_LAYOUT_VALUES = ['unifie', 'cote-a-cote'] as const;

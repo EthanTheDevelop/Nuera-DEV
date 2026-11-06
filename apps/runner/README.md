@@ -35,6 +35,8 @@ pnpm --filter @nuera/runner typecheck
 | `NUERA_CLAUDE_BIN` | `claude` du `PATH` | Binaire officiel. Un chemin `.mjs` est lancé avec Node : **réservé aux tests** (faux CLI). |
 | `NUERA_GIT_REMOTE_BASE` | `https://github.com/` | Base des URL Git (`<base><owner>/<repo>.git`). Les tests pointent vers des dépôts nus locaux. |
 | `NUERA_SCHEDULER` | `1` (hors tests) | Tâches périodiques (disponibilité, fetch). Le battement du serveur tourne même à `0`. |
+| `NUERA_AUTO_RESUME_MARGIN_SECONDS` | `120` | Reprise automatique après la limite d'utilisation : délai après l'heure de levée annoncée par le CLI (la pile de test met `2`). |
+| `NUERA_AUTO_RESUME_RETRY_SECONDS` | `1800` | Levée inconnue : intervalle entre deux essais (pendant 6 h au plus). |
 | `LOG_LEVEL` | `info` | pino (en-têtes d'autorisation et jetons masqués). |
 
 En développement, le `.env` de la racine (précédé de `NUERA_ENV_FILE` s'il est défini) est chargé sans écraser les
@@ -141,8 +143,9 @@ Toutes exigent le Bearer et valident leurs entrées avec Zod. **Cloisonnement** 
 | Fichiers | `GET /worktrees/:id/tree?path=\|file?path=`, `GET\|PUT /projects/:projectId/claude-md` |
 | Opérations | `GET /operations/:id`, `GET /operations/:id/stream` (SSE) |
 | Terminaux | `POST /terminals`, `GET /terminals`, `GET /terminals/:id`, `GET /terminals/:id/stream` (SSE), `POST …/input\|resize`, `DELETE /terminals/:id` |
-| Sessions | `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `POST …/start\|resume\|instruction\|interrupt\|stop`, `GET …/events?afterVersion=`, `GET …/stream` (SSE), `GET …/terminal`, `POST /permissions/:id/decision` |
+| Sessions | `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `POST …/start\|resume\|instruction\|interrupt\|stop\|announce\|auto-resume`, `GET …/events?afterVersion=`, `GET …/stream` (SSE), `GET …/terminal`, `POST /permissions/:id/decision` |
 | Processus | `POST /runs`, `GET /runs/:id`, `GET /runs/:id/stream` (SSE), `DELETE /runs/:id` |
+| Aperçu | `<toute méthode> /runs/:id/preview/*` — relais brut vers le serveur de développement du lancement (hors `RUNNER_ROUTES`, contrat `RUNNER_PREVIEW_ROUTE`) |
 | CLI Claude | `GET /claude/status?refresh=`, `POST /claude/mcp/sync`, `GET /claude/mcp/:name` |
 
 Écoute locale (127.0.0.1:`RUNNER_HOOK_PORT`, jeton de session en Bearer) : `POST /internal/hooks/:sessionId`,
@@ -267,6 +270,21 @@ client recharge la ressource : `GET /sessions/:id/events`, `GET /operations/:id`
    par erreur) n'est jamais adoptée : elle reste en place, journalisée comme orpheline.
    **Arrêt** : les sessions tmux continuent ; les sessions PTY directes passent `interrupted`.
 
+9. **Limite d'utilisation de l'abonnement** (`src/sessions/usage-limit.ts`) : reconnue seulement par ce que le CLI
+   expose — `StopFailure` `error: rate_limit`, son avis écrit dans le journal (bloc `isApiErrorMessage`, modèle
+   `<synthetic>`) ou affiché (« 5-hour limit reached ∙ resets 3pm »), `rate_limits.*.resets_at` de la status line.
+   Un message de Claude qui parle de limites n'en est pas une. `sessions.usage_limit` garde l'arrêt (`active`, heure
+   de levée, source, fenêtre, avis du CLI masqué) et le calendrier de la reprise (`autoResume`) ; `errorMessage` dit
+   « Limite d'utilisation atteinte : reprise automatique à 15 h 02. » / « … : levée à 15 h 00. » / « Limite
+   d'utilisation atteinte. ». **Reprise automatique** (option `launch.autoResume`, valeur effective calculée par le
+   web, absente = désactivée) : levée + `NUERA_AUTO_RESUME_MARGIN_SECONDS`, 5 tentatives au plus ; levée inconnue :
+   un essai toutes les 30 min pendant 6 h ; l'instruction de reprise est tapée dans le CLI vivant, ou la conversation
+   est reprise (`claude --resume`) si le CLI a disparu (redémarrage du runner : minuteries réarmées depuis la base).
+   La tentative est écrite avant d'être tapée ; capacité atteinte ou autorisation en attente : nouvel essai 5 min plus
+   tard ; worktree, conversation ou CLI absents : abandon. Annulée par une instruction du propriétaire (Nuera Dev ou
+   terminal brut), un arrêt, un archivage, `POST /sessions/:id/auto-resume { enabled: false }`. Notifications
+   `session_usage_limit` (une par arrêt) et `session_auto_resumed`.
+
 Confiance du dossier : le CLI retient ses hooks tant que le dialogue de confiance n'est pas accepté. Accepter une
 fois la confiance pour `NUERA_PROJECTS_ROOT` (terminal `claude` dans ce dossier) évite le dialogue pour chaque
 worktree ; sinon la session affiche « Action requise dans le terminal » et l'instruction attend en file.
@@ -275,6 +293,14 @@ worktree ; sinon la session affiche « Action requise dans le terminal » et l'i
 
 - `POST /runs` : commande du projet dans un PTY (couleurs conservées), détection de port (« port 3000 »), lecture
   des résultats Vitest / Jest / Playwright / node:test en direct (« 10 / 10 réussis »), ligne `command_runs`.
+- **Aperçu** (`src/preview/proxy.ts`) : `/v1/runs/:runId/preview/<chemin>` relaie toute méthode
+  (`GET HEAD POST PUT PATCH DELETE OPTIONS`) vers `127.0.0.1` (sinon `::1`) **au port détecté de ce lancement**, qui
+  doit être un `dev` vivant de ce serveur (`PREVIEW_NOT_DEV`, `PREVIEW_NOT_RUNNING`, `PREVIEW_NO_PORT`, 404 pour un
+  inconnu, 502 `PREVIEW_UNREACHABLE`) ; aucun analyseur de corps (flux bruts dans les deux sens, 10 Mo / 256 Mo,
+  60 s sans octet, 10 min par échange) ; en-têtes hop-by-hop, `Authorization` du saut, `X-Forwarded-*`, `x-nuera-*`
+  et cookies de Nuera Dev retirés ; `Host: localhost:<port>`, `Origin`/`Referer` réécrits, `Accept-Encoding:
+  identity` ; réponse marquée `x-nuera-preview: upstream`, sans `X-Frame-Options`/CSP/HSTS, `Location` locale rendue
+  relative, `Set-Cookie` sans `Domain`.
 - Métriques : CPU échantillonné, mémoire limitée par cgroup si applicable, disque de la racine des projets
   (`fs.statfs`), charge, uptime. Disponibilité : battement par minute dans `uptime_daily` sous la clé
   `uptimeServiceKey()` (`runner` pour le serveur par défaut, historique conservé ; `runner:<id>` pour les autres),
@@ -302,6 +328,11 @@ PostgreSQL, les suites base de données sont ignorées, ou échouent avec `NUERA
   la fin) exécute les parcours du runner (clonage, synchro, worktrees, commit, lancement, session avec événements et
   autorisation, reprise, disponibilité, battement) avec les seuls droits et politiques de `0004` et `0005` (bail par
   `nuera_runner_try_lease()`, tout autre verrou consultatif refusé).
+- `test/usage-limit.test.ts` : avis du CLI et heures de levée (fuseaux, jours, époque), calendrier (levée + marge,
+  essais toutes les 30 min, 5 tentatives), puis avec le faux CLI (`scenario:limit:<s>`, ou une étape
+  `{ fail: { error: 'rate_limit', resetInSeconds } }` : la limite dure jusqu'à la levée, chaque instruction s'y arrête
+  comme avec le vrai CLI) : reprise tapée dans le CLI vivant, limite toujours là (nouvelle heure), option coupée puis
+  rétablie, reprise après redémarrage du runner (`claude --resume`).
 - `test/lease-compat.test.ts` : runner restreint contre une base migrée jusqu'à `0004` seulement (repli sur
   `pg_try_advisory_lock`, même clé).
 

@@ -5,8 +5,11 @@ import { Badge, CompactButton, IconButton } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { useAutoGrow } from '../hooks/use-auto-grow';
 import { permissionModeText } from '../lib/permission';
+import { attachmentSubmitOptions, useComposerTools, type ComposerTools } from './ComposerToolbar';
+import { DictationButton, DictationStatus } from './DictationButton';
 import { SessionPersistenceLine, type PersistenceText } from './SessionPersistenceLine';
 import { useComposer, type ComposerState } from './use-composer';
+import { useComposerDictation } from './use-dictation';
 
 /** Placeholders of `Dev · Compositeur` (203:497) and W7, verbatim. */
 export const COMPOSER_PLACEHOLDER: Record<ComposerState, string> = {
@@ -42,6 +45,11 @@ export interface ComposerProps {
   interrupting?: boolean;
   /** Attachment picker. Omitted → no paperclip (nothing is shown that does not work). */
   onAttach?: () => void;
+  /**
+   * Toolbar « comme un chat Claude Code » (Joindre, model and mode chips, « / » palette): replaces
+   * the paperclip, the mode badge and the « / commandes · @ fichiers » hints.
+   */
+  tools?: ComposerTools;
   /** Persistence line under the box (see `persistenceText`); null hides it. */
   persistence?: PersistenceText | null;
   /** Keyboard hint of the persistence line (« Échap · interrompre »). */
@@ -72,6 +80,7 @@ export function Composer({
   onInterrupt,
   interrupting,
   onAttach,
+  tools,
   persistence,
   persistenceHint = 'Échap · interrompre',
   autoFocus,
@@ -89,8 +98,11 @@ export function Composer({
     onInterrupt,
     sending,
     textareaRef,
+    ...attachmentSubmitOptions(tools?.attachments),
   });
   useAutoGrow(composer.innerRef, composer.value, maxHeight);
+  const { dictation, submit, onKeyDown } = useComposerDictation(composer, { focusOnStart: true });
+  const toolbar = useComposerTools(composer, tools, 'desktop');
 
   const blocked = !composer.accepts;
   const stateText = (state === 'unavailable' && disabledReason) || COMPOSER_PLACEHOLDER[state];
@@ -99,7 +111,8 @@ export function Composer({
   const blockedText = disabledReason ?? stateText;
 
   return (
-    <div className={cn('flex w-full min-w-0 flex-col gap-2', className)}>
+    <div className={cn('relative flex w-full min-w-0 flex-col gap-2', className)} onBlur={dictation.onBlur}>
+      {toolbar.panel}
       <div
         className={cn(
           'flex w-full min-w-0 flex-col gap-2.5 rounded-lg border border-border bg-bg py-3 pr-3 pl-4',
@@ -107,13 +120,18 @@ export function Composer({
           !blocked && 'focus-within:border-accent focus-within:ring-[0.5px] focus-within:ring-accent',
         )}
       >
+        {toolbar.chips}
         <textarea
           ref={composer.ref}
           rows={1}
           // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
           value={composer.value}
           onChange={composer.onChange}
-          onKeyDown={composer.onKeyDown}
+          {...toolbar.fieldProps}
+          onKeyDown={(event) => {
+            if (toolbar.handleKeyDown(event)) return;
+            onKeyDown(event);
+          }}
           placeholder={shownPlaceholder}
           readOnly={blocked}
           aria-disabled={blocked || undefined}
@@ -130,8 +148,15 @@ export function Composer({
         {blocked && composer.value.trim() !== '' ? (
           <p className="m-0 font-sans text-app-12 text-muted">{blockedText}</p>
         ) : null}
+        <DictationStatus dictation={dictation} />
+        {toolbar.noteLine}
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {onAttach ? (
+          {tools ? (
+            <div className="-ml-2 flex min-w-0 flex-1 items-center gap-1.5" data-composer-tools>
+              {toolbar.left}
+            </div>
+          ) : null}
+          {!tools && onAttach ? (
             <IconButton
               icon="paperclip"
               label="Joindre un fichier"
@@ -143,6 +168,7 @@ export function Composer({
               className="-ml-2"
             />
           ) : null}
+          {!tools ? (
           <Badge
             tone="neutral"
             title="Mode de permission du CLI pour cette session"
@@ -150,6 +176,8 @@ export function Composer({
           >
             {permissionModeText(modeLabel)}
           </Badge>
+          ) : null}
+          {!tools ? (
           <div className="flex min-w-0 flex-1 items-center overflow-hidden font-mono text-app-11 whitespace-pre text-muted">
             {/* Accessible names start with the visible text (WCAG 2.5.3, voice control). */}
             <button
@@ -172,6 +200,7 @@ export function Composer({
               @ fichiers
             </button>
           </div>
+          ) : null}
           {/* Narrow columns (tablet split, zoom): the actions wrap under the hints instead of overflowing. */}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {state === 'running' && onInterrupt ? (
@@ -179,6 +208,7 @@ export function Composer({
                 Interrompre · Échap
               </CompactButton>
             ) : null}
+            <DictationButton dictation={dictation} size="sm" shortcut />
             <IconButton
               icon="send"
               label="Envoyer"
@@ -188,7 +218,7 @@ export function Composer({
               loading={composer.busy}
               // eslint-disable-next-line react/refs -- false positive: useComposer returns plain values beside its refs, none is read from a ref
               disabled={!composer.canSend}
-              onClick={() => void composer.submit()}
+              onClick={() => void submit()}
               className={SEND_DISABLED_CLASSES}
             />
           </div>

@@ -44,6 +44,14 @@ export interface UseComposerOptions {
   onInterrupt?: () => void;
   sending?: boolean;
   textareaRef?: Ref<HTMLTextAreaElement>;
+  /** Turns the typed text into what is sent (the `@<chemin>` of the pieces jointes appended). */
+  prepareSubmit?: (text: string) => string;
+  /** The instruction was delivered (pieces jointes cleared). */
+  onDelivered?: () => void;
+  /** Something besides the text can be sent (stored pieces jointes): an empty field may be sent. */
+  canSendEmpty?: boolean;
+  /** Sending must wait (pieces jointes still uploading). */
+  sendBlocked?: boolean;
 }
 
 /**
@@ -60,6 +68,10 @@ export function useComposer({
   onInterrupt,
   sending = false,
   textareaRef,
+  prepareSubmit,
+  onDelivered,
+  canSendEmpty = false,
+  sendBlocked = false,
 }: UseComposerOptions) {
   const [uncontrolled, setUncontrolled] = useState(defaultValue);
   const [submitting, setSubmitting] = useState(false);
@@ -89,14 +101,14 @@ export function useComposer({
 
   const accepts = composerAccepts(state);
   const busy = sending || submitting;
-  const canSend = accepts && !busy && value.trim().length > 0;
+  const canSend = accepts && !busy && !sendBlocked && (value.trim().length > 0 || canSendEmpty);
 
   const submit = useCallback(async () => {
     if (!canSend) return;
     const sent = value;
     let result: void | Promise<unknown>;
     try {
-      result = onSubmit(sent.trim());
+      result = onSubmit(prepareSubmit ? prepareSubmit(sent.trim()) : sent.trim());
     } catch {
       // Keep the draft: the caller reports the error (T4 pattern) and the owner can resend.
       return;
@@ -115,9 +127,10 @@ export function useComposer({
       if (!delivered) return;
       current = latestValue.current;
     }
+    onDelivered?.();
     const next = draftAfterSend(sent, current);
     if (next !== current) setValue(next);
-  }, [canSend, onSubmit, setValue, value]);
+  }, [canSend, onDelivered, onSubmit, prepareSubmit, setValue, value]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -154,5 +167,5 @@ export function useComposer({
     [setValue, value],
   );
 
-  return { value, ref, innerRef, accepts, busy, canSend, submit, onKeyDown, onChange, insert };
+  return { value, setValue, ref, innerRef, accepts, busy, canSend, submit, onKeyDown, onChange, insert };
 }

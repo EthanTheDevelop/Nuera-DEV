@@ -182,6 +182,10 @@ export const spaceSettings = pgTable('space_settings', {
   permissionWaitSeconds: integer('permission_wait_seconds').notNull().default(120),
   remoteControlByDefault: boolean('remote_control_by_default').notNull().default(false),
   worktreeStaleDays: integer('worktree_stale_days').notNull().default(30),
+  /** « Reprise automatique après la limite d'utilisation » by default for the sessions of the space. */
+  autoResumeAfterLimit: boolean('auto_resume_after_limit').notNull().default(false),
+  /** « Instruction de reprise »; null = « Continue là où tu t'es arrêté. ». */
+  autoResumeInstruction: text('auto_resume_instruction'),
   updatedAt: ts('updated_at')
     .defaultNow()
     .$onUpdate(() => new Date())

@@ -205,4 +205,14 @@ deploy/         Dockerfiles, compose Coolify (principal + serveur supplémentair
 - `ConfirmDialog` fermé par le code n'appelle pas `onOpenChange` : réinitialiser l'état du dialogue (erreurs, options par défaut) aussi au succès → `apps/web/src/features/admin`.
 - `BroadcastChannel.postMessage` déclenche `unicorn/require-post-message-target-origin` (faux positif : même origine par construction) → désactivation commentée avec sa raison → `apps/web/src/hooks/useLiveEvents.tsx`.
 - Faux GitHub des e2e à plusieurs sources : il route chaque appel vers l'application de l'appelant (`iss` du JWT, émetteur du jeton d'installation, code de manifest) → `apps/web/e2e/harness/github-front.ts`.
+- Next 16 : les en-têtes de `next.config.ts` (`headers()`, figés au build) l'emportent sur ceux d'un route handler (`sendResponse` n'ajoute qu'un en-tête absent) ; seuls les en-têtes de réponse posés par `proxy.ts` (`NextResponse.next/rewrite({ headers })`) les remplacent → CSP `frame-src` de l'aperçu et `frame-ancestors` de l'hôte d'aperçu posés dans `src/proxy.ts`, dont le matcher prend tout (`/:path*`, exclusions de l'application dans `UNGATED`) ; le cookie d'aperçu d'une pile `localhost` / `127.0.0.1` (deux sites) doit être `SameSite=None; Secure` sinon l'iframe ne le reçoit pas (`src/lib/preview.ts`).
+- Aperçu d'un site Next.js derrière un route handler de Nuera Dev : notre Next traitait ses requêtes RSC comme les
+  siennes (middleware sans `_rsc` ni en-têtes RSC, validation du hash ⇒ 307 en boucle, `x-nextjs-rewritten-path:
+  /api/apercu/proxy` renvoyé) et un route handler ne peut pas relayer de WebSocket (`next dev` 16 ne s'hydrate pas sans
+  son socket `/_next/hmr` et recharge la page en boucle) → **réécriture externe** depuis `src/proxy.ts` vers le runner
+  (Next relaie lui-même, WebSocket compris ; jeton dans les en-têtes de requête du proxy, jamais renvoyés),
+  `skipProxyUrlNormalize: true` (URL et en-têtes RSC bruts), `experimental.proxyTimeout` (30 s par défaut), le runner
+  remplace `x-middleware-rewrite` (sinon l'adresse du runner part au navigateur) → `src/server/preview/gate.ts`,
+  `apps/runner/src/preview/proxy.ts`. Sous la pile de test (`next dev` côté web), `/_next/hmr` de l'hôte d'aperçu est
+  pris par le HMR de notre propre `next dev` (seul le Next de production relaie ce socket ; celui de Vite passe).
 - Coolify « Connect to predefined network » branche **tous** les services sur le réseau `coolify` partagé : deux piles du même serveur (staging et production) y exposent chacune `web` et `runner`, et `http://runner:4100` atteignait au hasard le runner de l'autre pile (`401`, « VPS-3 ne répond pas » par intermittence, Coolify au vert) → alias propres au réseau interne de la pile (`nuera-dev-runner`, `nuera-dev-web`) dans `RUNNER_URL` / `NUERA_WEB_INTERNAL_URL` → `deploy/docker-compose.yml`.

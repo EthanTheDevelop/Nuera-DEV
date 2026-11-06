@@ -169,6 +169,11 @@ une connexion Claude).
 - étapes : `plan`, `say`, `read`, `grep`, `glob`, `edit` / `write` / `remove` (modifient **vraiment** le worktree, avec
   demande d'autorisation selon le mode), `bash` (`run: true` l'exécute vraiment), `wait`, `fail`, `final`, `pause` ;
 - `claude auth status` suit `nuera-fake-claude.json` du serveur (`stack.mjs claude deconnecte --serveur b`).
+- limite d'utilisation : `scenario:limite` (StopFailure seul, levée inconnue), `scenario:limite-levee` (avis « 5-hour
+  limit reached ∙ resets … », levée 20 s plus tard), `scenario:limit:<secondes>` (intégré au faux CLI) ; tant que la
+  limite dure, chaque instruction s'y arrête comme avec le vrai CLI (avis écrit et affiché, status line à 100 %,
+  `StopFailure`). Les runners de la pile reprennent 2 s après la levée (`NUERA_AUTO_RESUME_MARGIN_SECONDS=2`, au lieu
+  de 2 min) : `reprise.spec.ts` voit la reprise automatique se déclencher.
 
 ## 6. Playwright
 

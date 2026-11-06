@@ -10,7 +10,8 @@
     "./paths": "./src/paths/index.ts",
     "./events": "./src/events/index.ts",
     "./env": "./src/env/index.ts",
-    "./tokens": "./src/tokens/index.ts"
+    "./tokens": "./src/tokens/index.ts",
+    "./attachments": "./src/runner/attachments.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

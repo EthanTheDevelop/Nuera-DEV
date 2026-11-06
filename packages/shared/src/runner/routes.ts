@@ -52,6 +52,16 @@ import {
 } from './git';
 import { OperationSnapshotSchema } from './operations';
 import {
+  AttachmentDtoSchema,
+  AttachmentUploadRequestSchema,
+  PermissionModeRequestSchema,
+  PermissionModeResultSchema,
+  SessionCommandResultSchema,
+  SessionSkillsResponseSchema,
+  SessionSlashCommandRequestSchema,
+} from './composer';
+import {
+  AutoResumeRequestSchema,
   CreateSessionRequestSchema,
   InstructionRequestSchema,
   InstructionResultSchema,
@@ -102,6 +112,8 @@ export interface RunnerRouteDef {
   stream?: true;
   /** Timeout applied by the web client (ms). */
   timeoutMs?: number;
+  /** Request body limit of the runner for this route (bytes; default: the server's 2 MiB). */
+  bodyLimit?: number;
 }
 
 const OperationParamsSchema = z.object({ operationId: z.uuid() });
@@ -323,6 +335,44 @@ export const RUNNER_ROUTES = {
   interruptSession: { method: 'POST', path: '/v1/sessions/:sessionId/interrupt', params: SessionParamsSchema, response: SessionDtoSchema },
   /** Re-publishes `session.status` from the stored row after a web-side change (archive, rename). */
   announceSession: { method: 'POST', path: '/v1/sessions/:sessionId/announce', params: SessionParamsSchema, response: SessionDtoSchema },
+  /** « Reprise automatique après la limite d'utilisation » of one session (effective value from the web): schedules or cancels. */
+  setSessionAutoResume: {
+    method: 'POST',
+    path: '/v1/sessions/:sessionId/auto-resume',
+    params: SessionParamsSchema,
+    body: AutoResumeRequestSchema,
+    response: SessionDtoSchema,
+  },
+  /** Composer « Joindre »: one file written under `.nuera/pieces-jointes/` of the session's worktree. */
+  sessionAttachment: {
+    method: 'POST',
+    path: '/v1/sessions/:sessionId/attachments',
+    params: SessionParamsSchema,
+    body: AttachmentUploadRequestSchema,
+    response: AttachmentDtoSchema,
+    timeoutMs: 60_000,
+    bodyLimit: 30 * 1024 * 1024,
+  },
+  /** Composer model chip: an allowlisted slash command typed into the live CLI (else stored for the next launch). */
+  sessionCommand: {
+    method: 'POST',
+    path: '/v1/sessions/:sessionId/command',
+    params: SessionParamsSchema,
+    body: SessionSlashCommandRequestSchema,
+    response: SessionCommandResultSchema,
+    timeoutMs: 30_000,
+  },
+  /** Composer mode chip: Maj+Tab until the CLI shows the mode (else stored for the next launch). */
+  sessionPermissionMode: {
+    method: 'POST',
+    path: '/v1/sessions/:sessionId/permission-mode',
+    params: SessionParamsSchema,
+    body: PermissionModeRequestSchema,
+    response: PermissionModeResultSchema,
+    timeoutMs: 30_000,
+  },
+  /** Palette « / »: skills of the worktree and of the CLI config dir (name + description, read-only). */
+  sessionSkills: { method: 'GET', path: '/v1/sessions/:sessionId/skills', params: SessionParamsSchema, response: SessionSkillsResponseSchema },
   stopSession: {
     method: 'POST',
     path: '/v1/sessions/:sessionId/stop',
@@ -353,6 +403,8 @@ export const RUNNER_ROUTES = {
   getRun: { method: 'GET', path: '/v1/runs/:runId', params: RunParamsSchema, response: RunDtoSchema },
   runStream: { method: 'GET', path: '/v1/runs/:runId/stream', params: RunParamsSchema, stream: true },
   stopRun: { method: 'DELETE', path: '/v1/runs/:runId', params: RunParamsSchema, response: RunDtoSchema, timeoutMs: 30_000 },
+  // « Aperçu » relay (`/v1/runs/:runId/preview/*`, any method, raw streamed bodies): outside this table,
+  // see RUNNER_PREVIEW_ROUTE in ./preview.ts.
 
   // --- Claude CLI -------------------------------------------------------------------------
   claudeStatus: { method: 'GET', path: '/v1/claude/status', query: ClaudeStatusQuerySchema, response: ClaudeStatusSchema, timeoutMs: 45_000 },

@@ -2,6 +2,7 @@ import 'server-only';
 import { appSettings, environments, spaceMembers, spaceSettings, spaces, user, userPreferences } from '@nuera/db/schema';
 import type { EnvironmentStatus, InstanceRole, PermissionMode, SpaceRole, ThemePreference } from '@nuera/db/schema';
 import { and, eq, gte, isNull, ne } from 'drizzle-orm';
+import { DEFAULT_AUTO_RESUME_INSTRUCTION } from '@nuera/shared/runner';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { AppError, formatZodIssues, type AppErrorCode } from '@/server/errors';
@@ -13,7 +14,8 @@ import { audit, AUDIT_ACTIONS } from '@/server/security/audit';
  *
  *   instance    app_settings (id = 1)   web-session lifetimes, invitation validity, forced bypass block   owner/admin
  *   server      environments            name, location (admin) · parallel sessions, memory (space owner, ≤ cap)
- *   space       space_settings          model, effort, permission mode, bypass block, wait, Remote Control, stale worktrees   space owner
+ *   space       space_settings          model, effort, permission mode, bypass block, wait, Remote Control, stale worktrees,
+ *                                       automatic resumption after the usage limit (and its instruction)   space owner
  *   account     user_preferences        theme, language, Git identity   the account itself
  *
  *   const policy = await getEffectiveSessionPolicy(ctx.space.id);           // what a new session gets
@@ -94,6 +96,9 @@ export const spaceSettingsSchema = z.object({
   permissionWaitSeconds: int().min(10, '10 s au minimum').max(1800, '30 min au maximum'),
   remoteControlByDefault: z.boolean('valeur oui/non attendue'),
   worktreeStaleDays: int().min(1, '1 jour au minimum').max(365, '365 jours au maximum'),
+  autoResumeAfterLimit: z.boolean('valeur oui/non attendue'),
+  /** null (or empty) = « Continue là où tu t'es arrêté. » (DEFAULT_AUTO_RESUME_INSTRUCTION). */
+  autoResumeInstruction: optionalText(2000),
 });
 export type SpaceSettingsInput = z.infer<typeof spaceSettingsSchema>;
 
@@ -139,6 +144,8 @@ export interface SpaceSettings {
   permissionWaitSeconds: number;
   remoteControlByDefault: boolean;
   worktreeStaleDays: number;
+  autoResumeAfterLimit: boolean;
+  autoResumeInstruction: string | null;
   updatedAt: Date;
 }
 
@@ -184,6 +191,8 @@ const spaceColumns = {
   permissionWaitSeconds: spaceSettings.permissionWaitSeconds,
   remoteControlByDefault: spaceSettings.remoteControlByDefault,
   worktreeStaleDays: spaceSettings.worktreeStaleDays,
+  autoResumeAfterLimit: spaceSettings.autoResumeAfterLimit,
+  autoResumeInstruction: spaceSettings.autoResumeInstruction,
   updatedAt: spaceSettings.updatedAt,
 };
 
@@ -322,6 +331,10 @@ export interface EffectiveSessionPolicy {
   defaultPermissionMode: PermissionMode;
   remoteControlByDefault: boolean;
   worktreeStaleDays: number;
+  /** « Reprise automatique après la limite d'utilisation » by default (a session may override it). */
+  autoResumeAfterLimit: boolean;
+  /** Instruction typed at the resumption (the default one when the space has none). */
+  autoResumeInstruction: string;
 }
 
 /** What a session launched in this space gets (passed to the runner as launch options). */
@@ -338,6 +351,8 @@ export async function getEffectiveSessionPolicy(spaceId: string): Promise<Effect
     defaultPermissionMode: block && space.defaultPermissionMode === 'bypassPermissions' ? 'manual' : space.defaultPermissionMode,
     remoteControlByDefault: space.remoteControlByDefault,
     worktreeStaleDays: space.worktreeStaleDays,
+    autoResumeAfterLimit: space.autoResumeAfterLimit,
+    autoResumeInstruction: space.autoResumeInstruction ?? DEFAULT_AUTO_RESUME_INSTRUCTION,
   };
 }
 
@@ -362,6 +377,8 @@ const LABELS: Record<string, string> = {
   permissionWaitSeconds: 'délai de réponse aux autorisations',
   remoteControlByDefault: 'Remote Control par défaut',
   worktreeStaleDays: 'worktrees inactifs',
+  autoResumeAfterLimit: "reprise automatique après la limite d'utilisation",
+  autoResumeInstruction: 'instruction de reprise',
   theme: 'thème',
   locale: 'langue',
   gitAuthorName: 'nom Git',
@@ -628,6 +645,8 @@ export const FLAT_SETTING_KEYS = {
   permissionWaitSeconds: { group: 'space', field: 'permissionWaitSeconds' },
   remoteControlByDefault: { group: 'space', field: 'remoteControlByDefault' },
   worktreeStaleDays: { group: 'space', field: 'worktreeStaleDays' },
+  autoResumeAfterLimit: { group: 'space', field: 'autoResumeAfterLimit' },
+  autoResumeInstruction: { group: 'space', field: 'autoResumeInstruction' },
   theme: { group: 'user', field: 'theme' },
   locale: { group: 'user', field: 'locale' },
   gitAuthorName: { group: 'user', field: 'gitAuthorName' },

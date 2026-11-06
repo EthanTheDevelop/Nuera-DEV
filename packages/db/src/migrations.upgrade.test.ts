@@ -512,7 +512,7 @@ describe.skipIf(!available)('montée de version 0000 → dernière migration', (
       const snapshot = await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations']);
       await runMigrations(url);
       const [row] = await sql<{ count: string }[]>`select count(*) from drizzle.__drizzle_migrations`;
-      expect(row?.count).toBe('6');
+      expect(row?.count).toBe('7');
       expect(await countRows(sql, [...KEPT_TABLES, 'spaces', 'environments', 'github_sources', 'integrations'])).toEqual(snapshot);
     });
   });

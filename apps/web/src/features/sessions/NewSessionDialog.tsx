@@ -20,8 +20,8 @@ import {
   Skeleton,
   SlotMeter,
   Switch,
-  Textarea,
 } from '@/components/ui';
+import { ATTACHMENT_COPY, buildPaletteItems, DictatedTextarea, type PaletteSource } from '@/components/dev';
 import { useOptionalShellData } from '@/components/shell';
 import { useIsDesktopNav } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
@@ -90,6 +90,13 @@ function failureFromAction(error: ActionError): Failure {
 }
 
 type Load<T> = { state: 'loading' } | { state: 'error'; error: Failure } | { state: 'ready'; data: T };
+
+
+/**
+ * Palette « / » of the first instruction: the curated commands of the CLI only — skills, MCP tools
+ * and `@` files are read from the session's worktree, which does not exist before the creation.
+ */
+const FIRST_INSTRUCTION_PALETTE: PaletteSource = { items: buildPaletteItems() };
 
 /**
  * « Nouvelle session » (W1 entry): project, title, branch (new branch from a base, existing branch or
@@ -414,7 +421,7 @@ function NewSessionForm({ serverName: shellServerName, layout, defaultProjectId,
           }
         />
         <Field label="Première instruction">
-          <Textarea value={form.instruction} onChange={(e) => set('instruction', e.target.value)} rows={4} />
+          <DictatedTextarea value={form.instruction} onValueChange={(next) => set('instruction', next)} rows={4} palette={FIRST_INSTRUCTION_PALETTE} />
         </Field>
       </div>
     );
@@ -610,9 +617,15 @@ function NewSessionForm({ serverName: shellServerName, layout, defaultProjectId,
       <Field
         label="Première instruction"
         labelAside={<span className="font-sans text-app-12 text-muted">facultatif</span>}
-        hint="Envoyée dès la création : Claude Code démarre aussitôt. Sinon il démarre au premier envoi depuis le Workspace."
+        hint={`Envoyée dès la création : Claude Code démarre aussitôt. Sinon il démarre au premier envoi depuis le Workspace. « / » : commandes du CLI. ${ATTACHMENT_COPY.afterCreate}`}
       >
-        <Textarea value={form.instruction} onChange={(e) => set('instruction', e.target.value)} rows={3} placeholder="Écrire une instruction à Claude…" />
+        <DictatedTextarea
+          value={form.instruction}
+          onValueChange={(next) => set('instruction', next)}
+          rows={3}
+          placeholder="Écrire une instruction à Claude…"
+          palette={FIRST_INSTRUCTION_PALETTE}
+        />
       </Field>
 
       {failure ? (

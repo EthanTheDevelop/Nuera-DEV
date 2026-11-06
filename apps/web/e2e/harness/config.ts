@@ -384,6 +384,9 @@ function runnerSharedEnv(input: StackEnvInput): Record<string, string> {
     NUERA_DB_POOL_MAX: '5',
     LOG_LEVEL: 'info',
     DATABASE_CONNECT_TIMEOUT: '60',
+    // Automatic resumption after the usage limit: 2 s after the reset the fake CLI announces
+    // (instead of 2 min), so an e2e sees the scheduled resumption fire.
+    NUERA_AUTO_RESUME_MARGIN_SECONDS: '2',
   };
 }
 
@@ -440,6 +443,9 @@ export function webEnv(input: StackEnvInput): Record<string, string> {
     GITHUB_FALLBACK_TOKEN: '',
     NUERA_RATE_LIMIT_FACTOR: '50',
     NUERA_KIT_PUBLIC: '1',
+    // « Aperçu »: the app runs on localhost:<port>, the preview on 127.0.0.1:<same port> — two
+    // distinct origins (and sites) served by the same next dev. E2E_PREVIEW_HOST overrides it ('' = off).
+    PREVIEW_HOST: process.env.E2E_PREVIEW_HOST ?? `127.0.0.1:${new URL(input.urls.web).port}`,
   };
   return { ...baseEnv(new Set(Object.keys(explicit))), ...explicit };
 }

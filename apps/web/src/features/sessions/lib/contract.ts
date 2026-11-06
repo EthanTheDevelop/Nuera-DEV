@@ -5,6 +5,7 @@
 import { isValidBranchName } from '@nuera/shared/paths';
 import { z } from 'zod';
 import type { PermissionMode, SessionStatus } from '@nuera/db/schema';
+import type { UsageLimit } from '@nuera/shared/runner';
 
 export type { PermissionMode, SessionStatus };
 
@@ -23,6 +24,17 @@ export function isActiveStatus(status: SessionStatus): boolean {
 export function isLiveStatus(status: SessionStatus): boolean {
   return (LIVE_STATUSES as readonly SessionStatus[]).includes(status);
 }
+
+/**
+ * Body of POST /api/sessions/[sessionId]/auto-resume: « Reprise automatique après la limite
+ * d'utilisation » for this session (`enabled`: true / false, null = the space default), or
+ * « Reprendre maintenant » (`resumeNow`) while the limit stops it.
+ */
+export const autoResumeInputSchema = z.union([
+  z.object({ enabled: z.boolean('valeur oui/non attendue').nullable() }).strict(),
+  z.object({ resumeNow: z.literal(true) }).strict(),
+]);
+export type AutoResumeInput = z.infer<typeof autoResumeInputSchema>;
 
 export const SESSION_TITLE_MAX = 200;
 export const INSTRUCTION_MAX = 100_000;
@@ -221,6 +233,10 @@ export interface SessionListItem {
   archivedAt: string | null;
   /** endedAt − startedAt once ended (null while live or never started). */
   durationMs: number | null;
+  /** Stopped on the subscription usage limit and its automatic resumption (runner), null = none. */
+  limit: UsageLimit | null;
+  /** « Reprise automatique » chosen for this session; null = the space default. */
+  autoResume: boolean | null;
 }
 
 /** Server (runner instance) of the space, as the session pages show it (« VPS-3 »). */

@@ -8,6 +8,8 @@ export * from './git';
 export * from './sessions';
 export * from './terminals';
 export * from './runs';
+export * from './preview';
 export * from './system';
 export * from './claude';
+export * from './composer';
 export * from './routes';

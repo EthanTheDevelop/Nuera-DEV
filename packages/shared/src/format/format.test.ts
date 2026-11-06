@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   formatAge,
   formatBytes,
+  formatClock,
+  formatClockDay,
   formatDuration,
   formatLongDate,
   formatPercent,
@@ -60,5 +62,12 @@ describe('formatShortDay', () => {
   });
   it('uses the Paris day near midnight', () => {
     expect(formatShortDay('2026-11-04T23:30:00Z')).toBe('Jeu. 5 nov.');
+  });
+  it('writes a time of day out (usage limit reset)', () => {
+    expect(formatClock('2026-11-04T14:00:00Z')).toBe('15 h 00');
+    expect(formatClock('2026-11-04T08:05:00Z')).toBe('9 h 05');
+    expect(formatClockDay('2026-11-04T14:00:00Z', now)).toBe('15 h 00');
+    expect(formatClockDay('2026-11-05T08:30:00Z', now)).toBe('demain 9 h 30');
+    expect(formatClockDay('2026-11-09T08:30:00Z', now)).toBe('lun. 9 nov. 9 h 30');
   });
 });

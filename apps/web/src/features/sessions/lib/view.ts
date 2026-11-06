@@ -3,6 +3,7 @@
  */
 import type { SessionStatusEvent } from '@nuera/shared/events';
 import { formatBytes, formatNumber, formatPercent } from '@nuera/shared/format';
+import { usageLimitLabel } from '@/components/dev/lib/usage-limit';
 import { isActiveStatus, isLiveStatus, workspaceUrl, type SessionListItem, type SessionStatus } from './contract';
 
 /** « Aucun serveur attribué » (docs/MULTICOMPTE.md §10): a space without server cannot start a session. */
@@ -95,7 +96,10 @@ export function activeLabel(count: number): string {
 }
 
 /** Card activity line: the CLI's current activity, else what is known. */
-export function cardActivity(item: SessionListItem): string | null {
+export function cardActivity(item: SessionListItem, now: Date | string = new Date()): string | null {
+  // Stopped by the usage limit: « Limite atteinte · reprise à 15 h 02 » (what the CLI announced).
+  const limited = usageLimitLabel(item.limit, now);
+  if (limited) return limited;
   if (item.status === 'new') return 'Pas encore démarrée · aucune instruction envoyée';
   if (item.currentActivity) return item.currentActivity;
   if (item.status === 'waiting_permission') return 'Attend votre accord dans le Workspace';
@@ -144,6 +148,8 @@ export function applyStatusEvent(
     planTotal: event.planTotal,
     errorMessage: event.errorMessage,
     pendingPermissionId: event.pendingPermissionId,
+    // Older runners do not carry the limit: keep the last known one.
+    limit: event.limit !== undefined ? event.limit : current.limit,
   };
   const copy = [...items];
   copy[index] = next;
