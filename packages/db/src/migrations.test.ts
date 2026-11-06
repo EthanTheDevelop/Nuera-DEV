@@ -73,7 +73,7 @@ describe('fichiers de migration', () => {
     expect(first).toEqual({ idx: 0, version: '7', when: 1793852411456, tag: '0000_material_hiroim', breakpoints: true });
   });
 
-  it("enchaîne 0001 → 0005 dans l'ordre, avec des dates croissantes", () => {
+  it("enchaîne 0001 → 0006 dans l'ordre, avec des dates croissantes", () => {
     const entries = readJournal();
     expect(entries.map((entry) => entry.tag)).toEqual([
       '0000_material_hiroim',
@@ -82,6 +82,7 @@ describe('fichiers de migration', () => {
       '0003_tenancy_enforce',
       '0004_runner_roles',
       '0005_runner_scope',
+      '0006_session_usage_limit',
     ]);
     entries.forEach((entry, index) => {
       expect(entry.idx).toBe(index);
@@ -116,6 +117,11 @@ describe('fichiers de migration', () => {
     const scope = readFileSync(path.join(MIGRATIONS_FOLDER, '0005_runner_scope.sql'), 'utf8');
     expect(scope.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
     expect(scope).not.toMatch(/ADD COLUMN|DROP COLUMN/i);
+    const usageLimit = readFileSync(path.join(MIGRATIONS_FOLDER, '0006_session_usage_limit.sql'), 'utf8');
+    expect(usageLimit.startsWith("SET LOCAL lock_timeout = '10s';--> statement-breakpoint")).toBe(true);
+    expect(usageLimit).not.toMatch(/DROP COLUMN/i);
+    // Every column the restricted runner role updates has its grant (0004 grants column by column).
+    expect(usageLimit).toContain('GRANT UPDATE ("usage_limit", "auto_resume") ON "sessions" TO "nuera_runner"');
   });
 });
 

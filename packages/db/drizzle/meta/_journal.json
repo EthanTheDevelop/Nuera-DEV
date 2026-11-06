@@ -43,6 +43,13 @@
       "when": 1793926423215,
       "tag": "0005_runner_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793972315831,
+      "tag": "0006_session_usage_limit",
+      "breakpoints": true
     }
   ]
 }
