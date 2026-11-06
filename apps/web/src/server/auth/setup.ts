@@ -19,6 +19,7 @@ import { accountRateLimitKey, assertRateLimit, AUTH_RATE_LIMITS } from '@/server
 import { getClientIp } from '@/server/security/request-info';
 import { invalidateSettingsCache } from '@/server/settings';
 import { invalidateContextCache } from '@/server/tenancy/context';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 /**
  * First owner (/configuration) and the activation steps shared by every account
@@ -54,7 +55,7 @@ export async function getSetupState(): Promise<SetupState> {
     .where(eq(user.role, 'owner'))
     .limit(1);
   if (!owner) return { kind: 'no_owner' };
-  return owner.twoFactorEnabled ? { kind: 'complete', ownerId: owner.id } : { kind: 'owner_without_2fa', ownerId: owner.id };
+  return owner.twoFactorEnabled || !twoFactorRequired() ? { kind: 'complete', ownerId: owner.id } : { kind: 'owner_without_2fa', ownerId: owner.id };
 }
 
 export async function ownerExists(): Promise<boolean> {

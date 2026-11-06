@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { safeRedirectPath } from '@/server/auth/policy';
+import { safeRedirectPath, twoFactorRequired } from '@/server/auth/policy';
 import { getCurrentUser } from '@/server/auth/session';
 import { getSetupState } from '@/server/auth/setup';
 import { AuthCard, FormAlert } from '../_components/ui';
@@ -16,7 +16,7 @@ export default async function ConnexionPage({ searchParams }: { searchParams: Se
   const next = safeRedirectPath(Array.isArray(params.suivant) ? params.suivant[0] : params.suivant);
 
   const user = await getCurrentUser();
-  if (user?.twoFactorEnabled) redirect(next);
+  if (user && (user.twoFactorEnabled || !twoFactorRequired())) redirect(next);
   if (user) redirect('/configuration/double-facteur');
 
   const setup = await getSetupState();

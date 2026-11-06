@@ -46,7 +46,8 @@ const available = await helpers.postgresAvailable(env.ADMIN_URL, 'password-reset
 const headersFor = () => helpers.requestFrom(env.APP_URL);
 
 const { createOwner } = await import('./setup');
-const { getAuthContext } = await import('./auth');
+const { auth, getAuthContext } = await import('./auth');
+const { getSetupState } = await import('./setup');
 const reset = await import('./password-reset');
 const { db } = await import('@/server/db');
 
@@ -153,5 +154,20 @@ describe.skipIf(!available)('mot de passe oublié (Better Auth + PostgreSQL)', {
     expect(mail.sent).toHaveLength(0);
     expect(await reset.getPasswordResetState(token)).toEqual({ kind: 'invalid' });
     await db.update(user).set({ disabledAt: null }).where(eq(user.id, ownerId));
+  });
+
+  it('2FA facultative (NUERA_REQUIRE_2FA=false) : connexion par mot de passe seul pour un compte sans 2FA', async () => {
+    const signIn = () =>
+      auth.api.signInEmail({ body: { email: OWNER.email, password: NEW_PASSWORD }, headers: headersFor() }).catch((error: unknown) => error);
+    process.env.NUERA_REQUIRE_2FA = 'true';
+    expect(await signIn()).toMatchObject({ body: { code: 'SETUP_INCOMPLETE' } });
+    expect(await getSetupState()).toMatchObject({ kind: 'owner_without_2fa' });
+    process.env.NUERA_REQUIRE_2FA = 'false';
+    try {
+      expect(await signIn()).toMatchObject({ user: { email: OWNER.email } });
+      expect(await getSetupState()).toMatchObject({ kind: 'complete' });
+    } finally {
+      delete process.env.NUERA_REQUIRE_2FA;
+    }
   });
 });

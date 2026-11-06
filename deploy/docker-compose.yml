@@ -54,6 +54,8 @@ services:
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       # Traefik (Coolify) writes the client address in X-Real-IP: the only IP header trusted.
+      # "false" : double authentification facultative (un compte qui l'a activée la garde).
+      NUERA_REQUIRE_2FA: ${NUERA_REQUIRE_2FA:-true}
       # « Mot de passe oublié » : SMTP (secret) et expéditeur ; sans eux, la page le signale.
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-}

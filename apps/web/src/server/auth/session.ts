@@ -3,7 +3,7 @@ import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { cache } from 'react';
 import { auth } from '@/server/auth/auth';
-import { safeRedirectPath } from '@/server/auth/policy';
+import { safeRedirectPath, twoFactorRequired } from '@/server/auth/policy';
 import { AppError } from '@/server/errors';
 import type { InstanceRole } from '@nuera/db/schema';
 
@@ -103,7 +103,7 @@ export async function requireUser(): Promise<CurrentUser> {
     if (await hasPendingSecondFactor()) redirect('/connexion/deux-facteurs');
     redirect(await signInUrl());
   }
-  if (!user.twoFactorEnabled) redirect('/configuration/double-facteur');
+  if (!user.twoFactorEnabled && twoFactorRequired()) redirect('/configuration/double-facteur');
   return user;
 }
 
@@ -111,7 +111,7 @@ export async function requireUser(): Promise<CurrentUser> {
 export async function requireUserForApi(): Promise<CurrentUser> {
   const user = await getCurrentUser();
   if (!user) throw new AppError('UNAUTHORIZED');
-  if (!user.twoFactorEnabled) {
+  if (!user.twoFactorEnabled && twoFactorRequired()) {
     throw new AppError('FORBIDDEN', 'Activez la double authentification pour continuer.');
   }
   return user;

@@ -16,8 +16,9 @@ Invariants (non négociables) :
    inconnu (404, même message), sans appel au runner, sans écriture, sans audit métier.
 2. **Un serveur = un espace = une personne = une connexion Claude** (conditions d'Anthropic, `docs/research/
    claude-code.md` §1.3 et §14.3). Un serveur déjà utilisé n'est jamais réattribué : on le retire et on en crée un.
-3. **2FA obligatoire pour tous les comptes** (TOTP + codes de secours, clés d'accès en option). `NUERA_REQUIRE_2FA`
-   disparaît.
+3. **2FA obligatoire par défaut** (TOTP + codes de secours, clés d'accès en option). `NUERA_REQUIRE_2FA=false`
+   (décision du propriétaire, 6 novembre 2026) la rend facultative : connexion par mot de passe seul pour un compte
+   sans 2FA, « Passer cette étape » à l'activation ; un compte qui l'a activée la garde.
 4. **Mise à jour sans intervention** : le runner existant devient le serveur par défaut de l'espace du propriétaire
    actuel ; l'interface de ce compte reste identique (serveur nommé « VPS-3 », copie Figma inchangée).
 5. Les administrateurs gèrent comptes, serveurs et instance ; ils **ne voient jamais** le contenu d'un autre espace.

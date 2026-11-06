@@ -22,6 +22,7 @@ import { absoluteExpiry, SESSION_HARD_CEILING_DAYS } from '@/server/auth/policy'
 import { TOTP_ISSUER } from '@/server/auth/totp';
 import { trustedIpHeaders } from '@/server/security/request-info';
 import { getWebSessionPolicy } from '@/server/settings';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 /**
  * Better Auth for the accounts of Nuera Dev (docs/MULTICOMPTE.md §6).
@@ -74,7 +75,7 @@ export async function assertSessionAllowed(userId: string, ctx: HookContext | nu
   if (!row || row.disabledAt || row.deletedAt) {
     throw new APIError('FORBIDDEN', { message: AUTH_REFUSALS.accountDisabled, code: 'ACCOUNT_DISABLED' });
   }
-  if (row.twoFactorEnabled || ctx?.path !== '/sign-in/email') return;
+  if (row.twoFactorEnabled || !twoFactorRequired() || ctx?.path !== '/sign-in/email') return;
   if (consumeEnrolmentGrant(ctx.headers?.get(ENROLMENT_GRANT_HEADER), row.email)) return;
   throw row.role === 'owner'
     ? new APIError('FORBIDDEN', { message: AUTH_REFUSALS.setupIncomplete, code: 'SETUP_INCOMPLETE' })

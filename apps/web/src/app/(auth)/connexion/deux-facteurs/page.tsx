@@ -4,6 +4,7 @@ import { safeRedirectPath } from '@/server/auth/policy';
 import { getCurrentUser, hasPendingSecondFactor } from '@/server/auth/session';
 import { AuthCard } from '../../_components/ui';
 import { SecondFactorForm } from './second-factor-form';
+import { twoFactorRequired } from '@/server/auth/policy';
 
 export const metadata: Metadata = { title: 'Double authentification' };
 
@@ -14,7 +15,7 @@ export default async function DeuxFacteursPage({ searchParams }: { searchParams:
   const next = safeRedirectPath(Array.isArray(params.suivant) ? params.suivant[0] : params.suivant);
 
   const user = await getCurrentUser();
-  if (user?.twoFactorEnabled) redirect(next);
+  if (user && (user.twoFactorEnabled || !twoFactorRequired())) redirect(next);
   if (!(await hasPendingSecondFactor())) redirect(next === '/' ? '/connexion' : `/connexion?suivant=${encodeURIComponent(next)}`);
 
   return (

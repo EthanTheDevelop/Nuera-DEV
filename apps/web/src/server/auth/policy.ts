@@ -82,3 +82,12 @@ export function safeRedirectPath(value: unknown, fallback = '/'): string {
   if (/^\/(connexion|configuration|deconnexion|invitation|recuperation)(\/|\?|$)/.test(value) || (value.startsWith('/api/') && !BROWSER_API_ROUTES.test(value))) return fallback;
   return value;
 }
+
+/**
+ * Double authentification exigée ? `NUERA_REQUIRE_2FA=false` la rend facultative (décision du
+ * propriétaire) : connexion par mot de passe seul pour un compte sans 2FA, étape d'activation
+ * « Passer cette étape ». Un compte qui a activé sa 2FA la garde. Par défaut : exigée.
+ */
+export function twoFactorRequired(): boolean {
+  return process.env.NUERA_REQUIRE_2FA?.trim().toLowerCase() !== 'false';
+}

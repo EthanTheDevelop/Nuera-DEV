@@ -76,12 +76,15 @@ describe('isInstanceAdmin', () => {
   });
 });
 
-describe("2FA obligatoire et accès à l'administration", () => {
-  it('refuses an account without 2FA, whatever NUERA_REQUIRE_2FA says (the flag is gone)', async () => {
+describe("2FA (obligatoire par défaut) et accès à l'administration", () => {
+  it('refuses an account without 2FA by default, accepts it when NUERA_REQUIRE_2FA=false', async () => {
+    delete process.env.NUERA_REQUIRE_2FA;
+    signedIn({ role: 'owner', disabledAt: null, twoFactorEnabled: false });
+    await expect(session.requireUserForApi()).rejects.toMatchObject({ code: 'FORBIDDEN' });
     process.env.NUERA_REQUIRE_2FA = 'false';
     try {
       signedIn({ role: 'owner', disabledAt: null, twoFactorEnabled: false });
-      await expect(session.requireUserForApi()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(session.requireUserForApi()).resolves.toMatchObject({ twoFactorEnabled: false });
     } finally {
       delete process.env.NUERA_REQUIRE_2FA;
     }
