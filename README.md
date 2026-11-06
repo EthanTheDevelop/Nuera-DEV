@@ -34,8 +34,8 @@ Y1–Y5 : push, verrous consultatifs et clés étrangères `0005`, socket tmux p
 serveurs, terminal de connexion MCP, flux global pendant une panne du runner). Vérification complète du 6 novembre :
 `tsc` 0 erreur (4 paquets), oxlint 0 erreur, Vitest avec PostgreSQL exigé (shared 40, db 76, runner 106 + 1 ignoré
 sous Windows, web 845), `next build` OK, Playwright à deux comptes et deux runners sur pile neuve : 186 réussis,
-1 seul échec (Échap sous PTY Windows, mobile — connu, Windows seulement). La refonte est **committée sur `main` en
-local, pas encore poussée** : le push redéploie la production et attend les actions du propriétaire du §4.0.
+1 seul échec (Échap sous PTY Windows, mobile — connu, Windows seulement). La refonte est **poussée sur `main`**
+(6 novembre 2026), ce qui redéploie la production ; actions du propriétaire au §4.0.
 
 | # | Jalon | État | Détail |
 |---|---|---|---|
@@ -196,8 +196,8 @@ chaque lot construit puis relu indépendamment, intégré lot par lot sur `main`
 
 1. ✅ Raccords finaux, vérification complète et campagne Playwright (6 novembre, §1). Seul échec restant : Échap
    sous PTY Windows (`workspace.spec.ts` W2, mobile), propre au poste Windows.
-2. ✅ Committé sur `main` en local par domaine (base, contrats, runner, cœur web, comptes, intégrations, domaines,
-   réglages, e2e, déploiement, docs). **Pas encore poussé** : le push déclenche le déploiement (point 4).
+2. ✅ Committé et poussé sur `main` par domaine (base, contrats, runner, cœur web, comptes, intégrations, domaines,
+   réglages, e2e, déploiement, docs). Poussé le 6 novembre 2026 : le push déclenche le déploiement (point 4).
 3. **Linux avant la mise en production** : suite tmux du runner (`apps/runner/test/tmux.test.ts`), images
    multi-comptes, essai du compose du serveur supplémentaire (`docs/DEPLOY.md` §11).
 4. **Mise à jour de production** : `docs/DEPLOY.md` §12 (2FA du propriétaire, sauvegarde, aucune session, push), les

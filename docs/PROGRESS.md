@@ -66,8 +66,8 @@ Vérification commune (6 novembre 2026, avant les lots Y) : `tsc` 0 erreur sur l
 `NUERA_REQUIRE_PG=1` : shared 40, db 72, runner 100 (+1 ignoré), web 787. Vérification finale (6 novembre 2026,
 après les lots Y et les raccords) : `tsc` 0 erreur (4 paquets), oxlint 0 erreur, Vitest shared 40, db 76, runner 106
 (+1 ignoré : tmux, Linux seulement), web 845, `next build` OK, Playwright (pile neuve, 2 comptes, 2 runners) 186
-réussis, 1 échec connu propre à Windows (Échap sous PTY, mobile). Committé en local, push en attente des actions du
-propriétaire (`docs/DEPLOY.md` §12.1). Écarts de chaque lot : `docs/MULTICOMPTE.md` §14.
+réussis, 1 échec connu propre à Windows (Échap sous PTY, mobile). Committé et poussé sur `main` le 6 novembre 2026 ;
+actions du propriétaire : `docs/DEPLOY.md` §12 à §14. Écarts de chaque lot : `docs/MULTICOMPTE.md` §14.
 
 ## Décisions récentes
 
