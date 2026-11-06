@@ -247,3 +247,24 @@ Mis en place par l'API de Coolify, sur le modèle de Nuera OS (NUERA-PROD-01 : a
   pour joindre la base par son nom interne (hôte = UUID de la base, port 5432).
 - Vérifié après déploiement : statut `running:healthy`, `/api/health` → `{"status":"ok","db":true}`,
   `/configuration` → 200.
+
+## Environnements : staging et production (6 novembre 2026)
+
+Deux environnements Coolify dans le projet « Nuera Studio - Nuera Dev », tous deux sur NUERA-PERSO-01, chacun avec
+sa propre base, ses secrets, son runner et son CloudBeaver :
+
+| | Staging (développement) | Production |
+|---|---|---|
+| Branche GitHub | `staging` | `main` |
+| App Coolify | `nuera-dev-staging` | `nuera-dev` |
+| URL | https://nuera-dev-staging.perso.nuera.studio | https://nuera-dev.perso.nuera.studio |
+| Base PostgreSQL 17 | `nuera-dev-staging-postgres` (`nuera_dev_staging`) | `nuera-dev-postgres` (`nuera_dev`) |
+| CloudBeaver | https://db-dev-staging.perso.nuera.studio | https://db-dev.perso.nuera.studio |
+| Runner | 2 cœurs / 3 Go | 4 cœurs / 6 Go |
+| Déploiement | automatique à chaque push sur `staging` | automatique à chaque push sur `main` |
+
+Flux de travail : on développe et on pousse sur `staging` (ou une branche fusionnée dans `staging`), on vérifie sur
+l'URL de staging, puis on fusionne `staging` dans `main` par pull request : seul ce merge met à jour la production.
+Les deux instances sont indépendantes : le compte propriétaire, la connexion à Claude (`claude auth login`), la
+GitHub App (page Intégrations) et le `SETUP_TOKEN` se configurent séparément sur staging. Les secrets sont propres à
+chaque environnement (variables de l'app dans Coolify) ; ne jamais copier ceux de la production.
