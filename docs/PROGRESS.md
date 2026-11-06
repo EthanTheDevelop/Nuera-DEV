@@ -96,6 +96,15 @@ actions du propriétaire : `docs/DEPLOY.md` §12 à §14. Écarts de chaque lot 
   OK ; Playwright par lot sur sa propre pile (accueil 12, sessions 19, projets 14, workspace 21, intégrations 15,
   paramètres 24, terminal 13, smoke + auth 20) ; captures 1440/390 comparées aux exports Figma.
 
+## Aperçu (6 novembre 2026)
+
+Site du serveur de développement d'un worktree dans le Workspace (onglet du panneau, vue agrandie `?vue=apercu`,
+onglet téléphone), servi par une origine séparée `PREVIEW_HOST` (même conteneur web, `src/proxy.ts`), passage de main
+signé à usage unique `POST /api/previews`, cookie `nuera_apercu` propre à l'hôte d'aperçu, relais runner
+`/v1/runs/:id/preview/*` limité au port détecté d'un `dev` vivant. Tests : runner `test/preview.test.ts`, web
+`server/preview/preview.test.ts`, `lib/preview.test.ts`, `proxy.test.ts`, e2e `apercu.spec.ts` (bureau + téléphone).
+Sécurité : `docs/SECURITY.md` §8 bis ; déploiement : `docs/DEPLOY.md` (domaine d'aperçu par environnement).
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :
@@ -108,6 +117,8 @@ actions du propriétaire : `docs/DEPLOY.md` §12 à §14. Écarts de chaque lot 
   `docs/SECURITY.md` §11.
 - Propriétaire : création de la GitHub App, connexion Claude Max, puis restriction de la base du serveur par défaut
   (`docs/DEPLOY.md` §14) et, pour chaque autre personne, un serveur supplémentaire (§13).
+- Aperçu : ajouter le domaine d'aperçu au service web et `PREVIEW_HOST` dans chaque environnement Coolify
+  (`docs/DEPLOY.md`) ; pas de rechargement à chaud (aucun WebSocket à travers un route handler).
 - À vérifier sur le serveur réel (Linux) : backend tmux (suite `tmux.test.ts`, adoption entre serveurs, session tmux
   lancée pour une autre ligne), `0005` appliquée en superutilisateur, hooks du CLI
   réel, `claude auth status --json` (docs/research/claude-code.md §15), images multi-comptes (DEPLOY §11).
