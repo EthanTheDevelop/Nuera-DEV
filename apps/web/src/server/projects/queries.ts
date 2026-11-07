@@ -174,9 +174,9 @@ export async function listProjectSessionRows(projectId: string, limit = 50): Pro
     lastActivityAt: iso(row.lastActivityAt),
     createdAt: row.createdAt.toISOString(),
     pendingPermissionId: pendingBySession.get(row.id) ?? null,
-    // Same rule as the runner (`resumable`): ended, worktree still there, a conversation exists.
-    resumable:
-      ['interrupted', 'stopped', 'failed', 'finished'].includes(row.status) && Boolean(row.worktreePresent) && Boolean(row.transcriptPath),
+    // Same rule as the runner (`resumable`): ended — the worktree is recreated and a lost
+    // conversation restarts with a new context (an archived project is not listed here).
+    resumable: ['interrupted', 'stopped', 'failed', 'finished'].includes(row.status),
   }));
 }
 

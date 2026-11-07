@@ -1,5 +1,5 @@
 import 'server-only';
-import { projects, sessions } from '@nuera/db/schema';
+import { projects, sessions, worktrees } from '@nuera/db/schema';
 import { parseUsageLimit, type AutoResumeOptions, type SessionDto, type SessionLaunchOptions } from '@nuera/shared/runner';
 import { and, eq, notInArray } from 'drizzle-orm';
 import {
@@ -23,6 +23,7 @@ import { assertCanDriveSession, readScopedProject, type ProjectRow } from './acc
 import { buildSessionEnv, readProjectEnv } from './env';
 import { getGitIdentity } from './git-identity';
 import { capacityMessage, environmentMaxSessions, readSessionItem } from './queries';
+import { buildResumeContext, readResumeContextInput } from './resume-context';
 
 /**
  * Write side of the sessions lot. Every disk / git / process effect goes through the runner of
@@ -331,12 +332,16 @@ function actionResult(ctx: SessionActorContext, scope: SessionScope): Promise<Se
 }
 
 /**
- * « Reprendre »: `claude --resume <id>` in the session's worktree, on its server, with launch
- * options rebuilt for the account that resumes (MCP, variables, policy, limits, Git identity as
- * they are now). Capacity and resumability are checked by the runner (CAPACITY_REACHED,
- * SESSION_NOT_RESUMABLE). Audited `session.resume`.
+ * « Reprendre »: on the session's server, with launch options rebuilt for the account that resumes
+ * (MCP, variables, policy, limits, Git identity as they are now). The runner recreates a removed
+ * worktree from its branch and reopens the conversation recorded by Claude Code (`claude --resume`)
+ * wherever it lies in the account's folders. When it is gone, a fresh CLI starts in the same Nuera
+ * session — only with the owner's choice `context` (« Reprendre avec le contexte »: a summary of the
+ * stored history typed as its first instruction, or nothing); without it the runner answers
+ * RESUME_CONTEXT_REQUIRED and the dialog asks. Capacity is checked by the runner
+ * (CAPACITY_REACHED). Audited `session.resume`.
  */
-export async function resumeSession(ctx: SessionActorContext, sessionId: string): Promise<SessionActionResult> {
+export async function resumeSession(ctx: SessionActorContext, sessionId: string, options: { context?: boolean } = {}): Promise<SessionActionResult> {
   const { scope, row } = await readScopedSession(ctx, sessionId);
   if (row.status === 'archived') {
     throw new AppError('CONFLICT', 'Session archivée : elle ne peut plus être reprise.', { untouched: "L'historique reste lisible." });
@@ -345,15 +350,47 @@ export async function resumeSession(ctx: SessionActorContext, sessionId: string)
   const current = await scope.runner.getSession({ params: { sessionId: scope.sessionId } });
   if (current.live) return actionResult(ctx, scope);
   const plan = await buildLaunchPlan(ctx, scope, row);
-  const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch: plan.launch } });
+  let fresh: { context: string | null } | undefined;
+  if (options.context !== undefined) {
+    fresh = { context: null };
+    if (options.context) {
+      const [where] = await db
+        .select({ branch: worktrees.branch })
+        .from(sessions)
+        .leftJoin(worktrees, eq(worktrees.id, sessions.worktreeId))
+        .where(and(eq(sessions.id, scope.sessionId), eq(sessions.environmentId, scope.environmentId)))
+        .limit(1);
+      const stored = await readResumeContextInput(scope.sessionId);
+      fresh.context = buildResumeContext({
+        title: row.title,
+        projectName: row.projectName,
+        branch: where?.branch ?? null,
+        ...stored,
+        // The session's own variables (decrypted for this launch) never reach the summary.
+        secrets: [...Object.values(plan.launch.env ?? {}), ...Object.values(plan.launch.settingsEnv ?? {})],
+      });
+    }
+  }
+  const dto: SessionDto = await scope.runner.resumeSession({ params: { sessionId: scope.sessionId }, body: { launch: plan.launch, ...(fresh ? { fresh } : {}) } });
   await recordSessionConfig(scope.sessionId, scope.spaceId, plan.common);
+  const mode = dto.resumeMode ?? 'conversation';
   await auditIn(ctx, {
     action: SESSION_AUDIT_ACTIONS.resume,
-    summary: `session reprise : « ${dto.title} » · ${row.projectName}`,
+    summary:
+      mode === 'context'
+        ? `session reprise avec un nouveau contexte${fresh?.context ? ' (résumé envoyé)' : ''} : « ${dto.title} » · ${row.projectName}`
+        : `session reprise : « ${dto.title} » · ${row.projectName}`,
     targetType: 'session',
     targetId: scope.sessionId,
     environmentId: scope.environmentId,
-    metadata: { projectId: scope.projectId, previousStatus: row.status, resumeCount: dto.resumeCount },
+    metadata: {
+      projectId: scope.projectId,
+      previousStatus: row.status,
+      resumeCount: dto.resumeCount,
+      mode,
+      contextSent: Boolean(fresh?.context),
+      ...(fresh?.context ? { contextLength: fresh.context.length } : {}),
+    },
   });
   return actionResult(ctx, scope);
 }

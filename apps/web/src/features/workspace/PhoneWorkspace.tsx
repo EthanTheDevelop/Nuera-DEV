@@ -56,7 +56,7 @@ function ActionsSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (op
               menu.openRename();
             }, 'edit')}
             {menu.canResume
-              ? row('Reprendre la session', () => {
+              ? row(menu.resumeLabel, () => {
                   close();
                   void menu.resume();
                 }, 'play', { loading: menu.resuming })

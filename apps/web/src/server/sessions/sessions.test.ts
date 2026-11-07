@@ -1,4 +1,4 @@
-import { appSettings, auditLog, projectEnvVars, projects, sessions, spaceSettings, userPreferences, worktrees } from '@nuera/db/schema';
+import { appSettings, auditLog, projectEnvVars, projects, sessionEvents, sessions, spaceSettings, userPreferences, worktrees } from '@nuera/db/schema';
 import type { SessionDto } from '@nuera/shared/runner';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -362,6 +362,49 @@ describe('archive, rename, stop, resume', () => {
     await expect(resumeSession(ctx, archived.id)).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
+  it('resumes a lost conversation only with the owner\'s choice, the context built from the stored history without secrets', async () => {
+    const project = await createProject();
+    const wt = await createWorktree(project.id, 'a', 'feature/devis');
+    const lost = await createSessionRow(project.id, wt.id, { status: 'stopped', title: 'Remise client', transcriptPath: '/perdu.jsonl' });
+    const at = new Date().toISOString();
+    await (await db()).insert(sessionEvents).values([
+      { sessionId: lost.id, position: 1, version: 1, kind: 'instruction', payload: { text: 'Ajoute la remise de 10 % sur les devis', source: 'nuera', at } },
+      { sessionId: lost.id, position: 2, version: 2, kind: 'tool', payload: { toolUseId: 't1', tool: 'Edit', target: 'src/devis/remise.ts', status: 'done', meta: null, summary: null, output: null, outputTruncated: false, error: null, permissionId: null, subagent: null, startedAt: at, finishedAt: at } },
+      { sessionId: lost.id, position: 3, version: 3, kind: 'tool', payload: { toolUseId: 't2', tool: 'Bash', target: 'git commit -m "feat: remise"', status: 'done', meta: null, summary: null, output: '[feature/devis 4f2a9c1] feat: remise sur les devis\n 1 file changed', outputTruncated: false, error: null, permissionId: null, subagent: null, startedAt: at, finishedAt: at } },
+      { sessionId: lost.id, position: 4, version: 4, kind: 'instruction', payload: { text: 'Utilise STRIPE_SECRET_KEY=sk_live_abcdefghijklmnop et le jeton ghp_abcdefghijklmnopqrstuvwxyz0123', source: 'nuera', at } },
+      { sessionId: lost.id, position: 5, version: 5, kind: 'assistant', payload: { text: 'La remise est appliquée, les tests passent.', source: 'stop', final: true, at } },
+    ]);
+    runnerMock.getSession.mockResolvedValue(dto({ id: lost.id, projectId: project.id, status: 'stopped', resumable: true, resumeMode: 'context' }));
+    const { RunnerError } = await import('@/server/runner/client');
+    runnerMock.resumeSession.mockRejectedValueOnce(
+      new RunnerError('CONFLICT', 'La conversation enregistrée par Claude Code est introuvable : reprenez la session avec un nouveau contexte.', { status: 409, reason: 'RESUME_CONTEXT_REQUIRED' }),
+    );
+    const { resumeSession } = await import('./index');
+    // Without the owner's choice the runner refuses (nothing sent but the launch options).
+    await expect(resumeSession(ctx, lost.id)).rejects.toMatchObject({ reason: 'RESUME_CONTEXT_REQUIRED' });
+    expect(runnerMock.resumeSession.mock.calls[0]![0].body).not.toHaveProperty('fresh');
+
+    runnerMock.resumeSession.mockResolvedValue(dto({ id: lost.id, projectId: project.id, status: 'waiting_input', live: true, resumeCount: 1, resumeMode: 'context' }));
+    await resumeSession(ctx, lost.id, { context: true });
+    const context = runnerMock.resumeSession.mock.calls[1]![0].body?.fresh?.context ?? '';
+    expect(context).toContain('Reprise de la session « Remise client » du projet Devis Express');
+    expect(context).toContain('Branche : feature/devis.');
+    expect(context).toContain('Dernier commit : 4f2a9c1 feat: remise sur les devis.');
+    expect(context).toContain('1. Ajoute la remise de 10 % sur les devis');
+    expect(context).toContain('- La remise est appliquée, les tests passent.');
+    expect(context).toContain('Fichiers modifiés : src/devis/remise.ts.');
+    expect(context).toContain('STRIPE_SECRET_KEY=[masqué]');
+    expect(context).not.toContain('sk_live_abcdefghijklmnop');
+    expect(context).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123');
+    const [entry] = await (await db()).select().from(auditLog).where(eq(auditLog.action, 'session.resume'));
+    expect(entry?.summary).toBe('session reprise avec un nouveau contexte (résumé envoyé) : « Session » · Devis Express');
+    expect(entry?.metadata).toMatchObject({ mode: 'context', contextSent: true });
+
+    // « Reprendre » without the summary: a fresh CLI, nothing typed first.
+    await resumeSession(ctx, lost.id, { context: false });
+    expect(runnerMock.resumeSession.mock.calls[2]![0].body?.fresh).toEqual({ context: null });
+  });
+
   it('starts a session that never ran with the policy of the space (pre-upgrade launch.json without the bypass block)', async () => {
     const project = await createProject();
     const wt = await createWorktree(project.id, 'a', 'feature/a');
@@ -485,28 +528,27 @@ describe('listSessions / getCapacity', () => {
     await createSessionRow(project.id, wt.id, { status: 'finished', title: 'Ancienne', startedAt: new Date(Date.now() - 60 * 86_400_000) });
     await createSessionRow(project.id, wt.id, { status: 'running', title: 'En cours', startedAt: at(7) });
     runnerMock.getSession.mockImplementation(async ({ params }) =>
-      dto({ id: params.sessionId, projectId: project.id, status: 'interrupted', resumable: params.sessionId === resumable.id }),
+      dto({ id: params.sessionId, projectId: project.id, status: 'interrupted', resumable: true, resumeMode: params.sessionId === resumable.id ? 'conversation' : 'context' }),
     );
     const { listSessions, getCapacity } = await import('./index');
 
     const all = await listSessions(ctx, { status: 'history' });
     expect(all.items.map((i) => i.title)).toEqual(['Galerie photos', 'Correctif tarifs', 'Journal perdu', 'Audit 100% contrastes', 'Migration']);
     expect(all.items[0]!.durationMs).toBe(3_600_000);
-    expect(all.items.find((i) => i.id === removed.id)?.resumeBlockedReason).toBe('worktree_removed');
-    expect(all.items.find((i) => i.id === lost.id)).toMatchObject({ resumable: false, resumeBlockedReason: 'not_recorded' });
+    // A removed worktree (recreated) or a lost journal (new context) no longer blocks « Reprendre ».
+    expect(all.items.find((i) => i.id === removed.id)).toMatchObject({ resumable: true, resumeMode: 'context', resumeBlockedReason: null });
+    expect(all.items.find((i) => i.id === lost.id)).toMatchObject({ resumable: true, resumeMode: 'context', resumeBlockedReason: null });
+    expect(all.items.find((i) => i.id === resumable.id)).toMatchObject({ resumable: true, resumeMode: 'conversation' });
     expect(all.verified).toBe(true);
 
-    expect((await listSessions(ctx, { status: 'history', filter: 'reprise-possible' })).items.map((i) => i.id)).toEqual([resumable.id]);
-    // « Journal perdu »: recorded in the database, but the runner no longer finds its journal.
-    expect((await listSessions(ctx, { status: 'history', filter: 'reprise-impossible' })).items.map((i) => i.id)).toEqual([lost.id, removed.id]);
+    expect((await listSessions(ctx, { status: 'history', filter: 'reprise-possible' })).items.map((i) => i.id)).toEqual([resumable.id, lost.id, removed.id]);
+    // Only an archived project makes a resumption impossible.
+    expect((await listSessions(ctx, { status: 'history', filter: 'reprise-impossible' })).items).toEqual([]);
     // Post-filtered pages are filled from the following rows, and the cursor resumes after the last row read.
-    const firstImpossible = await listSessions(ctx, { status: 'history', filter: 'reprise-impossible', limit: 1 });
-    expect(firstImpossible.items.map((i) => i.id)).toEqual([lost.id]);
-    const next = await listSessions(ctx, { status: 'history', filter: 'reprise-impossible', limit: 1, cursor: firstImpossible.nextCursor });
-    expect(next.items.map((i) => i.id)).toEqual([removed.id]);
-    expect(next.nextCursor).toBeNull();
     const onlyResumable = await listSessions(ctx, { status: 'history', filter: 'reprise-possible', limit: 1 });
     expect(onlyResumable.items.map((i) => i.id)).toEqual([resumable.id]);
+    const next = await listSessions(ctx, { status: 'history', filter: 'reprise-possible', limit: 1, cursor: onlyResumable.nextCursor });
+    expect(next.items.map((i) => i.id)).toEqual([lost.id]);
     expect((await listSessions(ctx, { status: 'history', filter: 'terminees', period: 'tout' })).items).toHaveLength(2);
     expect((await listSessions(ctx, { status: 'history', q: '100%' })).items.map((i) => i.id)).toEqual([removed.id]);
     expect((await listSessions(ctx, { status: 'history', q: 'feature/b' })).items.map((i) => i.id)).toEqual([removed.id]);

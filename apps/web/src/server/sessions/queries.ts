@@ -1,7 +1,7 @@
 import 'server-only';
 import { permissionRequests, projects, sessionEvents, sessions, worktrees } from '@nuera/db/schema';
 import { parseUsageLimit, type SessionDto } from '@nuera/shared/runner';
-import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   ACTIVE_STATUSES,
   HISTORY_PAGE_SIZE,
@@ -37,9 +37,10 @@ import { NOT_FOUND_MESSAGES, ofSpace, scopeOfSession } from '@/server/tenancy/sc
 
 const RESUMABLE_STATUSES = ['interrupted', 'stopped', 'failed'] as const satisfies readonly SessionStatus[];
 /**
- * Ended statuses `claude --resume` accepts — the runner's rule (`resumable`: not live, not archived,
- * worktree and journal present). A finished session can be resumed too (D06 menu « Reprendre »); it
- * keeps its « Terminée » badge, and the « reprise » filters stay about interrupted conversations.
+ * Ended statuses « Reprendre » accepts — the runner's rule (`resumable`: not live, neither the session
+ * nor its project archived; a removed worktree is recreated, a lost conversation restarts with a new
+ * context). A finished session can be resumed too (D06 menu « Reprendre »); it keeps its « Terminée »
+ * badge, and the « reprise » filters stay about interrupted conversations.
  */
 const RESUME_STATUSES = [...RESUMABLE_STATUSES, 'finished'] as const satisfies readonly SessionStatus[];
 
@@ -69,6 +70,7 @@ const columns = {
   projectSlug: projects.slug,
   projectFullName: projects.githubFullName,
   projectArchivedAt: projects.archivedAt,
+  projectStatus: projects.status,
   worktreeId: worktrees.id,
   worktreeName: worktrees.name,
   worktreeBranch: worktrees.branch,
@@ -106,6 +108,8 @@ export type SessionRow = {
   projectSlug: string;
   projectFullName: string;
   projectArchivedAt: Date | null;
+  /** `ready`, `cloning`, `error`, `archived` (absent from rows read by older queries: ready). */
+  projectStatus?: string;
   worktreeId: string | null;
   worktreeName: string | null;
   worktreeBranch: string | null;
@@ -135,23 +139,23 @@ function worktreePresent(row: SessionRow): boolean {
   return Boolean(row.worktreeId && row.worktreeStatus === 'active' && !row.worktreeRemovedAt);
 }
 
-/** « Reprise possible » as far as the database can tell (the runner also checks the journal on disk). */
-export function resumableFromDatabase(row: SessionRow): boolean {
-  return (
-    (RESUME_STATUSES as readonly SessionStatus[]).includes(row.status) &&
-    Boolean(row.transcriptPath) &&
-    worktreePresent(row) &&
-    !row.projectArchivedAt
-  );
+function projectUsable(row: Pick<SessionRow, 'projectArchivedAt' | 'projectStatus'>): boolean {
+  return !row.projectArchivedAt && (row.projectStatus ?? 'ready') !== 'archived';
 }
 
-export function resumeBlockedReason(row: SessionRow, resumable: boolean): ResumeBlockedReason | null {
+/**
+ * « Reprise possible » as far as the database can tell — the same rule as the runner: an ended
+ * session of a project that is not archived (the runner also tells HOW: `resumeMode`).
+ */
+export function resumableFromDatabase(row: Pick<SessionRow, 'status' | 'projectArchivedAt' | 'projectStatus'>): boolean {
+  return (RESUME_STATUSES as readonly SessionStatus[]).includes(row.status) && projectUsable(row);
+}
+
+export function resumeBlockedReason(row: Pick<SessionRow, 'status' | 'projectArchivedAt' | 'projectStatus'>, resumable: boolean): ResumeBlockedReason | null {
   if (resumable) return null;
   if (row.status === 'archived') return 'archived';
   if (!(RESUMABLE_STATUSES as readonly SessionStatus[]).includes(row.status)) return null;
-  if (row.projectArchivedAt) return 'project_archived';
-  if (!worktreePresent(row)) return 'worktree_removed';
-  return 'not_recorded';
+  return projectUsable(row) ? null : 'project_archived';
 }
 
 export function toListItem(
@@ -172,6 +176,7 @@ export function toListItem(
     status,
     live,
     resumable,
+    resumeMode: resumable ? (dto?.resumeMode ?? null) : null,
     resumeBlockedReason: resumeBlockedReason({ ...row, status }, resumable),
     project: {
       id: row.projectId,
@@ -307,13 +312,7 @@ export function likePattern(q: string): string {
 }
 
 function resumableSql(): SQL {
-  return and(
-    inArray(sessions.status, [...RESUMABLE_STATUSES]),
-    isNotNull(sessions.transcriptPath),
-    eq(worktrees.status, 'active'),
-    isNull(worktrees.removedAt),
-    isNull(projects.archivedAt),
-  )!;
+  return and(inArray(sessions.status, [...RESUMABLE_STATUSES]), isNull(projects.archivedAt), ne(projects.status, 'archived'))!;
 }
 
 function filterSql(filter: HistoryFilter): SQL {
@@ -325,8 +324,8 @@ function filterSql(filter: HistoryFilter): SQL {
     case 'reprise-possible':
       return resumableSql();
     case 'reprise-impossible':
-      // Every stopped conversation: the runner's answer decides (listSessions keeps the non-resumable ones).
-      return inArray(sessions.status, [...RESUMABLE_STATUSES]);
+      // Only an archived project blocks a resumption now (worktree recreated, new context otherwise).
+      return and(inArray(sessions.status, [...RESUMABLE_STATUSES]), or(isNotNull(projects.archivedAt), eq(projects.status, 'archived')))!;
     default:
       return inArray(sessions.status, [...HISTORY_STATUSES]);
   }
