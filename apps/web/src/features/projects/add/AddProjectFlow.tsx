@@ -573,8 +573,8 @@ function PhoneShell({
   // (the list, for the intercepted route) is inert; it stays inside <main>, which keeps its landmark.
   return (
     <RadixDialog.Root open modal onOpenChange={(open) => !open && onDismiss()}>
-      <RadixDialog.Content aria-describedby={undefined} onInteractOutside={(event) => event.preventDefault()} className="fixed inset-0 z-40 flex flex-col bg-bg outline-none">
-        <div className="pt-[env(safe-area-inset-top)]">
+      <RadixDialog.Content aria-describedby={undefined} onInteractOutside={(event) => event.preventDefault()} className="fixed inset-0 z-[45] flex flex-col bg-bg outline-none">
+        <div className="pt-(--shell-top)">
           <div className="flex h-[52px] items-center gap-2 px-2">
             <div className="w-11 shrink-0">{leading}</div>
             <RadixDialog.Title asChild>

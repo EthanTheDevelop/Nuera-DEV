@@ -241,7 +241,7 @@ export function PhoneWorkspace() {
 
   return (
     <div
-      className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden bg-surface-raised pt-[env(safe-area-inset-top)]"
+      className="flex min-h-0 w-full min-w-0 flex-col overflow-hidden bg-surface-raised pt-(--shell-top)"
       style={{ height: keyboard.inset > 0 ? `calc(100dvh - ${keyboard.inset}px)` : '100dvh' }}
     >
       <PhoneHeader />
