@@ -221,6 +221,10 @@ export function setModelRequest(sessionId: string, model: string): Promise<{ app
   return call(`${sessionUrl(sessionId)}/model`, post({ model }), "Le modèle n'a pas pu être changé.");
 }
 
+export function setEffortRequest(sessionId: string, effort: string): Promise<{ applied: 'live' | 'next_launch'; session: { effort: string | null; cliStatus: { effort: string | null } | null } }> {
+  return call(`${sessionUrl(sessionId)}/effort`, post({ effort }), "L'effort n'a pas pu être changé.");
+}
+
 export function setPermissionModeRequest(
   sessionId: string,
   mode: SwitchablePermissionMode,

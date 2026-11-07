@@ -11,17 +11,20 @@ import { toast } from '@/components/ui';
 import {
   fetchComposerPalette,
   fetchTree,
+  setEffortRequest,
   setModelRequest,
   setPermissionModeRequest,
   uploadAttachmentRequest,
   WorkspaceApiError,
 } from '../api';
 import {
+  COMPOSER_EFFORT_OPTIONS,
   COMPOSER_MODE_HINTS,
   COMPOSER_MODE_LABELS,
   COMPOSER_MODE_SHORT,
   SWITCHABLE_MODES,
   composerModelOptions,
+  effortChipLabel,
   type ComposerPaletteData,
   type SwitchablePermissionMode,
 } from '../lib/composer';
@@ -166,6 +169,40 @@ export function useWorkspaceComposerTools(variant: 'desktop' | 'phone'): {
   const modelBusy =
     live && session.status === 'running' ? "Disponible à la fin de l'étape en cours." : null;
 
+  // --- Effort chip ---------------------------------------------------------------------------------
+  const reportedEffort = session.cliStatus?.effort ?? null;
+  const [sendingEffort, setSendingEffort] = useState(false);
+  const selectEffort = useCallback(
+    async (value: string) => {
+      setSendingEffort(true);
+      setError(null);
+      try {
+        const result = await setEffortRequest(sessionId, value);
+        ws.ctl.dispatch({
+          type: 'session',
+          patch: {
+            effort: result.session.effort,
+            ...(result.applied === 'live' && session.cliStatus
+              ? { cliStatus: { ...session.cliStatus, effort: result.session.cliStatus?.effort ?? null } }
+              : {}),
+          },
+        });
+        const label = COMPOSER_EFFORT_OPTIONS.find((o) => o.value === value)?.label ?? value;
+        toast({
+          message:
+            result.applied === 'live'
+              ? `/effort ${value} confirmé par le CLI.`
+              : `Effort « ${label} » au prochain démarrage de Claude Code.`,
+        });
+      } catch (e) {
+        setError(toActionError(e, "L'effort n'a pas changé"));
+      } finally {
+        setSendingEffort(false);
+      }
+    },
+    [session.cliStatus, sessionId, ws.ctl],
+  );
+
   // --- Mode chip -----------------------------------------------------------------------------------
   const [sendingMode, setSendingMode] = useState(false);
   const selectMode = useCallback(
@@ -209,6 +246,16 @@ export function useWorkspaceComposerTools(variant: 'desktop' | 'phone'): {
       pending: sendingModel || Boolean(pendingModel),
       disabledReason: blocked ?? modelBusy,
       note: live ? 'Tapé dans le CLI (/model), une fois Claude au repos.' : NEXT_LAUNCH_NOTE,
+    },
+    effort: {
+      title: "Niveau d'effort",
+      label: effortChipLabel({ reported: live ? reportedEffort : null, launch: session.effort, live }),
+      options: COMPOSER_EFFORT_OPTIONS,
+      value: (live ? reportedEffort : null) ?? session.effort ?? 'auto',
+      onSelect: (value) => void selectEffort(value),
+      pending: sendingEffort,
+      disabledReason: blocked ?? modelBusy,
+      note: live ? 'Tapé dans le CLI (/effort), une fois Claude au repos.' : NEXT_LAUNCH_NOTE,
     },
     mode: {
       title: 'Mode de permission',

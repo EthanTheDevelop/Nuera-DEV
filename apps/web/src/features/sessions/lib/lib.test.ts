@@ -11,6 +11,7 @@ function item(partial: Partial<SessionListItem> & { id: string }): SessionListIt
     status: 'running',
     live: true,
     resumable: false,
+    resumeMode: null,
     resumeBlockedReason: null,
     project: { id: 'p1', name: 'Nuera OS', slug: 'nuera-os', fullName: 'nuera-studio/nuera-os', archived: false },
     branch: 'feature/x',

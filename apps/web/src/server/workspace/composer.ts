@@ -7,6 +7,7 @@ import type {
 } from '@nuera/shared/runner';
 import {
   composerModelOptions,
+  type ComposerEffort,
   type ComposerPaletteData,
   type SwitchablePermissionMode,
 } from '@/features/workspace/lib/composer';
@@ -33,6 +34,7 @@ type WorkspaceCtx = Pick<RequestContext, 'user' | 'space' | 'environment'>;
 export const COMPOSER_AUDIT_ACTIONS = {
   attachment: 'session.attachment',
   model: 'session.model',
+  effort: 'session.effort',
   permissionMode: 'session.permission_mode',
 } as const;
 
@@ -97,6 +99,29 @@ export async function setSessionModel(
     targetId: scope.sessionId,
     environmentId: scope.environmentId,
     metadata: { projectId: project.id, model, applied: result.applied },
+  });
+  return result;
+}
+
+/** Effort chip: `/effort <level>` typed into the idle CLI (allowlisted), else `--effort` of the next launch. */
+export async function setSessionEffort(
+  ctx: WorkspaceCtx,
+  sessionId: string,
+  effort: ComposerEffort,
+): Promise<SessionCommandResult> {
+  const { scope, session, project } = await drivableSession(ctx, sessionId);
+  const result = await scope.runner.sessionCommand({
+    params: { sessionId: scope.sessionId },
+    body: { command: 'effort', effort },
+  });
+  const shown = effort === 'auto' ? 'défaut du CLI' : effort;
+  await auditIn(ctx, {
+    action: COMPOSER_AUDIT_ACTIONS.effort,
+    summary: `Effort « ${shown} » ${result.applied === 'live' ? 'appliqué' : 'choisi pour le prochain démarrage'} · session « ${session.title} » · ${project.name}`,
+    targetType: 'session',
+    targetId: scope.sessionId,
+    environmentId: scope.environmentId,
+    metadata: { projectId: project.id, effort, applied: result.applied },
   });
   return result;
 }

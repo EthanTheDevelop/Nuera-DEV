@@ -27,7 +27,8 @@ function assertUsable(status: string, archivedAt: Date | null): void {
  * session whose CLI is not running is first launched by the sessions lot with options rebuilt for
  * this account (MCP, variables, effective policy of the space, Git identity): a new session starts
  * its CLI at the first instruction (W1, `startNewSession`); a session whose CLI is gone (terminée,
- * interrompue, arrêtée) is resumed with `claude --resume` (audited `session.resume`). The
+ * interrompue, arrêtée) is resumed with `claude --resume`, or afresh in the same session when its
+ * conversation is gone (audited `session.resume`). The
  * instruction then joins that run. While the CLI waits for a permission the runner refuses (409
  * SESSION_BUSY_PERMISSION).
  */
@@ -43,7 +44,9 @@ export async function sendInstruction(ctx: WorkspaceCtx, sessionId: string, text
       await startNewSession(ctx, scope.sessionId);
       started = true;
     } else {
-      await resumeSession(ctx, scope.sessionId);
+      // The owner typed this instruction: a conversation the CLI cannot reopen restarts afresh with
+      // it, without the summary (only « Reprendre avec le contexte » sends one).
+      await resumeSession(ctx, scope.sessionId, { context: false });
       resumed = true;
     }
   }

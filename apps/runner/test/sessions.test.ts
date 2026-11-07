@@ -266,10 +266,11 @@ describe.skipIf(!dbReady)('Claude session pipeline (fake CLI, PTY backend)', () 
     }, { timeoutMs: 300_000, intervalMs: 500, label: 'session start hook' });
     await inject('POST', `/v1/sessions/${id}/stop`, { force: true });
     await waitFor(async () => (await session(id)).status === 'stopped', { timeoutMs: 60_000, label: 'stopped' });
-    // Nothing was said: no journal to resume (a real CLI writes it at the first message).
+    // Nothing was said: no journal (a real CLI writes it at the first message), nothing to lose —
+    // « Reprendre » starts the same conversation id afresh.
     const [row] = await env.db.select().from(sessions).where(eq(sessions.id, id));
     rmSync(row!.transcriptPath!, { force: true });
-    expect((await session(id)).resumable).toBe(false);
+    expect(await session(id)).toMatchObject({ resumable: true, resumeMode: 'conversation' });
 
     const notifications: RunnerEvent[] = [];
     const off = env.runner.services.bus.subscribe('global', (e) => {

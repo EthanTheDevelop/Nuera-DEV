@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import pidusage from 'pidusage';
 import { permissionRequests, projects, sessionEvents, sessions, worktrees, type Database } from '@nuera/db';
@@ -30,7 +31,7 @@ import type { ClaudeAccount, ClaudeAccounts } from '../claude/accounts';
 import { resolveClaudeCommand } from '../claude/bin';
 import type { CommonConfigSync } from '../claude/common-config';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
-import { getPermissionRow, getReadyProject, getSessionRow, getWorktree, type WorktreeRow } from '../db/lookups';
+import { getPermissionRow, getProject, getReadyProject, getSessionRow, getWorktree, type WorktreeRow } from '../db/lookups';
 import type { EnvironmentScope } from '../environment';
 import { GLOBAL, sessionChannel, type EventBus } from '../events/bus';
 import { RunnerError } from '../errors';
@@ -64,7 +65,7 @@ import {
 } from './runtime-files';
 import { sanitizeStatusLine, statusFingerprint } from './statusline';
 import { planFromTodoWrite, toolOutcome, toolSummary, toolTarget } from './tool-meta';
-import { TranscriptTailer, transcriptsRoot, validateTranscriptPath, type TranscriptText } from './transcript';
+import { findTranscript, placeTranscript, TranscriptTailer, transcriptsRoot, validateTranscriptPath, type TranscriptText } from './transcript';
 import { startupScreenAction } from './startup-screens';
 import { detectPermissionMode } from './composer-tools';
 import {
@@ -140,7 +141,23 @@ interface LiveSession {
   planCurrent: string | null;
   /** Set once the process is gone and the final status is being written. */
   finalizing?: Promise<void>;
+  /** How this run started: a plain start, `claude --resume` of the recorded conversation, a fresh CLI after a lost one. */
+  launchMode: LaunchMode;
+  /** Screen output until the CLI is ready (tells a refused `--resume` from another early exit). */
+  bootOutput: string;
 }
+
+type LaunchMode = 'start' | 'conversation' | 'context';
+type ResumeMode = Exclude<LaunchMode, 'start'>;
+
+/** Ended statuses « Reprendre » accepts (a finished session can be taken up again too). */
+const RESUMABLE_STATUSES: readonly string[] = ['interrupted', 'stopped', 'failed', 'finished'];
+
+/** What the CLI prints when `--resume <id>` cannot open the conversation (it then exits). */
+const RESUME_REFUSED = /No conversation found with session ID|Unable to load transcript|Failed to resume session|--resume file unreadable|--resume session load failed/i;
+
+/** errorCode of a session whose recorded conversation the CLI refused to reopen. */
+const RESUME_NOT_FOUND = 'resume_not_found';
 
 export interface SessionManagerDeps {
   db: Database;
@@ -196,7 +213,7 @@ export function usageLimitMessage(limit: UsageLimit, now: number = Date.now()): 
 /** Delay before a new try when the automatic resumption could not run (capacity reached, permission pending). */
 const AUTO_RESUME_BUSY_RETRY_MS = 5 * 60_000;
 /** Refusals after which an automatic resumption is not tried again. */
-const AUTO_RESUME_FINAL_REASONS = new Set(['SESSION_NOT_RESUMABLE', 'WORKTREE_MISSING', 'CLAUDE_NOT_INSTALLED', 'BYPASS_BLOCKED']);
+const AUTO_RESUME_FINAL_REASONS = new Set(['SESSION_NOT_RESUMABLE', 'WORKTREE_MISSING', 'CLAUDE_NOT_INSTALLED', 'BYPASS_BLOCKED', 'RESUME_CONTEXT_REQUIRED']);
 /** Longest single timer; a later attempt is re-armed on wake-up. */
 const MAX_TIMER_MS = 60 * 60_000;
 /** Composer chips: wait for « Set model to … », Maj+Tab presses before giving up on a mode. */
@@ -315,6 +332,8 @@ export class SessionManager {
   private readonly policy: AutoResumePolicy;
   /** Last permission mode the CLI reported for a live session (hooks), to write only its changes. */
   private readonly reportedModes = new Map<string, SessionRow['permissionMode']>();
+  /** Last effort level the CLI reported for a live session (hooks), to write only its changes. */
+  private readonly reportedEfforts = new Map<string, string>();
 
   constructor(private readonly deps: SessionManagerDeps) {
     this.policy = { ...DEFAULT_AUTO_RESUME_POLICY, ...Object.fromEntries(Object.entries(deps.autoResume ?? {}).filter(([, v]) => v !== undefined)) };
@@ -333,6 +352,44 @@ export class SessionManager {
   /** Same config dir as the session CLI's (its account's): the only place its transcripts may live. */
   private transcriptRoot(live: Pick<LiveSession, 'account'>): string {
     return transcriptsRoot(live.account.configDir);
+  }
+
+  /**
+   * `projects/` folders where THIS account's conversations may be (never another account's): its
+   * own config folder first; for the server's first account, also the folders it used before
+   * (CLAUDE_CONFIG_DIR of the runner, `~/.claude` of its HOME) — a change of NUERA_CLAUDE_CONFIG_DIR
+   * or of the container's HOME must not lose its conversations.
+   */
+  private transcriptRoots(account: ClaudeAccount): string[] {
+    const roots = [transcriptsRoot(account.configDir)];
+    if (account.primary) {
+      const env = process.env.CLAUDE_CONFIG_DIR?.trim();
+      if (env) roots.push(path.join(env, 'projects'));
+      roots.push(path.join(os.homedir(), '.claude', 'projects'));
+    }
+    return [...new Set(roots.map((root) => path.resolve(root)))];
+  }
+
+  /** Conversation recorded by Claude Code for this session, wherever it lies in the account's folders. */
+  private async findConversation(row: SessionRow, account: ClaudeAccount, cwd: string) {
+    return findTranscript({ conversationId: row.claudeSessionId ?? row.id, recordedPath: row.transcriptPath, roots: this.transcriptRoots(account), cwd });
+  }
+
+  /**
+   * « Reprendre » of an ended session: possible unless archived (or its project is), and what it
+   * will do — reopen the recorded conversation, or start a fresh CLI when it is gone (a session
+   * that never received an instruction has nothing to lose: same conversation id, afresh).
+   */
+  private async resumePlan(row: SessionRow, worktree: WorktreeRow | null): Promise<{ resumable: boolean; mode: ResumeMode | null }> {
+    if (!RESUMABLE_STATUSES.includes(row.status) || row.archivedAt) return { resumable: false, mode: null };
+    const project = await getProject(this.deps.db, this.envId, row.projectId).catch(() => null);
+    if (!project || project.status !== 'ready' || project.archivedAt) return { resumable: false, mode: null };
+    if (row.errorCode === RESUME_NOT_FOUND) return { resumable: true, mode: 'context' };
+    const account = await this.deps.accounts.forSpace(project.spaceId).catch(() => null);
+    const cwd = worktree && worktree.status !== 'removed' ? worktree.path : project.path;
+    const found = account ? await this.findConversation(row, account, cwd) : null;
+    if (found) return { resumable: true, mode: 'conversation' };
+    return { resumable: true, mode: (await this.countTurns(row.id)) === 0 ? 'conversation' : 'context' };
   }
 
   // -------------------------------------------------------------------------------------------
@@ -396,8 +453,7 @@ export class SessionManager {
       worktree = w ?? null;
     }
     const pending = await this.pendingPermissionRow(row.id);
-    const transcriptExists = Boolean(row.transcriptPath && existsSync(row.transcriptPath));
-    const worktreePresent = Boolean(worktree && worktree.status !== 'removed' && existsSync(worktree.path));
+    const plan = live ? null : await this.resumePlan(row, worktree);
     return {
       id: row.id,
       projectId: row.projectId,
@@ -412,7 +468,8 @@ export class SessionManager {
       remoteControl: row.remoteControl,
       remoteControlUrl: row.remoteControlUrl,
       live: Boolean(live),
-      resumable: !live && worktreePresent && transcriptExists && row.status !== 'archived',
+      resumable: plan?.resumable ?? false,
+      resumeMode: live ? (live.launchMode === 'start' ? null : live.launchMode) : (plan?.mode ?? null),
       pid: live?.pid ?? null,
       terminalId: live?.terminal?.id ?? null,
       lastInstruction: row.lastInstruction,
@@ -506,6 +563,7 @@ export class SessionManager {
       limit: parseUsageLimit(row.usageLimit),
       permissionMode: row.permissionMode,
       model: row.model,
+      effort: row.effort,
     };
     this.deps.bus.publish('session.status', data, { channels: [GLOBAL, sessionChannel(row.id)] });
   }
@@ -676,34 +734,136 @@ export class SessionManager {
     return this.dto(sessionId);
   }
 
-  async resume(sessionId: string, launch?: Partial<SessionLaunchOptions>, queue: string[] = []): Promise<SessionDto> {
+  /**
+   * « Reprendre » — never a dead end while the session and its project are not archived:
+   * 1. the worktree is recreated from its branch when it was removed (local branch, else the remote
+   *    one, else a new branch from the project's default branch), the session keeps its id;
+   * 2. the conversation recorded by Claude Code is looked up by its id in the account's folders and
+   *    put where `claude --resume <id>` reads it (worktree path, HOME or config folder changed);
+   * 3. found: `claude --resume`; never begun: the same id afresh; gone (retention, folder lost, CLI
+   *    refusal): a fresh CLI under a new conversation id — only with `fresh` (the owner's choice,
+   *    with or without the context built by the web from the stored history), else
+   *    RESUME_CONTEXT_REQUIRED and nothing is touched.
+   */
+  async resume(
+    sessionId: string,
+    launch?: Partial<SessionLaunchOptions>,
+    queue: string[] = [],
+    options: { fresh?: { context: string | null }; actorUserId?: string | null } = {},
+  ): Promise<SessionDto> {
     const row = await this.row(sessionId);
     if (this.isActive(sessionId)) {
       // Already running (or starting): the instructions join that run.
       await this.launch(sessionId, { resume: false, queue });
       return this.dto(sessionId);
     }
-    if (row.status === 'archived') throw new RunnerError('CONFLICT', 'Session archivée.', { reason: 'SESSION_NOT_RESUMABLE' });
+    if (row.status === 'archived' || row.archivedAt) throw new RunnerError('CONFLICT', 'Session archivée.', { reason: 'SESSION_NOT_RESUMABLE' });
     if (row.status === 'new') {
       if (launch) await this.refreshLaunch(sessionId, launch);
       await this.launch(sessionId, { resume: false, queue });
       return this.dto(sessionId);
     }
-    if (!row.transcriptPath || !existsSync(row.transcriptPath)) {
-      // Started, then stopped before anything was said (the CLI writes its journal at the first
-      // message): there is nothing to resume, so the same conversation id simply starts afresh.
-      if ((await this.countTurns(sessionId)) === 0) {
-        if (launch) await this.refreshLaunch(sessionId, launch);
-        await this.launch(sessionId, { resume: false, queue });
-        return this.dto(sessionId);
-      }
-      throw new RunnerError('CONFLICT', "Cette conversation n'a pas été enregistrée par Claude Code : elle ne peut pas être reprise.", {
-        reason: 'SESSION_NOT_RESUMABLE',
+    const project = await getReadyProject(this.deps.db, this.envId, row.projectId);
+    if (project.archivedAt) throw new RunnerError('CONFLICT', 'Projet archivé : ses sessions ne peuvent plus être reprises.', { reason: 'SESSION_NOT_RESUMABLE' });
+    const account = await this.deps.accounts.forSpace(project.spaceId);
+    let currentCwd = project.path;
+    if (row.worktreeId) {
+      const [w] = await this.deps.db.select().from(worktrees).where(and(eq(worktrees.id, row.worktreeId), eq(worktrees.environmentId, this.envId))).limit(1);
+      if (w && w.status !== 'removed') currentCwd = w.path;
+    }
+    const found = row.errorCode === RESUME_NOT_FOUND ? null : await this.findConversation(row, account, currentCwd);
+    const turns = found ? null : await this.countTurns(sessionId);
+    const fresh = !found && (row.errorCode === RESUME_NOT_FOUND || (turns ?? 0) > 0);
+    if (fresh && !options.fresh) {
+      throw new RunnerError('CONFLICT', "La conversation enregistrée par Claude Code est introuvable : reprenez la session avec un nouveau contexte.", {
+        reason: 'RESUME_CONTEXT_REQUIRED',
+        untouched: "Rien n'a été modifié.",
+        data: { mode: 'context' },
       });
     }
+    // Nothing is checked after this point that could leave a half-done resumption behind.
+    const worktree = await this.ensureSessionWorktree(row, options.actorUserId ?? null);
     if (launch) await this.refreshLaunch(sessionId, launch);
-    await this.launch(sessionId, { resume: true, queue });
+    if (found) {
+      const placed = await placeTranscript(
+        (await this.findConversation({ ...row, transcriptPath: found.path }, account, worktree.cwd)) ?? found,
+      );
+      await this.deps.db.update(sessions).set({ transcriptPath: placed }).where(this.ownSession(sessionId));
+      if (worktree.notice) await this.appendSystem(sessionId, worktree.notice);
+      await this.launch(sessionId, { resume: true, queue, mode: 'conversation' });
+      return this.dto(sessionId);
+    }
+    if (!fresh) {
+      // Started, then stopped before anything was said (the CLI writes its journal at the first
+      // message): nothing to resume, the same conversation id simply starts afresh.
+      if (worktree.notice) await this.appendSystem(sessionId, worktree.notice);
+      await this.launch(sessionId, { resume: false, queue });
+      return this.dto(sessionId);
+    }
+    // A fresh CLI in the same Nuera session (same thread): a new conversation id, the context first.
+    const conversationId = randomUUID();
+    await this.deps.db
+      .update(sessions)
+      .set({ claudeSessionId: conversationId, transcriptPath: null, errorCode: null, errorMessage: null })
+      .where(this.ownSession(sessionId));
+    await updateLaunchFile(this.deps.dataDir, sessionId, { claudeSessionId: conversationId });
+    const context = options.fresh?.context ?? null;
+    await this.appendSystem(
+      sessionId,
+      [
+        "Reprise avec un nouveau contexte : la conversation enregistrée par Claude Code est introuvable sur le serveur, l'historique de Nuera Dev reste affiché.",
+        context ? 'Un résumé de cet historique est envoyé comme première instruction.' : 'Aucun résumé envoyé : Claude repart sans le contexte précédent.',
+        worktree.notice,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
+    await this.launch(sessionId, { resume: false, queue: context ? [context, ...queue] : queue, mode: 'context' });
     return this.dto(sessionId);
+  }
+
+  private async appendSystem(sessionId: string, message: string): Promise<void> {
+    await this.deps.store.queue.run(sessionId, async () => {
+      await this.deps.store.append(sessionId, 'system', { message, at: nowIso() });
+    });
+  }
+
+  /**
+   * Worktree a resumption runs in: the session's own when its folder is there; otherwise one is
+   * recreated on its branch (git service `restoreWorktree`) and the session points to it. A missing
+   * primary clone is the project folder itself: not recreated here (WORKTREE_MISSING).
+   */
+  private async ensureSessionWorktree(row: SessionRow, actorUserId: string | null): Promise<{ worktreeId: string; cwd: string; notice: string | null }> {
+    let previous: WorktreeRow | null = null;
+    if (row.worktreeId) {
+      const [w] = await this.deps.db.select().from(worktrees).where(and(eq(worktrees.id, row.worktreeId), eq(worktrees.environmentId, this.envId))).limit(1);
+      previous = w ?? null;
+      if (previous && previous.status !== 'removed') {
+        try {
+          const { cwd } = await this.deps.git.resolveWorktree(previous.id);
+          return { worktreeId: previous.id, cwd, notice: null };
+        } catch (error) {
+          if (!(error instanceof RunnerError) || (error.reason !== 'WORKTREE_MISSING' && error.code !== 'NOT_FOUND')) throw error;
+          if (previous.isPrimary) throw error;
+        }
+      }
+    }
+    const branch = previous?.branch ?? `reprise/${row.id.slice(0, 8)}`;
+    const restored = await this.deps.git.restoreWorktree(row.projectId, {
+      branch,
+      name: previous?.name,
+      previousId: previous && !previous.isPrimary ? previous.id : null,
+      actorUserId,
+      sessionId: row.id,
+    });
+    await this.deps.db.update(sessions).set({ worktreeId: restored.worktree.id }).where(this.ownSession(row.id));
+    const notices: Record<typeof restored.origin, string> = {
+      existing: `Worktree ${restored.worktree.name} réutilisé : il était déjà ouvert sur la branche ${branch}.`,
+      local: `Worktree ${restored.worktree.name} recréé depuis la branche locale ${branch}.`,
+      remote: `Worktree ${restored.worktree.name} recréé depuis la branche distante origin/${branch}.`,
+      default: `La branche ${branch} n'existe plus (ni localement ni sur le dépôt distant) : worktree ${restored.worktree.name} recréé depuis la branche par défaut ${restored.base}, les modifications non poussées de l'ancien worktree sont perdues.`,
+    };
+    return { worktreeId: restored.worktree.id, cwd: restored.cwd, notice: notices[restored.origin] };
   }
 
   private async refreshLaunch(sessionId: string, launch: Partial<SessionLaunchOptions>): Promise<void> {
@@ -739,7 +899,7 @@ export class SessionManager {
    * Spawns the CLI for a new or resumed conversation — at most one launch per session: a call made
    * while the session is live or starting only hands its instructions to that run.
    */
-  private async launch(sessionId: string, options: { resume: boolean; queue: string[] }): Promise<void> {
+  private async launch(sessionId: string, options: { resume: boolean; queue: string[]; mode?: LaunchMode }): Promise<void> {
     // Synchronous check-and-set (before any await): two concurrent calls never both spawn a CLI.
     const inflight = this.launching.get(sessionId);
     if (inflight || this.live.has(sessionId)) {
@@ -771,7 +931,7 @@ export class SessionManager {
     for (const text of texts) await this.paste(live, text);
   }
 
-  private async spawnCli(sessionId: string, options: { resume: boolean; queue: string[] }): Promise<void> {
+  private async spawnCli(sessionId: string, options: { resume: boolean; queue: string[]; mode?: LaunchMode }): Promise<void> {
     const row = await this.row(sessionId);
     await this.deps.environment.assertCanStartWork();
     if (!row.worktreeId) throw new RunnerError('CONFLICT', "La session n'a plus de worktree.", { reason: 'WORKTREE_MISSING' });
@@ -904,6 +1064,8 @@ export class SessionManager {
       pendingCli: null,
       toolSeq: 0,
       planCurrent: null,
+      launchMode: options.mode ?? (options.resume ? 'conversation' : 'start'),
+      bootOutput: '',
     };
     live.turn = await this.countTurns(sessionId);
     // Final checks and registration with no await in between: two launches of different sessions
@@ -913,6 +1075,7 @@ export class SessionManager {
     if (busyNow && busyNow !== sessionId) throw new RunnerError('CONFLICT', 'Une session tourne déjà dans ce worktree.', { reason: 'WORKTREE_IN_USE' });
     // Registered before spawning: the first hook may arrive before spawn() returns.
     this.live.set(sessionId, live);
+    this.reportedEfforts.delete(sessionId);
     await this.deps.db
       .update(sessions)
       .set({
@@ -927,14 +1090,14 @@ export class SessionManager {
         errorCode: null,
         errorMessage: null,
         currentActivity: 'Démarrage de Claude Code…',
-        ...(options.resume ? { resumeCount: row.resumeCount + 1 } : {}),
+        ...(options.resume || options.mode === 'context' ? { resumeCount: row.resumeCount + 1 } : {}),
       })
       .where(this.ownSession(sessionId));
     // First item of this run, queued before any hook of the new process can be processed.
     await this.deps.store.queue.run(sessionId, async () => {
       await this.deps.store.append(sessionId, 'status', {
-        status: options.resume ? 'waiting_input' : 'new',
-        label: options.resume ? 'Session reprise' : 'Session démarrée',
+        status: options.resume || live.launchMode === 'context' ? 'waiting_input' : 'new',
+        label: live.launchMode === 'context' ? 'Session reprise avec un nouveau contexte' : options.resume ? 'Session reprise' : 'Session démarrée',
         at: nowIso(),
       });
     });
@@ -991,6 +1154,16 @@ export class SessionManager {
     live.detachExit = terminal.onExit((code) => {
       void this.onTerminalExit(live, terminal, code);
     });
+    if (!live.ready) {
+      // Kept until the CLI is ready: a refused `--resume` prints its reason, then exits.
+      const off = terminal.onOutput((data) => {
+        if (live.ready || live.bootOutput.length > 16_000) {
+          off();
+          return;
+        }
+        live.bootOutput += data;
+      });
+    }
     this.answerStartupScreens(live, terminal);
   }
 
@@ -1067,8 +1240,14 @@ export class SessionManager {
     }
     live.pending.clear();
     await removeTokenFile(this.deps.dataDir, live.id).catch(() => undefined);
+    // `claude --resume` could not open the conversation (file unreadable, unknown to this CLI): the
+    // next « Reprendre » starts a fresh CLI with the owner's choice of context.
+    const resumeRefused =
+      live.launchMode === 'conversation' && !live.ready && !live.stopping && exitCode !== 0 && RESUME_REFUSED.test(live.bootOutput.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, ''));
     const status: SessionStatus =
-      live.stopping === 'user'
+      resumeRefused
+        ? 'failed'
+        : live.stopping === 'user'
         ? 'stopped'
         : live.stopping === 'shutdown'
           ? 'interrupted'
@@ -1091,20 +1270,23 @@ export class SessionManager {
         .update(permissionRequests)
         .set({ status: 'cancelled', decidedAt: new Date() })
         .where(and(eq(permissionRequests.sessionId, live.id), eq(permissionRequests.status, 'pending')));
-      await this.deps.store.append(live.id, 'status', { status, label: label[status] ?? 'Session arrêtée', at: nowIso() });
+      const statusLabel = resumeRefused ? 'Conversation introuvable : reprise avec un nouveau contexte proposée' : (label[status] ?? 'Session arrêtée');
+      await this.deps.store.append(live.id, 'status', { status, label: statusLabel, at: nowIso() });
       await this.setSession(live.id, {
         status,
         pid: null,
         endedAt: new Date(),
         exitCode,
         currentActivity: null,
-        ...(status === 'failed' && live.stopping !== 'memory'
-          ? { errorCode: 'process_exit', errorMessage: `Le processus Claude Code s'est arrêté (code ${exitCode ?? 'inconnu'}).` }
-          : {}),
+        ...(resumeRefused
+          ? { errorCode: RESUME_NOT_FOUND, errorMessage: "Claude Code n'a pas pu rouvrir la conversation enregistrée : « Reprendre » repartira d'un nouveau contexte." }
+          : status === 'failed' && live.stopping !== 'memory'
+            ? { errorCode: 'process_exit', errorMessage: `Le processus Claude Code s'est arrêté (code ${exitCode ?? 'inconnu'}).` }
+            : {}),
         ...(live.stopping === 'memory' ? { errorCode: 'memory_limit', errorMessage: 'Session arrêtée : plafond mémoire dépassé.' } : {}),
       });
     });
-    if (status === 'failed') {
+    if (status === 'failed' && !resumeRefused) {
       void this.notify(live, { kind: 'session_failed', severity: 'danger', title: `Session arrêtée : ${live.title}`, body: "Le processus Claude Code s'est arrêté.", dedupKey: `session:${live.id}:failed` });
     }
   }
@@ -1128,7 +1310,8 @@ export class SessionManager {
           await this.launch(sessionId, { resume: false, queue: [clean] });
           started = true;
         } else {
-          await this.resume(sessionId, undefined, [clean]);
+          // The owner typed an instruction: a lost conversation restarts afresh with it (no summary).
+          await this.resume(sessionId, undefined, [clean], { fresh: { context: null } });
           resumed = true;
         }
         return { delivered: false, queued: true, started, resumed, session: await this.dto(sessionId) };
@@ -1335,8 +1518,35 @@ export class SessionManager {
     }
   }
 
+  /**
+   * `effort` of a hook (a level, or `{ level }`): the effort the CLI really runs with, kept in the
+   * stored status line (`cli_status.effort`) for the effort chip when it changes.
+   */
+  private async noteReportedEffort(live: LiveSession, payload: Json): Promise<void> {
+    const raw = payload.effort;
+    const level = typeof raw === 'string' ? raw : isObj(raw) ? str(raw.level) : null;
+    if (!level || !/^[a-z]{2,16}$/.test(level) || this.reportedEfforts.get(live.id) === level) return;
+    this.reportedEfforts.set(live.id, level);
+    try {
+      await this.deps.store.queue.run(live.id, () => this.storeReportedEffort(live.id, level));
+    } catch (error) {
+      this.deps.logger.warn({ err: error, sessionId: live.id }, 'effort signalé non enregistré');
+    }
+  }
+
+  /** `cli_status.effort` = what the CLI reported (hook, status line, « Set effort level to … »); null = unknown. */
+  private async storeReportedEffort(sessionId: string, level: string | null): Promise<SessionRow | null> {
+    const [current] = await this.deps.db.select({ cliStatus: sessions.cliStatus }).from(sessions).where(this.ownSession(sessionId)).limit(1);
+    const cli = parseCli(current?.cliStatus);
+    if (cli && cli.effort === level) return null;
+    const next: CliStatus = cli
+      ? { ...cli, effort: level }
+      : { receivedAt: nowIso(), version: null, model: null, contextWindow: null, rateLimits: null, effort: level, outputStyle: null, sessionName: null, linesAdded: null, linesRemoved: null, totalDurationMs: null, pr: null };
+    return this.storeComposerOption(sessionId, { cliStatus: next as unknown as Record<string, unknown> });
+  }
+
   /** Launch option changed from the composer (or reported by the CLI): written without touching the activity time. */
-  private async storeComposerOption(sessionId: string, patch: Pick<Partial<typeof sessions.$inferInsert>, 'permissionMode' | 'model'>): Promise<SessionRow> {
+  private async storeComposerOption(sessionId: string, patch: Pick<Partial<typeof sessions.$inferInsert>, 'permissionMode' | 'model' | 'effort' | 'cliStatus'>): Promise<SessionRow> {
     const [row] = await this.deps.db.update(sessions).set(patch).where(this.ownSession(sessionId)).returning();
     if (!row) throw new RunnerError('NOT_FOUND', 'Session introuvable.');
     await this.publishStatus(row);
@@ -1375,16 +1585,25 @@ export class SessionManager {
    */
   async runSlashCommand(sessionId: string, command: SessionSlashCommandRequest): Promise<SessionCommandResult> {
     const live = await this.composerLive(sessionId);
+    const isModel = command.command === 'model';
+    // `--model` / `--effort` of the next launch (`auto`: no --effort, the CLI's default).
+    const stored = command.command === 'model' ? { model: command.model } : { effort: command.effort === 'auto' ? null : command.effort };
+    const what = isModel ? 'le modèle' : "l'effort";
+    const asked = command.command === 'model' ? command.model : command.effort;
     if (!live) {
-      await this.storeComposerOption(sessionId, { model: command.model });
+      await this.storeComposerOption(sessionId, stored);
       return { session: await this.dto(sessionId), applied: 'next_launch' };
     }
     const row = await this.row(sessionId);
     if (row.status === 'running' || live.queue.length > 0) {
-      throw new RunnerError('CONFLICT', "Claude travaille : changez de modèle à la fin de l'étape en cours.", { reason: 'SESSION_BUSY', untouched: "Le modèle n'a pas changé." });
+      throw new RunnerError('CONFLICT', `Claude travaille : changez ${what} à la fin de l'étape en cours.`, {
+        reason: 'SESSION_BUSY',
+        untouched: isModel ? "Le modèle n'a pas changé." : "L'effort n'a pas changé.",
+      });
     }
     const terminal = live.terminal!;
-    const confirmation = /set model to/gi;
+    // The CLI's own confirmation: « Set model to … », « Set effort level to high… », « Effort level: auto ».
+    const confirmation = isModel ? /set model to/gi : /set effort level to|effort level: auto/gi;
     const before = (terminal.screenText().match(confirmation) ?? []).length;
     let output = '';
     const off = terminal.onOutput((data) => {
@@ -1398,23 +1617,32 @@ export class SessionManager {
         await new Promise((r) => setTimeout(r, 100));
         const screen = terminal.screenText();
         const plain = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
-        if ((screen.match(confirmation) ?? []).length > before || /set model to/i.test(plain)) outcome = 'confirmed';
-        else if (/select model/i.test(screen)) outcome = 'picker';
+        if ((screen.match(confirmation) ?? []).length > before || new RegExp(confirmation.source, 'i').test(plain)) outcome = 'confirmed';
+        else if (isModel && /select model/i.test(screen)) outcome = 'picker';
       }
     } finally {
       off();
     }
     if (outcome === 'picker') {
       terminal.write('\u001b');
-      throw new RunnerError('CONFLICT', `Le CLI a ouvert son sélecteur de modèle au lieu d'appliquer « ${command.model} » : il a été refermé.`, {
+      throw new RunnerError('CONFLICT', `Le CLI a ouvert son sélecteur de modèle au lieu d'appliquer « ${asked} » : il a été refermé.`, {
         reason: 'MODEL_UNCONFIRMED',
         untouched: "Le modèle n'a pas changé.",
       });
     }
     if (outcome !== 'confirmed') {
-      throw new RunnerError('CONFLICT', `Le CLI n'a pas confirmé le modèle « ${command.model} » : vérifiez dans le terminal de la session.`, { reason: 'MODEL_UNCONFIRMED' });
+      throw new RunnerError('CONFLICT', `Le CLI n'a pas confirmé ${what} « ${asked} » : vérifiez dans le terminal de la session.`, {
+        reason: isModel ? 'MODEL_UNCONFIRMED' : 'EFFORT_UNCONFIRMED',
+      });
     }
-    await this.storeComposerOption(sessionId, { model: command.model });
+    await this.storeComposerOption(sessionId, stored);
+    if (command.command === 'effort') {
+      // Confirmed on the CLI's screen: that is the effort it now runs with (`auto`: unknown until it reports one).
+      const level = command.effort === 'auto' ? null : command.effort;
+      if (level) this.reportedEfforts.set(sessionId, level);
+      else this.reportedEfforts.delete(sessionId);
+      await this.storeReportedEffort(sessionId, level);
+    }
     return { session: await this.dto(sessionId), applied: 'live' };
   }
 
@@ -1562,6 +1790,7 @@ export class SessionManager {
     // Noted on receipt (before queueing): an interrupt is settled only when nothing followed it.
     if (event === 'PermissionRequest' || isActivityHook(event, payload)) live.lastActiveAt = Date.now();
     void this.noteReportedMode(live, payload);
+    void this.noteReportedEffort(live, payload);
     if (event === 'PermissionRequest') return this.onPermissionRequest(live, payload, signal);
     await this.deps.store.queue.run(live.id, () => this.onEvent(live, event, payload));
     return null;
@@ -2463,6 +2692,8 @@ export class SessionManager {
         pendingCli: null,
         toolSeq: 0,
         planCurrent: null,
+        launchMode: 'start',
+        bootOutput: '',
       };
       live.turn = await this.countTurns(row.id);
       this.live.set(row.id, live);

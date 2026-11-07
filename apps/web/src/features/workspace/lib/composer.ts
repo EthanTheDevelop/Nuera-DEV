@@ -23,6 +23,34 @@ export const modelInputSchema = z
       .regex(/^[A-Za-z0-9._:[\]-]{1,80}$/, 'modèle invalide'),
   })
   .strict();
+/** `/effort <level>` of the CLI (`auto`: back to its default; for the next launch: no --effort). */
+export const effortInputSchema = z
+  .object({ effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'auto'], "niveau d'effort inconnu") })
+  .strict();
+export type ComposerEffort = z.infer<typeof effortInputSchema>['effort'];
+
+/** Effort chip: levels of the official CLI (`claude --help`), labels of « Nouvelle session ». */
+export const COMPOSER_EFFORT_OPTIONS: ReadonlyArray<{ value: ComposerEffort; label: string; description: string }> = [
+  { value: 'auto', label: 'Défaut du CLI', description: '/effort auto' },
+  { value: 'low', label: 'Faible', description: '/effort low' },
+  { value: 'medium', label: 'Moyen', description: '/effort medium' },
+  { value: 'high', label: 'Élevé', description: '/effort high' },
+  { value: 'xhigh', label: 'Très élevé', description: '/effort xhigh' },
+  { value: 'max', label: 'Maximal', description: '/effort max' },
+];
+
+/**
+ * What the effort chip shows: the effort the CLI reports (status line `effort.level`, hooks, its
+ * « Set effort level to … » line), else the `--effort` of the next launch (« · au démarrage »), else
+ * « Effort du CLI » — never a guess.
+ */
+export function effortChipLabel(input: { reported: string | null | undefined; launch: string | null; live: boolean }): string {
+  const label = (value: string) => COMPOSER_EFFORT_OPTIONS.find((o) => o.value === value)?.label ?? value;
+  if (input.reported) return `Effort ${label(input.reported).toLowerCase()}`;
+  if (input.launch) return input.live ? `Effort ${label(input.launch).toLowerCase()} · demandé` : `Effort ${label(input.launch).toLowerCase()} · au démarrage`;
+  return 'Effort du CLI';
+}
+
 export const permissionModeInputSchema = z
   .object({ mode: z.enum(['manual', 'acceptEdits', 'plan', 'auto'], 'mode inconnu') })
   .strict();

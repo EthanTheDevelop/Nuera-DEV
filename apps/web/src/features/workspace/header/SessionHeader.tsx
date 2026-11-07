@@ -150,7 +150,7 @@ export function SessionHeader() {
           </DropdownMenuItem>
           {menu.canResume ? (
             <DropdownMenuItem icon="play" onSelect={() => void menu.resume()} disabled={menu.resuming}>
-              Reprendre la session
+              {menu.resumeLabel}
             </DropdownMenuItem>
           ) : null}
           {menu.canStop ? (

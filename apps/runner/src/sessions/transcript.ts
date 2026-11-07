@@ -1,4 +1,4 @@
-import { open, realpath, stat } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { isPathInside } from '@nuera/shared/paths';
@@ -51,6 +51,108 @@ export async function validateTranscriptPath(candidate: unknown, root = transcri
   } catch {
     return null;
   }
+}
+
+/**
+ * Name of the `projects/` sub-folder the CLI uses for a working directory (docs: « your working
+ * directory path with non-alphanumeric characters replaced by `-` … truncates the name to 200
+ * characters and appends a hash of the full path »). The hash is the CLI's own: the 32-bit string
+ * hash of the path, absolute value in base 36.
+ */
+export function claudeProjectDirName(cwd: string): string {
+  const name = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (name.length <= 200) return name;
+  let hash = 0;
+  for (let i = 0; i < cwd.length; i += 1) hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0;
+  return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
+
+const CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface FoundTranscript {
+  /** Real path of the conversation file. */
+  path: string;
+  /** Where `claude --resume <id>` looks for it: `<root>/<project dir of cwd>/<id>.jsonl` of the first root. */
+  expected: string;
+  /** Already at the expected place. */
+  inPlace: boolean;
+}
+
+/**
+ * Conversation file `<id>.jsonl` of ONE account (its `projects/` roots, never another account's):
+ * the expected place for `cwd` first, then the recorded path when it lies inside those roots (a
+ * config folder that moved), then every project folder of each root (the worktree was recreated
+ * elsewhere, the session ran from another folder, HOME or CLAUDE_CONFIG_DIR changed). Empty files
+ * (a CLI stopped before its first message) do not count. Null when nothing is found.
+ */
+export async function findTranscript(input: {
+  conversationId: string | null;
+  recordedPath: string | null;
+  roots: readonly string[];
+  cwd: string;
+}): Promise<FoundTranscript | null> {
+  const id = input.conversationId;
+  if (!id || !CONVERSATION_ID.test(id) || input.roots.length === 0) return null;
+  const file = `${id}.jsonl`;
+  const expected = path.join(input.roots[0]!, claudeProjectDirName(input.cwd), file);
+  const realRoots: string[] = [];
+  for (const root of input.roots) {
+    try {
+      const real = await realpath(root);
+      if (!realRoots.includes(real)) realRoots.push(real);
+    } catch {
+      // root absent (never created on this server)
+    }
+  }
+  const usable = async (candidate: string): Promise<string | null> => {
+    try {
+      const real = await realpath(candidate);
+      if (!realRoots.some((root) => isPathInside(root, real, PLATFORM, { allowEqual: false }))) return null;
+      const info = await stat(real);
+      return info.isFile() && info.size > 0 ? real : null;
+    } catch {
+      return null;
+    }
+  };
+  const found = (real: string): FoundTranscript => ({ path: real, expected, inPlace: path.resolve(real) === path.resolve(expected) || real === expectedReal });
+  let expectedReal: string | null = null;
+  const atExpected = await usable(expected);
+  if (atExpected) {
+    expectedReal = atExpected;
+    return found(atExpected);
+  }
+  if (input.recordedPath && path.basename(input.recordedPath) === file) {
+    const recorded = await usable(input.recordedPath);
+    if (recorded) return found(recorded);
+  }
+  for (const root of realRoots) {
+    let dirs: string[];
+    try {
+      dirs = (await readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {
+      continue;
+    }
+    for (const dir of dirs) {
+      const candidate = await usable(path.join(root, dir, file));
+      if (candidate) return found(candidate);
+    }
+  }
+  return null;
+}
+
+/**
+ * Copies a conversation file found elsewhere in the SAME account's folders to the place
+ * `claude --resume <id>` reads (never moved: the original stays). Returns the new path.
+ */
+export async function placeTranscript(found: FoundTranscript): Promise<string> {
+  if (found.inPlace) return found.path;
+  await mkdir(path.dirname(found.expected), { recursive: true, mode: 0o700 });
+  try {
+    await copyFile(found.path, found.expected);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  return found.expected;
 }
 
 /** Assistant text blocks of one JSONL line (main conversation only). */

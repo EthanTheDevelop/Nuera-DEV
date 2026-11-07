@@ -74,13 +74,14 @@ export function applyStatusEvent(session: WorkspaceSession, event: SessionStatus
     // Composer chips: the mode the CLI reports and the model of the next launch (newer runners).
     permissionMode: event.permissionMode ?? session.permissionMode,
     model: event.model === undefined ? session.model : event.model,
+    effort: event.effort === undefined ? session.effort : event.effort,
   };
 }
 
 /**
- * Whether a `session.status` event needs a fresh server snapshot: once the CLI is gone, whether the
- * session can be resumed (`resumable`, computed by the runner: worktree and conversation present)
- * is not carried by the event — without it « Reprendre la session » stays hidden until a reload.
+ * Whether a `session.status` event needs a fresh server snapshot: once the CLI is gone, whether and
+ * how the session can be resumed (`resumable`, `resumeMode`, computed by the runner) is not carried
+ * by the event — without it « Reprendre la session » stays hidden until a reload.
  */
 export function statusNeedsSnapshot(event: Pick<SessionStatusEvent, 'live' | 'status'>): boolean {
   return !event.live && event.status !== 'new';
@@ -100,7 +101,7 @@ export interface ComposerInputs {
   reconnecting: boolean;
   /** Claude CLI not usable (T6). */
   claudeBlocked: boolean;
-  /** The worktree was removed: nothing can run any more. */
+  /** The worktree was removed (« Reprendre » recreates it from its branch). */
   worktreeMissing: boolean;
   resumable: boolean;
 }
@@ -111,8 +112,8 @@ export function composerStateFor(input: ComposerInputs): { state: ComposerState;
   if (input.claudeBlocked) {
     return { state: 'unavailable', reason: 'Claude Code est déconnecté : reconnectez-le pour envoyer une instruction…' };
   }
-  if (input.worktreeMissing) {
-    return { state: 'unavailable', reason: 'Le worktree de cette session a été supprimé : la session ne peut plus reprendre…' };
+  if (input.worktreeMissing && !input.resumable) {
+    return { state: 'unavailable', reason: 'Le worktree de cette session a été supprimé et la session ne peut plus être reprise…' };
   }
   switch (input.status) {
     case 'waiting_permission':
@@ -124,9 +125,11 @@ export function composerStateFor(input: ComposerInputs): { state: ComposerState;
     case 'interrupted':
     case 'stopped':
     case 'failed':
+      // A lost conversation or a removed worktree no longer blocks: the runner recreates the
+      // worktree and restarts with a new context. Only an archived project does.
       return input.resumable
         ? { state: 'ready', reason: null }
-        : { state: 'unavailable', reason: 'Reprise impossible : la conversation enregistrée est introuvable…' };
+        : { state: 'unavailable', reason: 'Reprise impossible : le projet de cette session est archivé…' };
     default:
       return { state: 'ready', reason: null };
   }

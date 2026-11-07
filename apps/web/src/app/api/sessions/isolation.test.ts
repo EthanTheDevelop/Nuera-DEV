@@ -168,8 +168,10 @@ const CASES: RouteCase[] = [
   session('/instruction', 'POST', { body: () => ({ text: 'rm -rf /' }) }),
   session('/interrupt', 'POST'),
   session('/model', 'POST', { body: () => ({ model: 'opus' }) }),
+  session('/effort', 'POST', { body: () => ({ effort: 'high' }) }),
   session('/permission-mode', 'POST', { body: () => ({ mode: 'plan' }) }),
   session('/resume', 'POST'),
+  session('/resume', 'POST', { body: () => ({ context: true }) }),
   session('/stop', 'POST', { body: () => ({ force: true }) }),
   session('/terminal', 'GET'),
   // Permissions

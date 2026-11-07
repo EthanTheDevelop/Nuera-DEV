@@ -21,6 +21,10 @@
 //   auto, `--permission-mode` first) and redraws its footer (« ⏵⏵ accept edits on (shift+tab to
 //   cycle) »; nothing in Manual); hooks then carry the new `permission_mode`;
 // - `/model <alias>` (local, no hook) prints « Set model to <alias> » and the status line reports it.
+// - `/effort <level>` (local, no hook) prints « Set effort level to <level> » (`auto`: « Effort level:
+//   auto »); `--effort` / `/effort` are reported in every hook (`effort.level`) and the status line;
+// - `--resume <id>` without `<config>/projects/<cwd>/<id>.jsonl` (or an empty one) prints « No
+//   conversation found with session ID: <id> » and exits 1, like the real CLI.
 //
 // Usage limit (runner tests and test stack): `scenario:limit` (optionally `scenario:limit:<seconds>`,
 // default 3600) or a scripted `{ fail: { error: 'rate_limit', resetInSeconds } }` starts a limit that
@@ -120,9 +124,18 @@ async function interactive() {
   const hooks = settings.hooks ?? {};
   const cwd = process.cwd();
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  const projectDir = path.join(configDir, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-').slice(0, 200));
-  mkdirSync(projectDir, { recursive: true });
+  const projectDir = path.join(configDir, 'projects', projectDirName(cwd));
   const transcript = path.join(projectDir, `${sessionId}.jsonl`);
+  // Like the real CLI: `--resume <id>` reads `<config>/projects/<cwd>/<id>.jsonl` and gives up
+  // (exit 1) when that conversation is not there.
+  // Tests: a file starting with `{"nuera-fake":"refuse-resume"}` stands for one the CLI cannot read.
+  const unreadable = resumeId && existsSync(transcript) && readFileSync(transcript, 'utf8').startsWith('{"nuera-fake":"refuse-resume"}');
+  if (resumeId && (unreadable || !existsSync(transcript) || statSync(transcript).size === 0)) {
+    out(`No conversation found with session ID: ${resumeId}\r\n`);
+    setTimeout(() => process.exit(1), 300);
+    return;
+  }
+  mkdirSync(projectDir, { recursive: true });
   if (!existsSync(transcript)) writeFileSync(transcript, '');
   // Runner tests: the trusted variables this CLI received (Claude config dir, Git identity).
   if (harnessDir) {
@@ -168,6 +181,8 @@ async function interactive() {
       }),
     );
   }
+  // Effort level (`--effort`, `/effort <level>`), reported in hooks and in the status line like the real CLI.
+  let effortLevel = flag('--effort');
   const base = { session_id: sessionId, transcript_path: transcript, cwd, permission_mode: flag('--permission-mode') ?? 'default' };
 
   // Usage limit of this conversation (see the header): epoch ms of its reset, 0 = none.
@@ -218,7 +233,7 @@ async function interactive() {
       if (group.matcher && group.matcher !== '*' && toolName && !new RegExp(`^(${group.matcher})$`).test(toolName)) continue;
       for (const h of group.hooks ?? []) {
         if (h.type !== 'command') continue;
-        const r = await runCommand(h.command, { ...base, hook_event_name: event, ...payload }, h.timeout);
+        const r = await runCommand(h.command, { ...base, ...(effortLevel ? { effort: { level: effortLevel } } : {}), hook_event_name: event, ...payload }, h.timeout);
         output += r.stdout;
       }
     }
@@ -238,6 +253,7 @@ async function interactive() {
         ? { five_hour: { used_percentage: 100, resets_at: Math.floor(readLimit() / 1000) } }
         : { five_hour: { used_percentage: 12, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
       cost: { total_cost_usd: 1.23, total_duration_ms: 4200, total_lines_added: 3, total_lines_removed: 1 },
+      ...(effortLevel ? { effort: { level: effortLevel } } : {}),
     }, 5);
     statusText = r.stdout.trim();
   }
@@ -744,6 +760,22 @@ async function interactive() {
       prompt();
       return;
     }
+    const effort = /^\/effort\s+(\S+)$/.exec(text);
+    if (effort) {
+      // Local command (no hook), same lines as the real CLI.
+      if (effort[1] === 'auto') {
+        effortLevel = null;
+        out('\r\n  ⎿  Effort level: auto\r\n');
+      } else if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort[1])) {
+        effortLevel = effort[1];
+        out(`\r\n  ⎿  Set effort level to ${effortLevel}\r\n`);
+      } else {
+        out(`\r\n  ⎿  Invalid effort level: ${effort[1]}\r\n`);
+      }
+      await statusLine();
+      prompt();
+      return;
+    }
     if (harnessDir && (text === '/status' || text === '/usage')) {
       // Local commands: no UserPromptSubmit hook, like the real CLI.
       printStatus(text);
@@ -846,4 +878,13 @@ async function interactive() {
       consume();
     });
   }
+}
+
+/** `projects/` folder name of a working directory, as the real CLI computes it (200 chars + hash). */
+function projectDirName(cwd) {
+  const name = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (name.length <= 200) return name;
+  let hash = 0;
+  for (let i = 0; i < cwd.length; i += 1) hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0;
+  return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
 }

@@ -29,6 +29,8 @@ export interface ComposerTools {
   /** Why files cannot be joined now (session without worktree…). */
   attachDisabledReason?: string | null;
   model?: ComposerToolChip;
+  /** Effort chip (`/effort <level>`), next to the model. */
+  effort?: ComposerToolChip;
   mode?: ComposerToolChip;
   palette?: PaletteSource;
 }
@@ -142,6 +144,9 @@ export function useComposerTools(
       ) : null}
       {tools.model ? (
         <ComposerChip {...tools.model} icon="cpu" variant={variant} onBlockedTap={blockedTap} />
+      ) : null}
+      {tools.effort ? (
+        <ComposerChip {...tools.effort} icon="sparkle" variant={variant} onBlockedTap={blockedTap} />
       ) : null}
       {tools.mode ? (
         <ComposerChip {...tools.mode} icon="shield" variant={variant} onBlockedTap={blockedTap} />

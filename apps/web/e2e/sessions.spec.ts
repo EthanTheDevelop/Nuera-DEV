@@ -247,7 +247,7 @@ test('Arrêter une session vivante (T8) puis la reprendre depuis l\'historique',
   }
 });
 
-test('Reprise impossible : « Pourquoi ? » explique le worktree supprimé', async ({ page, stack, runnerApi, cli, waitForSessionStatus }) => {
+test('Worktree supprimé : la session reste reprenable, son worktree est recréé depuis sa branche', async ({ page, stack, runnerApi, cli, waitForSessionStatus }) => {
   const instruction = await cli.script('sessions-e2e-court', { description: 'Tour court', steps: [{ final: 'Fait.' }] });
   const title = `Sans worktree ${unique()}`;
   const created = await apiCreate(page, stack.seeded.projects!.devis!.id, title, { instruction });
@@ -259,16 +259,19 @@ test('Reprise impossible : « Pourquoi ? » explique le worktree supprimé', asy
     if (isMobile()) {
       await page.getByRole('button', { name: new RegExp(`${title}.*actions`) }).click();
       const sheet = page.getByRole('dialog', { name: title });
-      await expect(sheet).toContainText('Reprise impossible');
-      await expect(sheet).toContainText(`Le worktree ${stopped.worktree!.name} a été supprimé`);
+      await expect(sheet).toContainText('Reprise possible');
+      await expect(sheet).not.toContainText('Reprise impossible');
+      await sheet.getByRole('button', { name: 'Reprendre' }).click();
     } else {
       const row = visible(page, `li[data-session-id="${created.sessionId}"]`);
-      await expect(row).toContainText('Reprise impossible');
-      await row.getByRole('button', { name: 'Pourquoi ?' }).click();
-      const why = page.getByRole('dialog', { name: 'Reprise impossible' });
-      await expect(why).toContainText(`Le worktree ${stopped.worktree!.name} a été supprimé`);
-      await expect(why.getByRole('link', { name: "Voir l'historique" })).toHaveAttribute('href', `/workspace/${created.sessionId}`);
+      await expect(row).toContainText('Arrêtée · reprise possible');
+      await row.getByRole('button', { name: 'Reprendre' }).click();
     }
+    await page.waitForURL(new RegExp(`/workspace/${created.sessionId}`), { timeout: 120_000 });
+    const resumed = await waitForSessionStatus(created.sessionId, ['running', 'waiting_input'], { timeoutMs: 120_000, where: (s) => s.live });
+    expect(resumed.worktree).toMatchObject({ branch: stopped.worktree!.branch });
+    expect(resumed.worktree!.id).not.toBe(stopped.worktree!.id);
+    await expect(page.getByText(new RegExp(`Worktree ${stopped.worktree!.name} recréé depuis la branche locale`)).first()).toBeVisible({ timeout: 60_000 });
   } finally {
     await cleanup(page, runnerApi, [created.sessionId]);
   }

@@ -155,6 +155,25 @@ Contrat runner 3 (exigé pour partager un serveur). Migration `0008_shared_serve
 `--shared`, bureau + téléphone). Risque résiduel : même utilisateur Linux pour tous les comptes d'un serveur
 (`docs/SECURITY.md` §11). Détails : `docs/MULTICOMPTE.md` §14, lot P1 ; `docs/DEPLOY.md` §13.1.
 
+## Sessions toujours reprenables et effort (7 novembre 2026)
+
+« Reprendre » n'est plus jamais une impasse tant que ni la session ni son projet ne sont archivés. Le runner retrouve la
+conversation par son id dans les dossiers **du compte** (dossier du compte, puis pour le premier compte
+`CLAUDE_CONFIG_DIR` du runner et `~/.claude`), la recopie là où `claude --resume <id>` la lit (dossier du worktree
+actuel, nom calculé comme le CLI) et tient `transcript_path` à jour ; un worktree supprimé est recréé depuis sa branche
+(locale, sinon `origin/<branche>`, sinon branche par défaut, avec un avis dans le fil) ; un worktree « missing » revenu
+sur le disque redevient actif. Conversation introuvable (rétention, dossier perdu, refus du CLI détecté à l'écran :
+`errorCode resume_not_found`) : `RESUME_CONTEXT_REQUIRED` tant que le propriétaire n'a pas répondu à « Reprendre avec le
+contexte » (coché par défaut) ; puis un CLI neuf dans la **même** session (nouvel id de conversation, fil conservé),
+avec en première instruction un résumé de l'historique stocké (titre, branche, dernier commit, 5 instructions,
+3 messages, fichiers modifiés ; 8 000 caractères au plus ; secrets masqués). `resumeMode` (`conversation` / `context`)
+dans le DTO, libellés « Reprendre la session » / « Reprendre avec un nouveau contexte », audit `session.resume`
+(`mode`, `contextSent`). Puce « Effort » du compositeur (bureau + téléphone) : `/effort <niveau>` (liste blanche,
+confirmé à l'écran) ou `--effort` du prochain démarrage ; affiche l'effort rapporté par le CLI (barre d'état, hooks,
+ligne « Set effort level to … »), audit `session.effort`. Sans migration. Tests : runner `resume.test.ts`, web
+`resume-context.test.ts`, `sessions.test.ts`, e2e `reprise-contexte.spec.ts` (pile `reprise2`, web 3680) et
+`sessions.spec.ts` (worktree supprimé → recréé).
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :

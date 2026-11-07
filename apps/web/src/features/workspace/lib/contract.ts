@@ -35,14 +35,21 @@ export interface WorkspaceSession {
   status: SessionStatus;
   /** A CLI process is attached right now (runner view); null when the runner did not answer. */
   live: boolean | null;
-  /** Worktree present and conversation recorded (« reprise possible »). */
+  /** « Reprendre » possible (ended, neither the session nor its project archived; runner view). */
   resumable: boolean;
+  /**
+   * What « Reprendre » will do (`conversation`: `claude --resume`; `context`: a fresh CLI, the
+   * conversation file is gone) — or, live, how the current run started. null: unknown / plain start.
+   */
+  resumeMode: 'conversation' | 'context' | null;
   backend: SessionBackend;
   /** tmux session name (`nuera-devis-express-remise`), null for the direct PTY backend. */
   tmuxName: string | null;
   permissionMode: PermissionMode;
   /** Model asked at launch (null = « défaut du CLI »). */
   model: string | null;
+  /** `--effort` of the next launch (null = « défaut du CLI »); the CLI's own report is `cliStatus.effort`. */
+  effort: string | null;
   /** Latest status line published by the CLI (model actually used…), never estimated. */
   cliStatus: CliStatus | null;
   queuedInstructions: number;

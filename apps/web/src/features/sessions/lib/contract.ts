@@ -201,8 +201,18 @@ export function historySearch(state: HistoryUrlState, keep?: URLSearchParams): s
 // DTOs (server → browser, serialisable)
 // ---------------------------------------------------------------------------------------------
 
-/** Why a stopped session cannot be resumed (« Pourquoi ? »). */
-export type ResumeBlockedReason = 'worktree_removed' | 'not_recorded' | 'archived' | 'project_archived';
+/**
+ * Why a stopped session cannot be resumed (« Pourquoi ? »): only an archived session or project. A
+ * removed worktree is recreated and a lost conversation restarts with a new context.
+ */
+export type ResumeBlockedReason = 'archived' | 'project_archived';
+
+/**
+ * What « Reprendre » does (runner): `conversation` reopens the conversation recorded by Claude Code,
+ * `context` starts a fresh CLI in the same session (its conversation file is gone) — the dialog
+ * « Reprendre avec le contexte » asks first. null: unknown (server not reachable) or not resumable.
+ */
+export type ResumeMode = 'conversation' | 'context';
 
 export interface SessionListItem {
   id: string;
@@ -210,8 +220,9 @@ export interface SessionListItem {
   status: SessionStatus;
   /** A CLI process is attached right now (runner), or the status says so (database fallback). */
   live: boolean;
-  /** Worktree present and conversation recorded (« reprise possible »). */
+  /** « Reprendre » possible: ended, neither the session nor its project archived. */
   resumable: boolean;
+  resumeMode: ResumeMode | null;
   resumeBlockedReason: ResumeBlockedReason | null;
   project: { id: string; name: string; slug: string; fullName: string; archived: boolean };
   branch: string | null;
