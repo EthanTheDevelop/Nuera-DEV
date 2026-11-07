@@ -2,11 +2,11 @@ import { apiRoute } from '@/server/http';
 import { listRuns, listRunsQuerySchema, startRun, startRunInputSchema, withProjectErrors } from '@/server/projects';
 
 /**
- * POST /api/runs — { projectId, worktreeId?, kind: install|dev|build|test|lint|custom, command? }
+ * POST /api/runs — { projectId, worktreeId?, kind: install|dev|build|test|lint|custom, command?, name? (dev server) }
  * → 201 { runId, run }: starts a project command in a worktree (default: the primary clone) on the
  * project's server, with the project's variables, the acting account and its Git identity. Live
  * output: /api/stream/runs/<runId> (`run.status`, `run.output`).
- * GET /api/runs?projectId=&worktreeId=&limit= — recent runs (Workspace « Tests », project tabs).
+ * GET /api/runs?projectId=&worktreeId=&kind=&limit= — recent runs (Workspace « Tests », project tabs).
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

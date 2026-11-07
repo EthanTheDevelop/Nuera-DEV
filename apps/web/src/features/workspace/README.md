@@ -10,7 +10,8 @@ Lot WORKSPACE : `/workspace/[sessionId]` — D05 (bureau), M05 (téléphone), é
 - `WorkspaceView` choisit la composition (≥ 900 px : `DesktopWorkspace`, sinon `PhoneWorkspace` ; premier rendu
   deviné par l'agent utilisateur). Un seul état vivant (`WorkspaceProvider`) nourrit les deux.
 - État d'URL : `?vue=terminal|apercu` (Terminal brut, Aperçu agrandi), `?panneau=fichiers|modifications|tests|apercu|terminal|projet|ferme`,
-  `?onglet=fichiers|diff|git|apercu` (téléphone), `?revue=1` (W4), `?fichier=<chemin>`, `?affichage=unifie`.
+  `?onglet=fichiers|diff|git|apercu` (téléphone), `?revue=1` (W4), `?fichier=<chemin>`, `?affichage=unifie`. Bureau : chaque changement empile une entrée
+  d'historique ; téléphone : `ws.url.set` remplace l'URL par défaut (`tabHistoryMode()`), le retour quitte la session.
 
 ## Temps réel
 
@@ -35,6 +36,21 @@ onglet du panneau, « Inverser » (`?vue=apercu` : le rendu au centre, la conver
 préférence du navigateur). Téléphone : onglet « Aperçu », barre compacte (état, Recharger, menu ⋯ : démarrer/arrêter,
 nouvel onglet, rechargement automatique), compositeur gardé dessous.
 
+**Plusieurs serveurs** : un projet peut déclarer plusieurs « Lancement » nommés (onglet Environnement, « Ajouter un
+serveur de développement » ; `commands.devName` / `devServers`). Bureau : onglets « client · 3001 », « admin · 3002 »,
+« + Lancer… » au-dessus de la barre ; téléphone : menu compact « client · 3001 ▾ » dans la barre. Chacun démarre et
+s'arrête seul (`POST /api/runs { kind: 'dev', name }`), l'iframe montre celui choisi (passage de main par lancement ;
+un seul aperçu à la fois par navigateur : le cookie de l'hôte d'aperçu désigne un lancement).
+
+**Serveur qui ne démarre pas** : un serveur lancé depuis cet Aperçu qui s'arrête en erreur, ou reste sans port une
+minute avec des erreurs dans sa sortie (`lib/preview-autodebug.ts`), part à Claude dans la session (« Demander à Claude
+de corriger automatiquement », menu ✦ / ⋯, activé par défaut ; sinon bouton « Demander à Claude » sous l'erreur) :
+`POST /api/previews/autodebug { runId, sessionId, trigger }` — fin de la sortie (80 lignes, variables du projet et
+jetons masqués, 8 000 caractères au plus), une seule fois par lancement (409 `AUTODEBUG_ALREADY_SENT`), audit
+`preview.autodebug`. Claude au travail : l'instruction attend la fin de son étape (« en file ») ; autorisation en
+attente : rien n'est envoyé, le navigateur réessaie après la réponse. « Relancer après correction » (désactivé par
+défaut) relance le serveur une fois quand le tour de Claude se termine.
+
 ## Routes (toutes `apiRoute` : session, Origin sur les mutations, Zod, limites)
 
 | Route | Rôle |
@@ -45,6 +61,7 @@ nouvel onglet, rechargement automatique), compositeur gardé dessous.
 | `GET /api/sessions/[id]/events?afterVersion=` | fil (rechargement) |
 | `GET /api/sessions/[id]/terminal` | `{ terminalId, live }` du PTY de la session |
 | `POST /api/previews { runId, path? }` | passage de main vers l'aperçu (URL d'entrée à usage unique, 60 s) |
+| `POST /api/previews/autodebug { runId, sessionId, trigger: auto\|manual, output? }` | sortie d'un serveur de développement qui ne démarre pas → Claude dans la session (une fois par lancement, audit `preview.autodebug`) |
 | `POST /api/permissions/[id]/decision { optionId, message? }` | autoriser / toujours / refuser (audit `permission.decision`) |
 | `GET /api/worktrees/[id]/tree?path=` · `file?path=` · `changes` · `diff?path=` · `status` | lecture (`file` : contenu des fichiers de secrets — `.env`, `.env.local`, clés privées — jamais renvoyé, `secret: true`) |
 | `POST /api/worktrees/[id]/stage` · `unstage { paths }` | index |

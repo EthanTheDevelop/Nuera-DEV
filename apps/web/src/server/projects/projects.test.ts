@@ -529,6 +529,35 @@ describe('favourite, archive, restore', () => {
     expect(audits[0]).toMatchObject({ spaceId: TEST_SPACE_ID, environmentId: TEST_ENVIRONMENT_ID });
   });
 
+  it('keeps the single « Lancement » command and adds named dev servers (unique names), started by name', async () => {
+    const { project } = await insertProject({ slug: 'alpha', commands: { dev: 'npm run dev', test: 'npm test' } });
+    // Older value: `dev` alone stays one dev server, the other commands untouched.
+    expect(mod.projectCommandsInputSchema.parse({ dev: 'npm run dev' })).toEqual({ dev: 'npm run dev' });
+    expect(mod.projectCommandsInputSchema.safeParse({ devName: 'client', devServers: [{ name: 'client', command: 'x' }] }).success).toBe(false);
+    expect(mod.projectCommandsInputSchema.safeParse({ devServers: [{ name: 'Admin Panel', command: 'x' }] }).success).toBe(false);
+    await mod.updateProject(ctx, project.id, {
+      commands: { dev: 'pnpm --filter client dev', devName: 'client', devServers: [{ name: 'admin', command: 'pnpm --filter admin dev' }] },
+    });
+    const [row] = await db.select().from(projects).where(eq(projects.id, project.id));
+    expect(row!.commands).toEqual({
+      dev: 'pnpm --filter client dev',
+      devName: 'client',
+      devServers: [{ name: 'admin', command: 'pnpm --filter admin dev' }],
+      test: 'npm test',
+    });
+    // A name kept from before that a new one repeats: refused on the merged value.
+    await expect(mod.updateProject(ctx, project.id, { commands: { devName: 'admin' } })).rejects.toMatchObject({ code: 'VALIDATION' });
+
+    await mod.startRun(ctx, { projectId: project.id, kind: 'dev', name: 'admin' });
+    await mod.startRun(ctx, { projectId: project.id, kind: 'dev' });
+    const bodies = state.calls.filter((c) => c.name === 'createRun').map((c) => (c.input as { body: Record<string, unknown> }).body);
+    expect(bodies.map((b) => [b.name, b.command])).toEqual([
+      ['admin', 'pnpm --filter admin dev'],
+      ['client', 'pnpm --filter client dev'],
+    ]);
+    await expect(mod.startRun(ctx, { projectId: project.id, kind: 'dev', name: 'inconnu' })).rejects.toMatchObject({ code: 'VALIDATION' });
+  });
+
   it('records the opening of a project of the space only', async () => {
     const { project } = await insertProject({ slug: 'alpha' });
     const other = await createTestAccount({ role: 'member', name: 'Camille Martin', environment: { configSource: 'db', name: 'VPS-4' } });

@@ -9,7 +9,12 @@ export type SyncState = 'up_to_date' | 'behind' | 'ahead' | 'diverged' | 'no_ups
 
 export interface ProjectCommands {
   install?: string | null;
+  /** Default dev server (« Lancement »). */
   dev?: string | null;
+  /** Name of the default dev server (« client »); absent = « dev ». */
+  devName?: string | null;
+  /** Further named dev servers of the project (« admin » `pnpm --filter admin dev`), run side by side. */
+  devServers?: Array<{ name: string; command: string }> | null;
   build?: string | null;
   test?: string | null;
   lint?: string | null;
@@ -128,6 +133,8 @@ export interface McpServerConfig {
 
 /** Structured result of a run, stored when the process ends (test report parsed from the output). */
 export interface CommandRunDetails {
+  /** Name of the dev server this run is (`kind: 'dev'`, « client »). */
+  devServer?: string;
   report?: {
     counts: {
       passed: number;

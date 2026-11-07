@@ -76,7 +76,15 @@ export interface WorkspaceProject {
   repoName: string;
   defaultBranch: string;
   htmlUrl: string;
-  commands: { install: string | null; dev: string | null; build: string | null; test: string | null; lint: string | null };
+  commands: {
+    install: string | null;
+    dev: string | null;
+    build: string | null;
+    test: string | null;
+    lint: string | null;
+    /** Named dev servers of the project (« client », « admin »), default first; empty without `dev`. */
+    devServers: Array<{ name: string; command: string }>;
+  };
   readClaudeMd: boolean;
 }
 

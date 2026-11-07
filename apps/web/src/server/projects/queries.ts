@@ -1,9 +1,10 @@
 import 'server-only';
 import { commandRuns, operations, permissionRequests, sessions, worktrees } from '@nuera/db/schema';
+import { DEFAULT_DEV_SERVER_NAME } from '@nuera/shared/runner';
 import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '@/server/db';
 import type { ProjectRow } from './access';
-import type { ProjectListItem, ProjectOperationView, ProjectSessionCounts, ProjectSessionView, RunView } from './types';
+import type { CommandKind, ProjectListItem, ProjectOperationView, ProjectSessionCounts, ProjectSessionView, RunView } from './types';
 
 /*
  * Read helpers of the Projets domain. They take project ids that ALREADY come out of a query
@@ -194,6 +195,7 @@ export function toRunView(row: RunRow): RunView {
     summary: row.summary,
     worktreeId: row.worktreeId,
     worktreeName: row.worktreeName,
+    name: row.kind === 'dev' ? (row.details?.devServer ?? DEFAULT_DEV_SERVER_NAME) : null,
     startedAt: row.startedAt.toISOString(),
     finishedAt: iso(row.finishedAt),
     tests: counts ? { passed: counts.passed, failed: counts.failed, skipped: counts.skipped, total: counts.total } : null,
@@ -201,12 +203,18 @@ export function toRunView(row: RunRow): RunView {
 }
 
 /** Recent runs of a project (or of one worktree), most recent first. */
-export async function listRunRows(projectId: string, options: { worktreeId?: string; limit?: number } = {}): Promise<RunView[]> {
+export async function listRunRows(projectId: string, options: { worktreeId?: string; kind?: CommandKind; limit?: number } = {}): Promise<RunView[]> {
   const rows = await db
     .select({ run: commandRuns, worktreeName: worktrees.name })
     .from(commandRuns)
     .leftJoin(worktrees, eq(worktrees.id, commandRuns.worktreeId))
-    .where(and(eq(commandRuns.projectId, projectId), options.worktreeId ? eq(commandRuns.worktreeId, options.worktreeId) : undefined))
+    .where(
+      and(
+        eq(commandRuns.projectId, projectId),
+        options.worktreeId ? eq(commandRuns.worktreeId, options.worktreeId) : undefined,
+        options.kind ? eq(commandRuns.kind, options.kind) : undefined,
+      ),
+    )
     .orderBy(desc(commandRuns.startedAt))
     .limit(Math.min(Math.max(options.limit ?? 30, 1), 200));
   return rows.map((row) => toRunView({ ...row.run, worktreeName: row.worktreeName }));
