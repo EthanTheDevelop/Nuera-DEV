@@ -433,8 +433,18 @@ export const SessionDtoSchema = z.object({
   remoteControlUrl: z.string().nullable(),
   /** A CLI process is attached right now. */
   live: z.boolean(),
-  /** Worktree present and conversation recorded (« reprise possible »). */
+  /**
+   * « Reprendre » is possible: an ended session of a project that is not archived (the runner
+   * recreates a removed worktree from its branch, and starts a fresh CLI when the conversation
+   * cannot be reopened).
+   */
   resumable: z.boolean(),
+  /**
+   * Ended session: what « Reprendre » will do — `conversation` (`claude --resume`, the conversation
+   * recorded by Claude Code is found) or `context` (a fresh CLI, the conversation file is gone).
+   * Live session: how its current run started (null for a plain start). Absent from older runners.
+   */
+  resumeMode: z.enum(['conversation', 'context']).nullable().optional(),
   pid: z.number().int().nullable(),
   terminalId: z.string().nullable(),
   lastInstruction: z.string().nullable(),
@@ -468,7 +478,18 @@ export const SessionsListResponseSchema = z.object({
 });
 
 export const StartSessionRequestSchema = z.object({ launch: SessionLaunchOptionsSchema.partial().optional() });
-export const ResumeSessionRequestSchema = StartSessionRequestSchema;
+/** Longest first instruction built from the stored history when a conversation restarts afresh. */
+export const RESUME_CONTEXT_MAX_CHARS = 8000;
+
+export const ResumeSessionRequestSchema = StartSessionRequestSchema.extend({
+  /**
+   * The owner's choice when the conversation recorded by Claude Code cannot be reopened (« Reprendre
+   * avec le contexte »): `context` is typed as the first instruction of the fresh CLI (null: a fresh
+   * CLI without it). Absent: the runner refuses such a resumption (RESUME_CONTEXT_REQUIRED) so the
+   * owner is asked first.
+   */
+  fresh: z.object({ context: z.string().min(1).max(RESUME_CONTEXT_MAX_CHARS).nullable() }).optional(),
+});
 
 export const InstructionRequestSchema = z.object({
   text: z.string().min(1).max(100_000),

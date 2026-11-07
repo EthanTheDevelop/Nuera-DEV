@@ -52,10 +52,21 @@ export type AttachmentDto = z.infer<typeof AttachmentDtoSchema>;
  * The only slash commands the runner types on its own (chips of the composer). Anything else the
  * owner types goes through the instruction route like any text.
  */
-export const SESSION_SLASH_COMMANDS = ['model'] as const;
+export const SESSION_SLASH_COMMANDS = ['model', 'effort'] as const;
+
+/**
+ * Effort levels of the official CLI (`claude --help`: « --effort <level> (low, medium, high, xhigh,
+ * max) », same list for `/effort <level>`). `auto` is only typed into a live CLI (`/effort auto`:
+ * back to the CLI's default); for the next launch it means « no --effort ».
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export const SessionEffortSchema = z.enum([...EFFORT_LEVELS, 'auto']);
+export type SessionEffort = z.infer<typeof SessionEffortSchema>;
 
 export const SessionSlashCommandRequestSchema = z.discriminatedUnion('command', [
   z.object({ command: z.literal('model'), model: ModelNameSchema }).strict(),
+  z.object({ command: z.literal('effort'), effort: SessionEffortSchema }).strict(),
 ]);
 export type SessionSlashCommandRequest = z.infer<typeof SessionSlashCommandRequestSchema>;
 
@@ -64,6 +75,8 @@ export function slashCommandText(command: SessionSlashCommandRequest): string {
   switch (command.command) {
     case 'model':
       return `/model ${command.model}`;
+    case 'effort':
+      return `/effort ${command.effort}`;
   }
 }
 
