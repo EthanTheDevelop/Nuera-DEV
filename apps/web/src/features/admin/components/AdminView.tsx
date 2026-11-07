@@ -4,6 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { createContext, useCallback, useContext, useState, useTransition, type ReactNode } from 'react';
 import { PageHeader } from '@/components/shell';
 import { Button, IconButton, Tabs, TabsContent, TabsList, TabsTrigger, toast } from '@/components/ui';
+import { tabHistoryMode } from '@/hooks/useMediaQuery';
 import type { AdministrationData } from '@/server/admin';
 import { reloadAdministrationAction } from '../actions';
 import { AdminClaudeTab } from '@/features/claude-config/components/AdminClaudeTab';
@@ -34,7 +35,10 @@ function writeTab(tab: AdminTab): void {
   else url.searchParams.set('onglet', tab);
   if (tab !== 'claude') url.searchParams.delete('section');
   const next = `${url.pathname}${url.search}${url.hash}`;
-  if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history.pushState(null, '', next);
+  if (next === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
+  // Phone: the tabs are one screen, the back arrow leaves the page (replace); desktop: one entry per tab.
+  if (tabHistoryMode() === 'push') window.history.pushState(null, '', next);
+  else window.history.replaceState(null, '', next);
 }
 
 /**

@@ -4,8 +4,12 @@ import {
   DictationController,
   detectDictation,
   dictationErrorCode,
+  dictationErrorText,
   dictationLanguages,
+  dictationPlatform,
+  dictationRetryable,
   insertDictated,
+  requestMicrophone,
   unavailableReason,
   type DictationSnapshot,
   type SpeechRecognitionEventLike,
@@ -116,10 +120,41 @@ describe('dictation availability', () => {
   it('maps the recognition errors, ignoring our own abort', () => {
     expect(dictationErrorCode('aborted')).toBeNull();
     expect(dictationErrorCode('not-allowed')).toBe('not-allowed');
-    expect(dictationErrorCode('service-not-allowed')).toBe('not-allowed');
+    expect(dictationErrorCode('service-not-allowed')).toBe('service');
     expect(dictationErrorCode('audio-capture')).toBe('audio-capture');
     expect(dictationErrorCode('network')).toBe('network');
     expect(dictationErrorCode('bad-grammar')).toBe('other');
+  });
+
+  it('tells the iOS home-screen app apart from Safari', () => {
+    const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
+    const safari = dictationPlatform({ navigator: { userAgent: iphone }, matchMedia: () => ({ matches: false }) });
+    const installed = dictationPlatform({ navigator: { userAgent: iphone, standalone: true } });
+    const ipad = dictationPlatform({ navigator: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 5 }, matchMedia: () => ({ matches: true }) });
+    const mac = dictationPlatform({ navigator: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 0 } });
+    expect(safari).toEqual({ ios: true, standalone: false, device: 'iPhone' });
+    expect(installed).toEqual({ ios: true, standalone: true, device: 'iPhone' });
+    expect(ipad).toEqual({ ios: true, standalone: true, device: 'iPad' });
+    expect(mac).toEqual({ ios: false, standalone: false, device: null });
+
+    // A refused service in the installed app is that app's limit; in Safari, Dictation is off.
+    expect(dictationErrorCode('service-not-allowed', installed)).toBe('standalone');
+    expect(dictationErrorCode('not-allowed', installed)).toBe('standalone');
+    expect(dictationErrorCode('service-not-allowed', safari)).toBe('service');
+    expect(dictationErrorText('standalone', installed)).toBe(
+      "La dictée n'est pas disponible dans l'app installée sur cet iPhone : utilisez la dictée du clavier (🎤).",
+    );
+    expect(dictationErrorText('service', safari)).toContain('Réglages › Général › Clavier');
+    expect(dictationErrorText('mic-blocked', safari)).toContain('Réglages › Safari › Micro');
+    expect(dictationErrorText('mic-denied', installed)).toContain("supprimez l'app de l'écran d'accueil");
+    expect(dictationErrorText('not-allowed', safari)).toContain('Reconnaissance vocale');
+    expect(dictationErrorText('mic-denied')).toBe(DICTATION_COPY.errors['mic-denied']);
+    expect(dictationRetryable('standalone')).toBe(false);
+    expect(dictationRetryable('language')).toBe(false);
+    expect(dictationRetryable('mic-denied')).toBe(true);
+    // No API at all in the installed app: the same guidance, before any tap.
+    expect(unavailableReason('unsupported', installed)).toContain("l'app installée sur cet iPhone");
+    expect(unavailableReason('unsupported', safari)).toBe(DICTATION_COPY.unsupported);
   });
 
   it('recognises Ctrl/⌘ + Maj + Espace only', () => {
@@ -129,6 +164,55 @@ describe('dictation availability', () => {
     expect(isDictationShortcut({ ...key, shiftKey: false })).toBe(false);
     expect(isDictationShortcut({ ...key, ctrlKey: false })).toBe(false);
     expect(isDictationShortcut({ ...key, altKey: true })).toBe(false);
+  });
+});
+
+describe('requestMicrophone', () => {
+  type Stream = { getTracks(): { stop(): void }[] };
+  type GetUserMedia = (constraints: { audio: boolean }) => Promise<Stream>;
+  const stream = () => {
+    const track = { stop: vi.fn<() => void>() };
+    return { track, stream: { getTracks: () => [track] } };
+  };
+  const refusal = (name: string) => Object.assign(new Error(name), { name });
+
+  it('asks the microphone, then releases it at once', async () => {
+    const { track, stream: s } = stream();
+    const getUserMedia = vi.fn<GetUserMedia>(async () => s);
+    expect(await requestMicrophone({ mediaDevices: { getUserMedia } })).toBe('granted');
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('skips the prompt when the permission is known', async () => {
+    const getUserMedia = vi.fn<GetUserMedia>(async () => stream().stream);
+    const permissions = (state: string) => ({ query: async () => ({ state }) });
+    expect(await requestMicrophone({ mediaDevices: { getUserMedia }, permissions: permissions('granted') })).toBe('granted');
+    expect(await requestMicrophone({ mediaDevices: { getUserMedia }, permissions: permissions('denied') })).toBe('mic-blocked');
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('tells a refusal from the prompt apart from a blocking setting', async () => {
+    let clock = 0;
+    const now = () => clock;
+    const slow = vi.fn<GetUserMedia>(async () => {
+      clock += 2_000; // the owner read the prompt, then tapped « Refuser »
+      throw refusal('NotAllowedError');
+    });
+    expect(await requestMicrophone({ mediaDevices: { getUserMedia: slow } }, now)).toBe('mic-denied');
+    const instant = vi.fn<GetUserMedia>(async () => {
+      throw refusal('NotAllowedError');
+    });
+    expect(await requestMicrophone({ mediaDevices: { getUserMedia: instant } }, now)).toBe('mic-blocked');
+  });
+
+  it('maps the other failures, and lets the recognition try when it cannot tell', async () => {
+    const failing = (name: string) => ({ mediaDevices: { getUserMedia: async () => Promise.reject(refusal(name)) } });
+    expect(await requestMicrophone(failing('NotFoundError'))).toBe('audio-capture');
+    expect(await requestMicrophone(failing('NotReadableError'))).toBe('busy');
+    expect(await requestMicrophone(failing('SecurityError'))).toBe('mic-blocked');
+    expect(await requestMicrophone(failing('WeirdError'))).toBe('unknown');
+    expect(await requestMicrophone({})).toBe('unknown');
   });
 });
 
@@ -254,6 +338,15 @@ describe('DictationController', () => {
     expect(ctl.state).toEqual({ status: 'idle', interim: '', error: 'not-allowed' });
     ctl.start();
     expect(FakeRecognition.instances).toHaveLength(2);
+    expect(ctl.state).toEqual({ status: 'listening', interim: '', error: null });
+  });
+
+  it('reports an error found before the recognition (microphone refused)', () => {
+    const { ctl } = setup();
+    ctl.fail('mic-denied');
+    expect(ctl.state).toEqual({ status: 'idle', interim: '', error: 'mic-denied' });
+    expect(FakeRecognition.instances).toHaveLength(0);
+    ctl.start();
     expect(ctl.state).toEqual({ status: 'listening', interim: '', error: null });
   });
 

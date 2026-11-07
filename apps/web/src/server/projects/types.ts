@@ -154,6 +154,8 @@ export interface RunView {
   summary: string | null;
   worktreeId: string | null;
   worktreeName: string | null;
+  /** Dev server name (« client ») of a `dev` run; null otherwise. */
+  name?: string | null;
   startedAt: string;
   finishedAt: string | null;
   tests: { passed: number; failed: number; skipped: number; total: number } | null;

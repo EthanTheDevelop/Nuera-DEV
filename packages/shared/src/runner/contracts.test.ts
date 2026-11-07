@@ -4,6 +4,8 @@ import {
   ClaudeStatusSchema,
   CreateRunRequestSchema,
   CreateTerminalRequestSchema,
+  devServerEntries,
+  RunDtoSchema,
   HealthResponseSchema,
   RemoveCloneQuerySchema,
   RemoveWorktreeQuerySchema,
@@ -161,5 +163,34 @@ describe('contrat runner ⇄ web, version 2', () => {
     expect(ClaudeStatusSchema.parse({ checkedAt: '2026-11-05T10:00:00.000Z', installed: true, version: null, auth: null, state: 'error', agents: null, error: null }).spaceId).toBeUndefined();
     expect(RUNNER_ROUTES.claudeAccountForget.path).toBe('/v1/claude/accounts/:spaceId/forget');
     expect(RUNNER_ERROR_REASONS).toEqual(expect.arrayContaining(['CLAUDE_ACCOUNT_REQUIRED', 'CLAUDE_ACCOUNT_IN_USE', 'CLAUDE_ACCOUNT_FOLDER']));
+  });
+
+  it('plusieurs serveurs de développement nommés, compatibles avec la commande unique', () => {
+    // A project of before: `dev` alone is one server named « dev ».
+    expect(devServerEntries({ dev: 'npm run dev' })).toEqual([{ name: 'dev', command: 'npm run dev', isDefault: true }]);
+    expect(devServerEntries({})).toEqual([]);
+    expect(devServerEntries(null)).toEqual([]);
+    expect(
+      devServerEntries({
+        dev: 'pnpm --filter client dev',
+        devName: 'client',
+        devServers: [
+          { name: 'admin', command: 'pnpm --filter admin dev' },
+          { name: 'admin', command: 'en double' },
+          { name: 'Pas Valide', command: 'x' },
+          { name: 'vide', command: '  ' },
+          { name: 42, command: 'x' },
+        ],
+      }),
+    ).toEqual([
+      { name: 'client', command: 'pnpm --filter client dev', isDefault: true },
+      { name: 'admin', command: 'pnpm --filter admin dev', isDefault: false },
+    ]);
+    expect(CreateRunRequestSchema.parse({ projectId: ENV_ID, kind: 'dev', name: 'admin' }).name).toBe('admin');
+    expect(CreateRunRequestSchema.safeParse({ projectId: ENV_ID, kind: 'dev', name: 'Admin Panel' }).success).toBe(false);
+    // A run of an older runner has no name.
+    const run = { id: ENV_ID, projectId: ENV_ID, worktreeId: null, kind: 'dev', command: 'npm run dev', status: 'running', exitCode: null, pid: null, port: null, summary: null, tests: null, startedAt: '2026-11-05T10:00:00.000Z', finishedAt: null, live: true };
+    expect(RunDtoSchema.parse(run).name).toBeUndefined();
+    expect(RUNNER_ERROR_REASONS).toContain('DEV_SERVER_RUNNING');
   });
 });

@@ -118,41 +118,12 @@ export function AttachButton({
   disabledReason,
   onBlockedTap,
 }: AttachButtonProps) {
-  const libraryRef = useRef<HTMLInputElement>(null);
-  const cameraRef = useRef<HTMLInputElement>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const pick = (input: HTMLInputElement | null) => {
+  const pickers = useAttachPickers(attachments, variant === 'phone');
+  const pick = (open: () => void) => {
     setSheetOpen(false);
-    input?.click();
+    open();
   };
-  const onFiles = (input: HTMLInputElement) => {
-    if (input.files) attachments.add(Array.from(input.files));
-    input.value = '';
-  };
-  const inputs = (
-    <>
-      <input
-        ref={libraryRef}
-        type="file"
-        multiple
-        accept={ATTACHMENT_ACCEPT}
-        hidden
-        data-attach="library"
-        onChange={(e) => onFiles(e.currentTarget)}
-      />
-      {variant === 'phone' ? (
-        <input
-          ref={cameraRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          hidden
-          data-attach="camera"
-          onChange={(e) => onFiles(e.currentTarget)}
-        />
-      ) : null}
-    </>
-  );
   const blocked = Boolean(disabledReason);
   const label = blocked ? `${ATTACHMENT_COPY.join} · ${disabledReason}` : ATTACHMENT_COPY.join;
   const onClick = () => {
@@ -161,11 +132,11 @@ export function AttachButton({
       return;
     }
     if (variant === 'phone') setSheetOpen(true);
-    else pick(libraryRef.current);
+    else pickers.openLibrary();
   };
   return (
     <>
-      {inputs}
+      {pickers.inputs}
       <IconButton
         icon="paperclip"
         label={label}
@@ -186,7 +157,7 @@ export function AttachButton({
             <div className="flex flex-col gap-0.5 pb-3">
               <button
                 type="button"
-                onClick={() => pick(libraryRef.current)}
+                onClick={() => pick(pickers.openLibrary)}
                 className="flex min-h-12 items-center gap-3 rounded-md px-2 text-left font-sans text-app-14 text-text hover:bg-hover active:bg-pressed"
               >
                 <Icon name="file" size={20} className="text-muted" />
@@ -194,7 +165,7 @@ export function AttachButton({
               </button>
               <button
                 type="button"
-                onClick={() => pick(cameraRef.current)}
+                onClick={() => pick(pickers.openCamera)}
                 className="flex min-h-12 items-center gap-3 rounded-md px-2 text-left font-sans text-app-14 text-text hover:bg-hover active:bg-pressed"
               >
                 <Icon name="camera" size={20} className="text-muted" />
@@ -206,4 +177,47 @@ export function AttachButton({
       ) : null}
     </>
   );
+}
+
+/**
+ * Hidden file inputs of « Joindre » and what opens them: the library (several files, images included) and,
+ * on a phone, the camera (`capture="environment"`). Render `inputs` outside any sheet (it unmounts) and
+ * call `open…` in the tap's own handler (iOS only opens a picker during the gesture).
+ */
+export function useAttachPickers(attachments: AttachmentsController | undefined, camera: boolean) {
+  const libraryRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const onFiles = (input: HTMLInputElement) => {
+    if (input.files) attachments?.add(Array.from(input.files));
+    input.value = '';
+  };
+  const inputs = attachments ? (
+    <>
+      <input
+        ref={libraryRef}
+        type="file"
+        multiple
+        accept={ATTACHMENT_ACCEPT}
+        hidden
+        data-attach="library"
+        onChange={(e) => onFiles(e.currentTarget)}
+      />
+      {camera ? (
+        <input
+          ref={cameraRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+          data-attach="camera"
+          onChange={(e) => onFiles(e.currentTarget)}
+        />
+      ) : null}
+    </>
+  ) : null;
+  return {
+    inputs,
+    openLibrary: () => libraryRef.current?.click(),
+    openCamera: () => cameraRef.current?.click(),
+  };
 }

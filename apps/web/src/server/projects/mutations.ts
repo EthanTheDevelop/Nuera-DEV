@@ -1,6 +1,7 @@
 import 'server-only';
 import { projects, sessions } from '@nuera/db/schema';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { DEFAULT_DEV_SERVER_NAME, DevServerNameSchema, MAX_DEV_SERVERS } from '@nuera/shared/runner';
 import { z } from 'zod';
 import { db } from '@/server/db';
 import { AppError } from '@/server/errors';
@@ -20,9 +21,42 @@ const commandSchema = z
   .transform((value) => (value === '' ? null : value))
   .nullable();
 
+/** A further named dev server (« admin » `pnpm --filter admin dev`). */
+const devServerSchema = z
+  .object({ name: DevServerNameSchema, command: z.string().trim().min(1, 'commande requise').max(1000, '1 000 caractères au maximum') })
+  .strict();
+
+/**
+ * Commands of the project. « Lancement » may hold several named dev servers: `dev` (+ `devName`,
+ * default « dev ») is the default one — the historic single command, still read alone by older
+ * rows — and `devServers` the others. Names are unique (checked again on the merged value).
+ */
 export const projectCommandsInputSchema = z
-  .object({ install: commandSchema, dev: commandSchema, build: commandSchema, test: commandSchema, lint: commandSchema })
-  .partial();
+  .object({
+    install: commandSchema,
+    dev: commandSchema,
+    devName: z.union([z.literal('').transform(() => null), DevServerNameSchema]).nullable(),
+    devServers: z.array(devServerSchema).max(MAX_DEV_SERVERS - 1, `${MAX_DEV_SERVERS} serveurs de développement au maximum`).nullable(),
+    build: commandSchema,
+    test: commandSchema,
+    lint: commandSchema,
+  })
+  .partial()
+  .superRefine((value, issue) => {
+    const problem = devServersProblem(value);
+    if (problem) issue.addIssue({ code: 'custom', path: ['devServers'], message: problem });
+  });
+
+/** Repeated names or extra servers without a default one (`dev`): the message, else null. */
+export function devServersProblem(commands: { dev?: string | null; devName?: string | null; devServers?: ReadonlyArray<{ name: string }> | null }): string | null {
+  const extras = commands.devServers ?? [];
+  if (!extras.length) return null;
+  const names = [commands.devName || DEFAULT_DEV_SERVER_NAME, ...extras.map((e) => e.name)];
+  const repeated = names.find((name, index) => names.indexOf(name) !== index);
+  if (repeated) return `Deux serveurs de développement s'appellent « ${repeated} » : chaque nom doit être unique.`;
+  if (commands.dev === null) return "Renseignez d'abord la commande de lancement principale.";
+  return null;
+}
 
 export const projectOptionsInputSchema = z
   .object({ installDeps: z.boolean(), worktreePerSession: z.boolean(), readClaudeMd: z.boolean() })
@@ -39,7 +73,15 @@ export const patchProjectInputSchema = z
   .refine((value) => Object.values(value).some((v) => v !== undefined), { message: 'aucune modification' });
 export type PatchProjectInput = z.input<typeof patchProjectInputSchema>;
 
-const COMMAND_LABELS: Record<string, string> = { install: 'installation', dev: 'lancement', build: 'build', test: 'tests', lint: 'lint' };
+const COMMAND_LABELS: Record<string, string> = {
+  install: 'installation',
+  dev: 'lancement',
+  devName: 'nom du lancement',
+  devServers: 'serveurs de développement',
+  build: 'build',
+  test: 'tests',
+  lint: 'lint',
+};
 
 /**
  * Favourite, display name, commands and options of a project of the space. The favourite star is a
@@ -56,7 +98,12 @@ export async function updateProject(ctx: ProjectContext, projectId: string, inpu
   const set: Partial<typeof projects.$inferInsert> = {};
   if (parsed.favorite !== undefined) set.isFavorite = parsed.favorite;
   if (parsed.name !== undefined) set.name = parsed.name;
-  if (parsed.commands) set.commands = { ...project.commands, ...parsed.commands };
+  if (parsed.commands) {
+    set.commands = { ...project.commands, ...parsed.commands };
+    // The merged value too: a name kept from before may collide with a new one.
+    const problem = devServersProblem(set.commands);
+    if (problem) throw new AppError('VALIDATION', problem, { untouched: "Les commandes n'ont pas été modifiées." });
+  }
   if (parsed.options) set.options = { ...project.options, ...parsed.options };
   const [row] = await db.update(projects).set(set).where(inSpace(ctx, project.id)).returning();
 
@@ -71,7 +118,7 @@ export async function updateProject(ctx: ProjectContext, projectId: string, inpu
   }
   if (parsed.commands) {
     const changed = Object.entries(parsed.commands)
-      .filter(([key, value]) => (project.commands as Record<string, unknown>)[key] !== value)
+      .filter(([key, value]) => JSON.stringify((project.commands as Record<string, unknown>)[key] ?? null) !== JSON.stringify(value ?? null))
       .map(([key]) => COMMAND_LABELS[key] ?? key);
     if (changed.length) {
       await auditIn(ctx, {

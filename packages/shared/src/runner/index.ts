@@ -14,3 +14,4 @@ export * from './claude';
 export * from './composer';
 export * from './common-config';
 export * from './routes';
+export * from './redact';

@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
-import { commandRuns } from '@nuera/db';
+import { commandRuns, projects } from '@nuera/db';
 import type { RunDto } from '@nuera/shared/runner';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { auth, createBareRemote, dbReady, git, seedProject, startTestRunner, waitFor, type TestEnv } from './helpers';
@@ -32,6 +32,11 @@ describe.skipIf(!dbReady)('project runs (platform shell in a PTY)', () => {
       ].join('\n'),
     );
     writeFileSync(path.join(projectPath, 'wait.js'), "console.log('serveur prêt sur le port 5050'); setInterval(() => {}, 1000);");
+    // A dev server that listens on the PORT it is given (like Next, Vite with --port $PORT…).
+    writeFileSync(
+      path.join(projectPath, 'serve.js'),
+      "const http = require('node:http'); const port = Number(process.env.PORT); http.createServer((q, r) => r.end(process.argv[2] || 'ok')).listen(port, '127.0.0.1', () => console.log(`  ➜  Local: http://localhost:${port}/`));",
+    );
     const project = await seedProject(env.db, { fullName: 'nuera-studio/runs', path: projectPath, slug: 'runs' });
     projectId = project.id;
   }, 600_000);
@@ -70,6 +75,37 @@ describe.skipIf(!dbReady)('project runs (platform shell in a PTY)', () => {
       return r.status === 'stopped' ? r : null;
     }, { timeoutMs: 60_000, intervalMs: 300, label: 'stopped' });
     expect(stopped.live).toBe(false);
+  }, 300_000);
+
+  it('runs several named dev servers in one worktree, each on its own port, never two of the same name', async () => {
+    await env.db
+      .update(projects)
+      .set({ commands: { dev: 'node serve.js client', devName: 'client', devServers: [{ name: 'admin', command: 'node serve.js admin' }] } })
+      .where(eq(projects.id, projectId));
+    const client = (await inject('POST', '/v1/runs', { projectId, kind: 'dev' })).json() as RunDto;
+    const adminRes = await inject('POST', '/v1/runs', { projectId, kind: 'dev', name: 'admin' });
+    expect(adminRes.statusCode).toBe(200);
+    const admin = adminRes.json() as RunDto;
+    expect(client).toMatchObject({ name: 'client', command: 'node serve.js client' });
+    expect(admin).toMatchObject({ name: 'admin', command: 'node serve.js admin' });
+    const portOf = (id: string) =>
+      waitFor(async () => ((await inject('GET', `/v1/runs/${id}`)).json() as RunDto).port, { timeoutMs: 120_000, intervalMs: 300, label: `port ${id}` });
+    const [clientPort, adminPort] = await Promise.all([portOf(client.id), portOf(admin.id)]);
+    expect(clientPort).not.toBe(adminPort);
+    // Each preview target is its own server.
+    expect(await (await fetch(`http://127.0.0.1:${clientPort}/`)).text()).toBe('client');
+    expect(await (await fetch(`http://127.0.0.1:${adminPort}/`)).text()).toBe('admin');
+    // The same name twice: refused, the running one named.
+    const again = await inject('POST', '/v1/runs', { projectId, kind: 'dev', name: 'admin' });
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ error: { reason: 'DEV_SERVER_RUNNING' } });
+    // An unknown name has no command.
+    expect((await inject('POST', '/v1/runs', { projectId, kind: 'dev', name: 'inconnu' })).statusCode).toBe(400);
+    for (const run of [client, admin]) expect((await inject('DELETE', `/v1/runs/${run.id}`)).statusCode).toBe(200);
+    // The name outlives the process (details of the row).
+    const [row] = await env.db.select().from(commandRuns).where(eq(commandRuns.id, admin.id));
+    expect(row!.details).toMatchObject({ devServer: 'admin' });
+    expect(((await inject('GET', `/v1/runs/${admin.id}`)).json() as RunDto).name).toBe('admin');
   }, 300_000);
 
   it('refuses a run without a command', async () => {

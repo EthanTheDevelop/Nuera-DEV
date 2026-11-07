@@ -1,6 +1,6 @@
 import 'server-only';
 import { commandRuns, projects, worktrees } from '@nuera/db/schema';
-import { COMMAND_KINDS, type RunDto } from '@nuera/shared/runner';
+import { COMMAND_KINDS, DevServerNameSchema, devServerEntries, type RunDto } from '@nuera/shared/runner';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/server/db';
@@ -30,6 +30,8 @@ export const startRunInputSchema = z.object({
   command: z.string().trim().min(1).max(4000).optional(),
   cols: z.number().int().min(20).max(500).optional(),
   rows: z.number().int().min(5).max(300).optional(),
+  /** Dev server (`kind: 'dev'`): one of the project's named servers (default: the default one). */
+  name: DevServerNameSchema.optional(),
 });
 export type StartRunInput = z.input<typeof startRunInputSchema>;
 
@@ -67,7 +69,17 @@ export async function startRun(ctx: ProjectContext, input: StartRunInput): Promi
     worktreeId = (await primaryWorktreeId(project.id)) ?? undefined;
     if (!worktreeId) throw new AppError('CONFLICT', 'Le clone principal de ce projet est introuvable.', { untouched: 'Aucune commande lancée.' });
   }
-  const configured = parsed.kind === 'custom' ? null : ((project.commands as Record<string, string | null | undefined>)[parsed.kind] ?? null);
+  // Dev server: the named one (« admin »), else the project's default one.
+  const devEntries = parsed.kind === 'dev' ? devServerEntries(project.commands) : [];
+  const devEntry = parsed.kind === 'dev' ? (parsed.name ? devEntries.find((e) => e.name === parsed.name) : devEntries[0]) : undefined;
+  if (parsed.kind === 'dev' && parsed.name && !devEntry) {
+    throw new AppError('VALIDATION', `Aucun serveur de développement « ${parsed.name} » n'est configuré pour ce projet.`, {
+      detail: "Ajoutez-le dans l'onglet Environnement.",
+      untouched: 'Aucune commande lancée.',
+    });
+  }
+  const configured =
+    parsed.kind === 'custom' ? null : parsed.kind === 'dev' ? (devEntry?.command ?? null) : ((project.commands as Record<string, string | null | undefined>)[parsed.kind] ?? null);
   const command = parsed.command ?? configured;
   if (!command) {
     throw new AppError('VALIDATION', `Aucune commande de ${KIND_LABEL[parsed.kind]} configurée pour ce projet.`, {
@@ -87,15 +99,23 @@ export async function startRun(ctx: ProjectContext, input: StartRunInput): Promi
       ...(parsed.rows ? { rows: parsed.rows } : {}),
       actorUserId: ctx.user.id,
       ...(gitIdentity ? { gitIdentity } : {}),
+      ...(devEntry ? { name: devEntry.name } : {}),
     },
   });
   await auditIn(ctx, {
     action: 'project.run_started',
-    summary: `${KIND_LABEL[parsed.kind]} lancé dans ${project.name} : ${command}`,
+    summary: `${KIND_LABEL[parsed.kind]}${devEntry && devEntries.length > 1 ? ` « ${devEntry.name} »` : ''} lancé dans ${project.name} : ${command}`,
     targetType: 'run',
     targetId: run.id,
     environmentId: handle.environment.id,
-    metadata: { projectId: project.id, worktreeId, kind: parsed.kind, command, custom: Boolean(parsed.command && parsed.command !== configured) },
+    metadata: {
+      projectId: project.id,
+      worktreeId,
+      kind: parsed.kind,
+      command,
+      custom: Boolean(parsed.command && parsed.command !== configured),
+      ...(devEntry ? { name: devEntry.name } : {}),
+    },
   });
   return { runId: run.id, run };
 }
@@ -153,6 +173,8 @@ export async function stopRun(ctx: ProjectContext, runId: string): Promise<RunDt
 export const listRunsQuerySchema = z.object({
   projectId: z.uuid(),
   worktreeId: z.uuid().optional(),
+  /** Only this kind of command (the Aperçu reads the dev servers of its worktree). */
+  kind: z.enum(COMMAND_KINDS).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
@@ -162,6 +184,7 @@ export async function listRuns(ctx: ProjectContext, input: z.input<typeof listRu
   const { row } = await requireProject(ctx, parsed.projectId);
   return listRunRows(row.id, {
     ...(parsed.worktreeId ? { worktreeId: parsed.worktreeId } : {}),
+    ...(parsed.kind ? { kind: parsed.kind } : {}),
     limit: parsed.limit ?? 30,
   });
 }

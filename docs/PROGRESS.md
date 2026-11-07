@@ -174,6 +174,20 @@ ligne « Set effort level to … »), audit `session.effort`. Sans migration. Te
 `resume-context.test.ts`, `sessions.test.ts`, e2e `reprise-contexte.spec.ts` (pile `reprise2`, web 3680) et
 `sessions.spec.ts` (worktree supprimé → recréé).
 
+### Historique complet, plusieurs serveurs de développement, diagnostic d'un serveur qui ne démarre pas
+
+`/sessions` « HISTORIQUE » : « Toutes » liste chaque session de la période, celles en cours comprises (statut vivant
+lu au runner, badge mis à jour par `session.status`) ; nouveau filtre « En cours » (bureau et puces du téléphone).
+Plusieurs « Lancement » nommés par projet (`commands.dev` + `devName`, `commands.devServers[]`, rétrocompatible, sans
+migration) ; le runner en fait tourner plusieurs par worktree (un `PORT` chacun, 409 `DEV_SERVER_RUNNING` pour un nom
+déjà lancé, nom dans `command_runs.details.devServer`) ; Aperçu : onglets « client · 3001 » / « admin · 3002 » /
+« + Lancer… » (bureau), menu compact (téléphone). Un serveur lancé depuis l'Aperçu qui s'arrête en erreur (ou sans
+port après une minute, erreurs à l'appui) part à Claude dans la session, une fois par lancement (sortie masquée,
+80 lignes), audit `preview.autodebug` ; option « Demander à Claude de corriger automatiquement » (activée) et
+« Relancer après correction » (désactivée). Tests : runner `runs.test.ts`, web `sessions.test.ts`,
+`projects.test.ts`, `preview-autodebug.test.ts`, `autodebug.test.ts`, shared `contracts.test.ts`, e2e
+`apercu-serveurs.spec.ts` (pile `apercu2`, web 3700).
+
 ## Reprise
 
 État détaillé, reste à faire et instructions de reprise : [README.md](../README.md) §1–5. Brief d'origine :

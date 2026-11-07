@@ -37,6 +37,15 @@ export interface AppShellProps {
 const TABBAR_PX = 57;
 
 /**
+ * Phone top edge: the status bar (`safe-area-inset-top`, page drawn under it with `viewport-fit=cover`) plus
+ * a 12 px guard. iOS draws its own blurred, fading band over that edge (Safari 26 scroll-edge effect, status
+ * bar of the home-screen app) and the fade runs past the inset: what lies there is blurred. The opaque
+ * `SafeAreaCap` covers the whole band, so the content scrolls under a plain colour and the page header
+ * starts below it. 0 px without a notch / status bar inset (desktop, Android browser bar).
+ */
+const SHELL_TOP = 'calc(env(safe-area-inset-top) + min(12px, env(safe-area-inset-top)))';
+
+/**
  * Client root of the authenticated app: live events (one EventSource, multi-tab identity guard),
  * command palette (⌘K), shell data, navigation (Sidebar / SidebarRail / TabBar, « Administration » for
  * the owner and administrators) and the global states:
@@ -145,6 +154,7 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
 
   const style = {
     '--shell-bottom': showTabBar ? `calc(${TABBAR_PX}px + env(safe-area-inset-bottom))` : '0px',
+    '--shell-top': SHELL_TOP,
   } as CSSProperties;
 
   return (
@@ -183,12 +193,12 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
         className={cn(
           'flex min-w-0 flex-1 flex-col outline-none',
           variant === 'sidebar' &&
-            'gap-6 px-4 pt-[calc(8px+env(safe-area-inset-top))] pb-[calc(24px+var(--shell-bottom))] nav:px-8 nav:pt-7 nav:pb-7',
+            'gap-6 px-4 pt-[calc(8px+var(--shell-top))] pb-[calc(24px+var(--shell-bottom))] nav:px-8 nav:pt-7 nav:pb-7',
           variant === 'rail' && 'min-h-dvh',
         )}
       >
         {replaceByT5 ? (
-          <div className={cn('flex flex-1 items-start justify-center', variant === 'rail' && 'flex-col items-stretch justify-start px-4 pt-[calc(8px+env(safe-area-inset-top))] pb-7 nav:flex-row nav:items-start nav:justify-center nav:px-8 nav:py-7')}>
+          <div className={cn('flex flex-1 items-start justify-center', variant === 'rail' && 'flex-col items-stretch justify-start px-4 pt-[calc(8px+var(--shell-top))] pb-7 nav:flex-row nav:items-start nav:justify-center nav:px-8 nav:py-7')}>
             {variant === 'rail' ? (
               // T5 « sans masquer la navigation »: the phone Workspace has neither rail nor tab bar, so its
               // session header is the only way out — keep a back link while the card replaces it.
@@ -225,10 +235,25 @@ function ShellFrame({ variant, globals, children }: { variant: AppShellProps['va
         )}
       </main>
 
+      <SafeAreaCap variant={variant} />
       {showTabBar ? <TabBar className="nav:hidden" activeSessions={activeSessions} serverUnavailable={unavailable} /> : null}
 
       {globals}
       <CommandPalette open={palette.open} onOpenChange={palette.setOpen} />
+    </div>
+  );
+}
+
+/**
+ * Opaque band over the phone status bar (`--shell-top` high, see `SHELL_TOP`): the page scrolls under a
+ * plain colour instead of showing through the system blur, and nothing is ever blurred under it. Same
+ * background as what it continues: the page (`surface-raised` over `bg`) or the Workspace header (`bg`).
+ * Below the overlays (z-50) so sheets and dialogs stay above it; hidden on desktop.
+ */
+function SafeAreaCap({ variant }: { variant: AppShellProps['variant'] }) {
+  return (
+    <div aria-hidden data-safe-area-cap className="pointer-events-none fixed inset-x-0 top-0 z-40 h-(--shell-top) bg-bg nav:hidden">
+      {variant === 'sidebar' ? <div className="size-full bg-surface-raised" /> : null}
     </div>
   );
 }

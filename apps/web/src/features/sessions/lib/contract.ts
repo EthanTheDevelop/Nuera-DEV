@@ -113,20 +113,25 @@ export const sessionIdParamsSchema = z.object({ sessionId: z.uuid('session inval
 // History filters (D06 « Statut », M06 chips) and period (D06 « 30 derniers jours »)
 // ---------------------------------------------------------------------------------------------
 
-/** `?filtre=` values (French, linkable). `toutes` is the default and never written in the URL. */
-export const HISTORY_FILTERS = ['toutes', 'terminees', 'reprise-possible', 'reprise-impossible', 'archivees'] as const;
+/**
+ * `?filtre=` values (French, linkable). `toutes` is the default and never written in the URL: it
+ * lists EVERY session of the period, the running ones included (with their live badge); `en-cours`
+ * keeps only those (the « EN COURS » statuses), the others keep their meaning.
+ */
+export const HISTORY_FILTERS = ['toutes', 'en-cours', 'terminees', 'reprise-possible', 'reprise-impossible', 'archivees'] as const;
 export type HistoryFilter = (typeof HISTORY_FILTERS)[number];
 
 export const HISTORY_FILTER_LABELS: Record<HistoryFilter, { select: string; chip: string }> = {
   toutes: { select: 'tous', chip: 'Toutes' },
+  'en-cours': { select: 'en cours', chip: 'En cours' },
   terminees: { select: 'terminées', chip: 'Terminées' },
   'reprise-possible': { select: 'reprise possible', chip: 'Reprise possible' },
   'reprise-impossible': { select: 'reprise impossible', chip: 'Reprise impossible' },
   archivees: { select: 'archivées', chip: 'Archivées' },
 };
 
-/** M06 chips: `Toutes` · `Terminées` · `Reprise possible` · `Archivées`. */
-export const PHONE_HISTORY_FILTERS = ['toutes', 'terminees', 'reprise-possible', 'archivees'] as const satisfies readonly HistoryFilter[];
+/** M06 chips: `Toutes` · `En cours` · `Terminées` · `Reprise possible` · `Archivées` (the row scrolls). */
+export const PHONE_HISTORY_FILTERS = ['toutes', 'en-cours', 'terminees', 'reprise-possible', 'archivees'] as const satisfies readonly HistoryFilter[];
 
 /** `?periode=` values. Default `30j` (Figma « 30 derniers jours »). */
 export const HISTORY_PERIODS = ['7j', '30j', '90j', 'tout'] as const;

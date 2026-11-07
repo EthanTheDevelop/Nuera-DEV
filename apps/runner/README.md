@@ -321,6 +321,12 @@ configuration : il la demande au web (`POST /api/internal/claude-config`, jeton 
 
 - `POST /runs` : commande du projet dans un PTY (couleurs conservées), détection de port (« port 3000 »), lecture
   des résultats Vitest / Jest / Playwright / node:test en direct (« 10 / 10 réussis »), ligne `command_runs`.
+- **Serveurs de développement nommés** : un projet peut en déclarer plusieurs (`commands.dev` + `devName`, le serveur
+  par défaut ; `commands.devServers[]` les autres — « client », « admin » ; `devServerEntries()` de
+  `@nuera/shared/runner`). `POST /runs { kind: 'dev', name? }` lance celui nommé (défaut : le premier), chacun avec
+  son `PORT` libre et sa détection de port ; plusieurs tournent côte à côte dans un worktree, jamais deux du même nom
+  (409 `DEV_SERVER_RUNNING`, `data.runId`). Le nom est gardé dans `command_runs.details.devServer` (aucune
+  migration) et rendu par `RunDto.name`.
 - **Aperçu** (`src/preview/proxy.ts`) : `/v1/runs/:runId/preview/<chemin>` relaie toute méthode
   (`GET HEAD POST PUT PATCH DELETE OPTIONS`) vers `127.0.0.1` (sinon `::1`) **au port détecté de ce lancement**, qui
   doit être un `dev` vivant de ce serveur (`PREVIEW_NOT_DEV`, `PREVIEW_NOT_RUNNING`, `PREVIEW_NO_PORT`, 404 pour un

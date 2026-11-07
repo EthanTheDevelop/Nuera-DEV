@@ -35,7 +35,7 @@ aucun accès aux données, aucune donnée d'exemple (sauf dans `gallery/`, rése
 |---|---|---|
 | `Composer` (bureau) | `state: 'ready'\|'running'\|'waiting_permission'\|'reconnecting'\|'unavailable'`, `onSubmit` (promesse → brouillon gardé jusqu'au succès ; le texte tapé pendant l'envoi reste, `draftAfterSend`), `modeLabel`, `value`/`defaultValue`/`onValueChange`, `placeholder`, `disabledReason`, `sending`, `onInterrupt` (« Interrompre · Échap » + touche Échap), `onAttach` (absent → pas de trombone), `persistence` (`persistenceText(…)`), `persistenceHint` | `Dev · Compositeur` 203:497 (Prêt 467, En cours 484, Attente 496) · D05 `Saisie` 214:1649 · W7 |
 | `PhoneComposer` | idem + `keyboardAware` (S1 : la zone de sécurité basse disparaît clavier ouvert), placeholder court | M05/S1/S2 `Saisie` |
-| `DictationButton` / `DictationStatus` / `DictatedTextarea` · `useDictation` / `useComposerDictation` | dictée par la reconnaissance vocale du navigateur (`composer/dictation.ts`, Web Speech API, `fr-FR` puis la langue du navigateur) : micro `aria-pressed` dans les deux compositeurs et la première instruction de `NewSessionDialog` ; texte provisoire affiché sous le champ, texte final inséré au curseur, jamais envoyé seul ; arrêt par le bouton, Échap, l'envoi, la sortie du compositeur, la page masquée, 8 s de silence ; Ctrl/⌘+Maj+Espace (bureau) ; navigateur sans API ou contexte non sécurisé → `aria-disabled` et raison écrite au toucher ; note de confidentialité une fois (`localStorage`) | non dessiné (icône `mic` dans le style du jeu) |
+| `DictationButton` / `DictationStatus` / `DictatedTextarea` · `useDictation` / `useComposerDictation` | dictée par la reconnaissance vocale du navigateur (`composer/dictation.ts`, Web Speech API, `fr-FR` puis la langue du navigateur) : micro `aria-pressed` dans les deux compositeurs et la première instruction de `NewSessionDialog` ; texte provisoire affiché sous le champ, texte final inséré au curseur, jamais envoyé seul ; arrêt par le bouton, Échap, l'envoi, la sortie du compositeur, la page masquée, 8 s de silence ; Ctrl/⌘+Maj+Espace (bureau) ; navigateur sans API ou contexte non sécurisé → `aria-disabled` et raison écrite au toucher ; note de confidentialité une fois (`localStorage`) ; premier appui de la page : micro demandé explicitement (`getUserMedia`, pistes arrêtées aussitôt) avant la reconnaissance, refus distingués (`mic-denied` après l'invite, `mic-blocked` par un réglage, `not-allowed` / `service` de la reconnaissance, `standalone` = app iOS installée sans service de dictée) avec les réglages iOS à ouvrir (`dictationErrorText`) | non dessiné (icône `mic` dans le style du jeu) |
 | `SessionPersistenceLine` / `persistenceText` | `tone`, `text`, `hint` — contextes `new`, `live` (hôte), `ended`, `reconnecting` | D05 214:1661 · W1 · W3 · W7 |
 
 Comportement : Entrée envoie, Maj+Entrée = nouvelle ligne (sûr pendant une composition IME) ; « / commandes » et
@@ -49,7 +49,10 @@ Barre d'outils (`tools` de `Composer` / `PhoneComposer`, `composer/ComposerToolb
 puces Modèle (`/model <alias>` tapé dans le CLI au repos, libellé = barre d'état) et Mode (Maj+Tab jusqu'à ce que
 l'écran du CLI affiche le mode ; hors CLI vivant : option du prochain démarrage), « / » et la palette `/` `@`
 (commandes choisies, skills, MCP du projet, fichiers ; insère, n'envoie jamais). Bureau : outils à gauche, micro et
-Envoyer à droite ; téléphone : rangée d'icônes 44 px au-dessus du champ, feuilles pour les choix.
+Envoyer à droite ; téléphone (`PhoneComposerOptions`) : un seul bouton 44 px « Options de l'instruction » à gauche
+du champ, dont la feuille regroupe Joindre (bibliothèque, appareil photo), Modèle / Effort / Mode avec leur valeur
+actuelle (choix dans la même feuille, raison écrite si indisponible) et la palette « / » ; micro et Envoyer restent à
+côté du champ (texte 16 px, jusqu'à 6 lignes puis défilement).
 
 ### Modifications et diff
 

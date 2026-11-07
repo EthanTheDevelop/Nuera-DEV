@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionInputSchema, historySearch, parseHistoryParams, type SessionListItem } from './contract';
 import { capacityLine, existingBranchOptions, newBranchError, permissionModeOptions, suggestBranchName, toCreateInput, worktreeHint, CLI_DEFAULT } from './form';
-import { applyStatusEvent, capacityShort, capacityTitle, cardActivity, historyAction, memoryCaption, memoryFreeShort, serverLabel, sessionHref, sortActive, worktreeNotes } from './view';
+import { applyStatusEvent, patchHistoryItems, capacityShort, capacityTitle, cardActivity, historyAction, memoryCaption, memoryFreeShort, serverLabel, sessionHref, sortActive, worktreeNotes } from './view';
 
 const GB = 1024 ** 3;
 
@@ -172,6 +172,21 @@ describe('view', () => {
     expect(applyStatusEvent(items, { ...event, status: 'finished', live: false })).toEqual({ items: [], refresh: true });
     expect(applyStatusEvent(items, { ...event, sessionId: 'new-one' }).refresh).toBe(true);
     expect(applyStatusEvent(items, { ...event, sessionId: 'old', status: 'finished' }).refresh).toBe(false);
+
+    // « HISTORIQUE · Toutes » lists running sessions too: their badge follows in place.
+    const history = [item({ id: 'a' }), item({ id: 'done', status: 'finished', live: false })];
+    const patched = patchHistoryItems(history, event);
+    expect(patched[0]).toMatchObject({ status: 'waiting_permission', live: true, durationMs: null });
+    expect(patched[1]).toBe(history[1]);
+    const ended = patchHistoryItems(history, { ...event, status: 'finished', live: false, endedAt: '2026-11-04T09:30:00.000Z' });
+    expect(ended[0]).toMatchObject({ status: 'finished', live: false, durationMs: 30 * 60_000 });
+    expect(patchHistoryItems(history, { ...event, sessionId: 'inconnue' })).toBe(history);
+  });
+
+  it('reads the « En cours » history filter from the URL', () => {
+    expect(parseHistoryParams({ filtre: 'en-cours' }).filter).toBe('en-cours');
+    expect(historySearch({ filter: 'en-cours', period: '30j', projectId: null, q: '' })).toBe('?filtre=en-cours');
+    expect(parseHistoryParams({ filtre: 'inconnu' }).filter).toBe('toutes');
   });
 });
 

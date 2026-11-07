@@ -14,6 +14,7 @@ import { withAttachmentReferences } from './attachments';
 import { PaletteButton, PalettePanel } from './CommandPalette';
 import { ComposerChip, type ComposerChipProps } from './ComposerChip';
 import type { PaletteItem } from './palette';
+import { PhoneComposerOptions } from './PhoneComposerOptions';
 import type { AttachmentsController } from './use-attachments';
 import { insertFromButton, usePaletteTrigger, type PaletteSource } from './use-palette';
 
@@ -166,6 +167,19 @@ export function useComposerTools(
     </>
   ) : null;
 
+  // Phone: one « Options » button (sheet) instead of the row of chips, so the field keeps its width.
+  const options: ReactNode =
+    tools && variant === 'phone' ? (
+      <PhoneComposerOptions
+        tools={tools}
+        blockedReason={blockedReason}
+        onInsert={insertItem}
+        onOpen={() => {
+          caretRef.current = innerRef.current?.selectionStart ?? null;
+        }}
+      />
+    ) : null;
+
   const noteLine: ReactNode = note ? (
     <p
       className="m-0 flex min-w-0 flex-wrap items-center gap-x-2 font-sans text-app-12 text-muted"
@@ -178,7 +192,7 @@ export function useComposerTools(
     </p>
   ) : null;
 
-  return { palette, handleKeyDown, fieldProps, panel, chips, left, noteLine };
+  return { palette, handleKeyDown, fieldProps, panel, chips, left, options, noteLine };
 }
 
 /** What `useComposer` needs to send the pieces jointes with the text (`@<chemin>` appended, chips cleared once delivered). */

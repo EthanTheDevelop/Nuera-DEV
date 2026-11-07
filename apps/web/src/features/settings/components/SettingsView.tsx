@@ -6,6 +6,7 @@ import { Icon } from '@/components/icons';
 import { PageHeader } from '@/components/shell';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui';
 import { useLiveEvent } from '@/hooks/useLiveEvents';
+import { NAV_QUERY } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 import { DEFAULT_SETTINGS_TAB, parseSettingsTab, RECONNECT_ACTION, SECTION_IDS, SETTINGS_TABS, settingsTabLabel, type SettingsTab } from '../lib/tabs';
 import type { SettingsPageData } from '../lib/types';
@@ -62,10 +63,24 @@ function SettingsPage() {
   // A session status only moves the live sections (Services, inactive worktrees): targeted re-read.
   useLiveEvent('session.status', () => refreshLive());
 
+  // Phone drill-down: the M08 list pushes one entry for the section it opens (the back arrow / swipe comes
+  // back to the list), and the in-page « Paramètres » arrow goes back to that entry instead of pushing a new
+  // one — otherwise the back arrow stepped list → section → list → … before leaving Paramètres.
+  const drilledFromList = useRef(false);
   const setTab = useCallback((next: SettingsTab, section?: string) => {
+    drilledFromList.current = next !== DEFAULT_SETTINGS_TAB && !window.matchMedia(NAV_QUERY).matches;
     writeUrl({ onglet: next === DEFAULT_SETTINGS_TAB ? null : next, action: null }, 'push', section ?? null);
     if (section) scrollToSection(section);
     else window.scrollTo({ top: 0 });
+  }, []);
+  const backToList = useCallback(() => {
+    if (drilledFromList.current) {
+      drilledFromList.current = false;
+      window.history.back();
+      return;
+    }
+    writeUrl({ onglet: null, action: null }, 'replace', null);
+    window.scrollTo({ top: 0 });
   }, []);
 
   // T6 target: /parametres?onglet=claude-code&action=reconnexion opens the login terminal once — also
@@ -93,7 +108,7 @@ function SettingsPage() {
         <div className="flex flex-col gap-2 nav:hidden">
           <button
             type="button"
-            onClick={() => setTab(DEFAULT_SETTINGS_TAB)}
+            onClick={backToList}
             className="-ml-1 flex min-h-11 items-center gap-0.5 self-start pr-2 pl-1 font-sans text-app-15 text-accent"
           >
             <Icon name="arrow-left" size={20} />

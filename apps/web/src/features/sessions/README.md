@@ -52,7 +52,9 @@ Toutes les actions sont auditées (`session.create|resume|stop|archive|rename`).
 
 ## Page `/sessions`
 
-État d'URL : `?filtre=terminees|reprise-possible|reprise-impossible|archivees`, `?periode=7j|90j|tout` (déf. 30 j),
+État d'URL : `?filtre=en-cours|terminees|reprise-possible|reprise-impossible|archivees` (« Toutes », par défaut,
+liste toutes les sessions de la période, celles en cours comprises avec leur statut vivant ; « En cours » ne garde
+qu'elles), `?periode=7j|90j|tout` (déf. 30 j),
 `?projet=<uuid>`, `?q=`. Temps réel : `session.status` met à jour les cartes « EN COURS » sur place ;
 `session.permission`, `stream.reset` et toute entrée / sortie de la liste relisent les données serveur. Sans serveur
 attribué : « Aucun serveur attribué » sur la page et dans la fenêtre (jamais T5), `POST /api/terminals` d'un shell →
