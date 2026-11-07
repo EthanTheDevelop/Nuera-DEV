@@ -6,7 +6,6 @@ import {
   ACTIVE_STATUSES,
   HISTORY_PAGE_SIZE,
   HISTORY_PERIOD_DAYS,
-  HISTORY_STATUSES,
   LIVE_STATUSES,
   type HistoryFilter,
   type HistoryPeriod,
@@ -274,7 +273,7 @@ export function capacityMessage(capacity: Pick<SessionCapacity, 'active' | 'max'
 
 export interface ListSessionsInput {
   projectId?: string | null;
-  /** `active` = D06 « EN COURS » (new + live), `history` = everything that no longer runs. */
+  /** `active` = D06 « EN COURS » (new + live), `history` = « HISTORIQUE » (every session, per `filter`). */
   status: 'active' | 'history';
   /** History filter (D06 « Statut », M06 chips). */
   filter?: HistoryFilter;
@@ -315,8 +314,11 @@ function resumableSql(): SQL {
   return and(inArray(sessions.status, [...RESUMABLE_STATUSES]), isNull(projects.archivedAt), ne(projects.status, 'archived'))!;
 }
 
-function filterSql(filter: HistoryFilter): SQL {
+/** Status condition of a history filter; `toutes` has none (every session, the running ones included). */
+export function filterSql(filter: HistoryFilter): SQL | null {
   switch (filter) {
+    case 'en-cours':
+      return and(inArray(sessions.status, [...ACTIVE_STATUSES]), isNull(sessions.archivedAt))!;
     case 'terminees':
       return eq(sessions.status, 'finished');
     case 'archivees':
@@ -327,7 +329,7 @@ function filterSql(filter: HistoryFilter): SQL {
       // Only an archived project blocks a resumption now (worktree recreated, new context otherwise).
       return and(inArray(sessions.status, [...RESUMABLE_STATUSES]), or(isNotNull(projects.archivedAt), eq(projects.status, 'archived')))!;
     default:
-      return inArray(sessions.status, [...HISTORY_STATUSES]);
+      return null;
   }
 }
 
@@ -411,7 +413,8 @@ export async function listSessions(ctx: Pick<RequestContext, 'space' | 'environm
   }
 
   const filter = input.filter ?? 'toutes';
-  conditions.push(filterSql(filter));
+  const statusCondition = filterSql(filter);
+  if (statusCondition) conditions.push(statusCondition);
   const days = HISTORY_PERIOD_DAYS[input.period ?? '30j'];
   // Raw expressions get no column mapping: dates are passed as ISO text, cast by PostgreSQL.
   if (days !== null) conditions.push(gte(startKey, timestamp(new Date(Date.now() - days * 86_400_000))));
@@ -445,11 +448,19 @@ export async function listSessions(ctx: Pick<RequestContext, 'space' | 'environm
     const candidates = page.filter(resumableFromDatabase);
     const confirmed = candidates.length ? await confirmResumable(candidates) : new Map<string, SessionDto>();
     if (confirmed === null) verified = false;
+    // Running sessions (« Toutes », « En cours »): their live view comes from their server's runner,
+    // like the EN COURS cards (database view, « non vérifié », while it does not answer).
+    const running = page.filter((row) => (ACTIVE_STATUSES as readonly SessionStatus[]).includes(row.status));
+    const live = running.length ? await runnerLiveSessions(running.map((row) => row.environmentId), new Set(running.map((row) => row.id))) : new Map<string, SessionDto>();
+    if (live === null) verified = false;
     let consumed = 0;
     for (const row of page) {
       consumed += 1;
-      const dto = confirmed?.get(row.id);
-      const item = toListItem(row, dto ? { dto, resumable: dto.resumable } : { live: false });
+      const isRunning = (ACTIVE_STATUSES as readonly SessionStatus[]).includes(row.status);
+      const dto = isRunning ? live?.get(row.id) : confirmed?.get(row.id);
+      const item = isRunning
+        ? toListItem(row, live ? { dto: dto ?? null, live: dto?.live ?? false } : {})
+        : toListItem(row, dto ? { dto, resumable: dto.resumable } : { live: false });
       if (!keep || keep(item)) items.push(item);
       if (items.length >= limit) break;
     }

@@ -526,15 +526,24 @@ describe('listSessions / getCapacity', () => {
     const removed = await createSessionRow(project.id, gone.id, { status: 'stopped', title: 'Audit 100% contrastes', transcriptPath: '/c.jsonl', startedAt: at(2) });
     await createSessionRow(project.id, wt.id, { status: 'archived', title: 'Migration', startedAt: at(1) });
     await createSessionRow(project.id, wt.id, { status: 'finished', title: 'Ancienne', startedAt: new Date(Date.now() - 60 * 86_400_000) });
-    await createSessionRow(project.id, wt.id, { status: 'running', title: 'En cours', startedAt: at(7) });
+    const running = await createSessionRow(project.id, wt.id, { status: 'running', title: 'En cours', startedAt: at(7) });
+    runnerMock.listSessions.mockResolvedValue({
+      sessions: [dto({ id: running.id, projectId: project.id, status: 'waiting_permission', live: true })],
+      capacity: { live: 1, max: 4 },
+    });
     runnerMock.getSession.mockImplementation(async ({ params }) =>
       dto({ id: params.sessionId, projectId: project.id, status: 'interrupted', resumable: true, resumeMode: params.sessionId === resumable.id ? 'conversation' : 'context' }),
     );
     const { listSessions, getCapacity } = await import('./index');
 
+    // « Toutes » lists every session of the period, the running one included with its live status.
     const all = await listSessions(ctx, { status: 'history' });
-    expect(all.items.map((i) => i.title)).toEqual(['Galerie photos', 'Correctif tarifs', 'Journal perdu', 'Audit 100% contrastes', 'Migration']);
-    expect(all.items[0]!.durationMs).toBe(3_600_000);
+    expect(all.items.map((i) => i.title)).toEqual(['En cours', 'Galerie photos', 'Correctif tarifs', 'Journal perdu', 'Audit 100% contrastes', 'Migration']);
+    expect(all.items[0]).toMatchObject({ id: running.id, status: 'waiting_permission', live: true, durationMs: null });
+    expect(all.items[1]!.durationMs).toBe(3_600_000);
+    // « En cours » keeps only the running ones; the other filters keep their meaning.
+    expect((await listSessions(ctx, { status: 'history', filter: 'en-cours' })).items.map((i) => i.id)).toEqual([running.id]);
+    expect((await listSessions(ctx, { status: 'history', filter: 'archivees' })).items.map((i) => i.title)).toEqual(['Migration']);
     // A removed worktree (recreated) or a lost journal (new context) no longer blocks « Reprendre ».
     expect(all.items.find((i) => i.id === removed.id)).toMatchObject({ resumable: true, resumeMode: 'context', resumeBlockedReason: null });
     expect(all.items.find((i) => i.id === lost.id)).toMatchObject({ resumable: true, resumeMode: 'context', resumeBlockedReason: null });
@@ -554,11 +563,11 @@ describe('listSessions / getCapacity', () => {
     expect((await listSessions(ctx, { status: 'history', q: 'feature/b' })).items.map((i) => i.id)).toEqual([removed.id]);
 
     const first = await listSessions(ctx, { status: 'history', limit: 2 });
-    expect(first.items.map((i) => i.id)).toEqual([finished.id, resumable.id]);
+    expect(first.items.map((i) => i.id)).toEqual([running.id, finished.id]);
     const second = await listSessions(ctx, { status: 'history', limit: 2, cursor: first.nextCursor });
-    expect(second.items.map((i) => i.title)).toEqual(['Journal perdu', 'Audit 100% contrastes']);
-    const third = await listSessions(ctx, { status: 'history', limit: 2, cursor: second.nextCursor });
-    expect(third.items.map((i) => i.title)).toEqual(['Migration']);
+    expect(second.items.map((i) => i.title)).toEqual(['Correctif tarifs', 'Journal perdu']);
+    const third = await listSessions(ctx, { status: 'history', limit: 3, cursor: second.nextCursor });
+    expect(third.items.map((i) => i.title)).toEqual(['Audit 100% contrastes', 'Migration']);
     expect(third.nextCursor).toBeNull();
     await expect(listSessions(ctx, { status: 'history', cursor: 'nope' })).rejects.toMatchObject({ code: 'VALIDATION' });
 
@@ -595,7 +604,9 @@ describe('listSessions / getCapacity', () => {
     expect(await getCapacity(ctx)).toEqual({ active: 1, max: 4, source: 'database', environment: { id: TEST_ENVIRONMENT_ID, name: 'VPS-3' } });
     const history = await listSessions(ctx, { status: 'history' });
     expect(history.verified).toBe(false);
-    expect(history.items[0]).toMatchObject({ title: 'Reprenable', resumable: true });
+    expect(history.items.find((i) => i.title === 'Reprenable')).toMatchObject({ resumable: true });
+    // The running session stays listed with the database view.
+    expect(history.items.find((i) => i.title === 'Vivante')).toMatchObject({ status: 'running', live: true });
     const active = await listSessions(ctx, { status: 'active' });
     expect(active).toMatchObject({ verified: false });
     expect(active.items[0]).toMatchObject({ title: 'Vivante', live: true });

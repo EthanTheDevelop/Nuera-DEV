@@ -156,6 +156,32 @@ export function applyStatusEvent(
   return { items: copy, refresh: false };
 }
 
+/**
+ * Applies a `session.status` event to the rows of « HISTORIQUE » (a running session listed under
+ * « Toutes » or « En cours »): status, live flag and dates follow in place; unknown ids are ignored.
+ */
+export function patchHistoryItems(items: SessionListItem[], event: SessionStatusEvent): SessionListItem[] {
+  const index = items.findIndex((item) => item.id === event.sessionId);
+  if (index === -1) return items;
+  const current = items[index]!;
+  if (current.status === event.status && current.live === event.live && current.endedAt === event.endedAt) return items;
+  const startedAt = event.startedAt ?? current.startedAt;
+  const endedAt = event.endedAt;
+  const durationMs = startedAt && endedAt && !event.live ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : null;
+  const copy = [...items];
+  copy[index] = {
+    ...current,
+    title: event.title ?? current.title,
+    status: event.status,
+    live: event.live,
+    startedAt,
+    endedAt,
+    durationMs,
+    limit: event.limit !== undefined ? event.limit : current.limit,
+  };
+  return copy;
+}
+
 /** Live CLIs among the EN COURS sessions (capacity once the list is live). */
 export function liveCount(items: readonly SessionListItem[]): number {
   return items.filter((item) => item.live || isLiveStatus(item.status)).length;
