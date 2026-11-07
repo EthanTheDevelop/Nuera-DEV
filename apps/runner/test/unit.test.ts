@@ -289,6 +289,12 @@ describe('test output parser', () => {
     expect(detectPort('\u001b[32mready\u001b[0m - started server on 0.0.0.0:3000')).toBe(3000);
     expect(detectPort('Listening on port 8080')).toBe(8080);
     expect(detectPort('no port here')).toBeNull();
+    // Second dev server of the same framework: it moves off the taken port — never preview the other project.
+    expect(detectPort(' ⚠ Port 3000 is in use by an unknown process, using available port 3001 instead.')).toBe(3001);
+    expect(detectPort(' ⚠ Port 3000 is in use by an unknown process, using available port 3001 instead.\n   ▲ Next.js 16.4.5\n   - Local:        http://localhost:3001')).toBe(3001);
+    expect(detectPort('Port 5173 is in use, trying another one...\n  ➜  Local:   http://localhost:5174/')).toBe(5174);
+    expect(detectPort('Error: listen EADDRINUSE: address already in use :::3000')).toBeNull();
+    expect(detectPort('- Local: http://localhost:3000\n- Network: http://0.0.0.0:3000\nready on http://localhost:4000')).toBe(4000);
   });
 });
 
