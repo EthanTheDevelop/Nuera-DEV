@@ -3,7 +3,7 @@ import net from 'node:net';
 import { and, eq, inArray } from 'drizzle-orm';
 import { commandRuns, type Database } from '@nuera/db';
 import { formatTestCounts } from '@nuera/shared/events';
-import type { GitIdentity, RunDto, TestReport } from '@nuera/shared/runner';
+import { DEFAULT_DEV_SERVER_NAME, devServerEntries, type GitIdentity, type RunDto, type TestReport } from '@nuera/shared/runner';
 import type { Logger } from 'pino';
 import type { ClaudeAccounts } from '../claude/accounts';
 import { claudeEnv, gitIdentityEnv } from '../claude/env';
@@ -122,6 +122,7 @@ export class RunManager {
 
   private dto(row: RunRow, tests: TestReport | null): RunDto {
     return {
+      name: devServerName(row),
       id: row.id,
       projectId: row.projectId,
       worktreeId: row.worktreeId,
@@ -151,6 +152,8 @@ export class RunManager {
     actorUserId?: string | null;
     /** Author and committer of the commits made by the command (trusted GIT_AUTHOR_* / GIT_COMMITTER_*). */
     gitIdentity?: GitIdentity | null;
+    /** Dev server name (`kind: 'dev'`); default: the project's default one. */
+    name?: string;
   }): Promise<RunDto> {
     if (this.live.size >= MAX_LIVE_RUNS) throw new RunnerError('CONFLICT', 'Trop de commandes en cours sur le serveur.', { reason: 'RUN_LIMIT' });
     const project = await getProject(this.deps.db, this.deps.environment.id, input.projectId);
@@ -158,11 +161,28 @@ export class RunManager {
     const { worktree, cwd } = await this.deps.git.resolveProjectWorktree(project.id, input.worktreeId);
     const account = await this.deps.accounts.forSpace(project.spaceId);
     const configured = (project.commands ?? {}) as Record<string, string | null | undefined>;
-    const command = input.command ?? (input.kind !== 'custom' ? configured[input.kind] ?? null : null);
+    // Dev server: one of the project's named servers (default: the default one, `commands.dev`).
+    let devName: string | null = null;
+    let devCommand: string | null = null;
+    if (input.kind === 'dev') {
+      const entries = devServerEntries(project.commands);
+      const entry = input.name ? entries.find((e) => e.name === input.name) : entries[0];
+      devName = input.name ?? entry?.name ?? DEFAULT_DEV_SERVER_NAME;
+      devCommand = entry?.command ?? null;
+    }
+    const command = input.command ?? (input.kind === 'dev' ? devCommand : input.kind !== 'custom' ? configured[input.kind] ?? null : null);
     if (!command) throw new RunnerError('VALIDATION', 'Aucune commande configurée pour cette action.');
     if (input.kind === 'dev') {
-      const running = [...this.live.values()].find((r) => r.row.worktreeId === worktree.id && r.row.kind === 'dev');
-      if (running) throw new RunnerError('CONFLICT', 'Un serveur de développement tourne déjà dans ce worktree.', { data: { runId: running.id } });
+      // Several dev servers per worktree (client + admin), never two of the same name.
+      const running = [...this.live.values()].find(
+        (r) => r.row.worktreeId === worktree.id && r.row.kind === 'dev' && !r.stopping && devServerName(r.row) === devName,
+      );
+      if (running) {
+        throw new RunnerError('CONFLICT', `Le serveur de développement « ${devName} » tourne déjà dans ce worktree.`, {
+          reason: 'DEV_SERVER_RUNNING',
+          data: { runId: running.id },
+        });
+      }
     }
     const id = randomUUID();
     const [row] = await this.deps.db
@@ -176,6 +196,7 @@ export class RunManager {
         command,
         status: 'running',
         actorUserId: input.actorUserId ?? null,
+        ...(devName ? { details: { devServer: devName } } : {}),
       })
       .returning();
     const shell = platformShellForPty(command);
@@ -293,7 +314,7 @@ export class RunManager {
     const [row] = await this.deps.db
       .update(commandRuns)
       // The per-test report outlives the process (W2 « Résultats des tests » after the end of the run).
-      .set({ status, exitCode: code, summary, outputTail: live.output, details: tests ? { report: tests } : null, finishedAt: new Date(), port: live.row.port })
+      .set({ status, exitCode: code, summary, outputTail: live.output, details: runDetails(live.row, tests), finishedAt: new Date(), port: live.row.port })
       .where(eq(commandRuns.id, live.id))
       .returning();
     this.live.delete(live.id);
@@ -378,6 +399,20 @@ export class RunManager {
       killTree(live.terminal);
     }
   }
+}
+
+/** Dev server name of a run (`details.devServer`; older dev runs: the default name). */
+function devServerName(row: RunRow): string | null {
+  if (row.kind !== 'dev') return null;
+  const name = row.details?.devServer;
+  return typeof name === 'string' && name ? name : DEFAULT_DEV_SERVER_NAME;
+}
+
+/** Details kept at the end of a run: its dev server name and its test report. */
+function runDetails(row: RunRow, tests: TestReport | null): RunRow['details'] {
+  const name = row.kind === 'dev' ? row.details?.devServer : undefined;
+  if (!name && !tests) return null;
+  return { ...(name ? { devServer: name } : {}), ...(tests ? { report: tests } : {}) };
 }
 
 function killTree(terminal: Terminal): void {

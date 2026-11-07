@@ -26,6 +26,7 @@ import {
 } from '@/components/ui';
 import { NewSessionButton, NewSessionDialog, workspaceUrl } from '@/features/sessions';
 import { useLiveEvent } from '@/hooks/useLiveEvents';
+import { tabHistoryMode } from '@/hooks/useMediaQuery';
 import { useNow } from '@/hooks/useNow';
 import { cn } from '@/lib/cn';
 import type { EnvVarView, ProjectCommandKind, ProjectDetail, ProjectMcpToolView, RunView, WorktreeView } from '@/server/projects/types';
@@ -142,7 +143,8 @@ export function ProjectDetailView({ detail, generatedAt }: ProjectDetailViewProp
           ? `${serverName} ne répond pas.`
           : null;
 
-  const setTab = (value: string) => writeSearchParams({ onglet: value === 'vue-d-ensemble' ? null : value }, 'push');
+  // Phone (M04): the chips are one screen, the back arrow leaves the project (replace); desktop: push.
+  const setTab = (value: string) => writeSearchParams({ onglet: value === 'vue-d-ensemble' ? null : value }, tabHistoryMode());
 
   // M04: the chip row scrolls; keep the selected chip in view (deep link ?onglet=, back / forward).
   const phoneChips = useRef<HTMLDivElement>(null);

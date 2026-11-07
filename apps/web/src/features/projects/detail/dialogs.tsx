@@ -3,16 +3,19 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { parseRunnerEvent } from '@nuera/shared/events';
 import { plural } from '@nuera/shared/format';
+import { MAX_DEV_SERVERS } from '@nuera/shared/runner';
 import { CommandOutput, commandRunBadge } from '@/components/dev';
 import {
   Badge,
   Banner,
   Button,
+  CompactButton,
   ConfirmDialog,
   Dialog,
   DialogContent,
   ErrorPanel,
   Field,
+  IconButton,
   Input,
   SecretField,
   Switch,
@@ -214,6 +217,9 @@ export function CommandsDialog({
   onSaved: () => void;
 }) {
   const [values, setValues] = useState<Record<CommandKey, string>>({ install: '', dev: '', build: '', test: '', lint: '' });
+  // « Lancement »: the default dev server's name, then the further named dev servers (client + admin).
+  const [devName, setDevName] = useState('');
+  const [devServers, setDevServers] = useState<Array<{ name: string; command: string }>>([]);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   useEffect(() => {
@@ -227,15 +233,22 @@ export function CommandsDialog({
       test: commands.test ?? '',
       lint: commands.lint ?? '',
     });
+    setDevName(commands.devName ?? '');
+    setDevServers((commands.devServers ?? []).map((entry) => ({ name: entry.name, command: entry.command })));
   }, [open, commands]);
 
   const save = async () => {
     setPending(true);
     setFailure(null);
     try {
-      const next: Record<string, string | null> = {};
+      const next: Record<string, unknown> = {};
       for (const field of COMMAND_FIELDS) next[field.key] = values[field.key].trim() || null;
-      await projectsApi.patch(projectId, { commands: next });
+      const extras = devServers
+        .map((entry) => ({ name: entry.name.trim().toLowerCase(), command: entry.command.trim() }))
+        .filter((entry) => entry.name || entry.command);
+      next.devName = devName.trim().toLowerCase() || null;
+      next.devServers = extras.length ? extras : null;
+      await projectsApi.patch(projectId, { commands: next as ProjectCommands });
       toast({ message: 'Commandes enregistrées' });
       onOpenChange(false);
       onSaved();
@@ -245,6 +258,9 @@ export function CommandsDialog({
       setPending(false);
     }
   };
+
+  const setExtra = (index: number, patch: Partial<{ name: string; command: string }>) =>
+    setDevServers((current) => current.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)));
 
   return (
     <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
@@ -263,18 +279,73 @@ export function CommandsDialog({
           </>
         }
       >
-        {COMMAND_FIELDS.map((field) => (
-          <Field key={field.key} label={field.label}>
-            <Input
-              mono
-              value={values[field.key]}
-              onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))}
-              maxLength={1000}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </Field>
-        ))}
+        {COMMAND_FIELDS.map((field) =>
+          field.key === 'dev' ? (
+            <div key={field.key} className="flex flex-col gap-2">
+              <div className="flex min-w-0 items-end gap-2">
+                <Field label="Nom" className="w-[110px] shrink-0">
+                  <Input mono value={devName} onChange={(event) => setDevName(event.target.value)} placeholder="dev" maxLength={24} autoComplete="off" spellCheck={false} />
+                </Field>
+                <Field label={field.label} className="min-w-0 flex-1">
+                  <Input
+                    mono
+                    value={values.dev}
+                    onChange={(event) => setValues((current) => ({ ...current, dev: event.target.value }))}
+                    maxLength={1000}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+              </div>
+              {devServers.map((entry, index) => (
+                <div key={index} className="flex min-w-0 items-end gap-2">
+                  <Field label="Nom" className="w-[110px] shrink-0">
+                    <Input
+                      mono
+                      value={entry.name}
+                      onChange={(event) => setExtra(index, { name: event.target.value })}
+                      placeholder="admin"
+                      maxLength={24}
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label={`Nom du serveur de développement ${index + 2}`}
+                    />
+                  </Field>
+                  <Field label={`${field.label} ${index + 2}`} className="min-w-0 flex-1">
+                    <Input
+                      mono
+                      value={entry.command}
+                      onChange={(event) => setExtra(index, { command: event.target.value })}
+                      placeholder="pnpm --filter admin dev"
+                      maxLength={1000}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <IconButton icon="trash" label={`Retirer le serveur ${entry.name || index + 2}`} onClick={() => setDevServers((current) => current.filter((_, i) => i !== index))} />
+                </div>
+              ))}
+              {devServers.length < MAX_DEV_SERVERS - 1 ? (
+                <div>
+                  <CompactButton variant="discret" icon="plus" onClick={() => setDevServers((current) => [...current, { name: '', command: '' }])}>
+                    Ajouter un serveur de développement
+                  </CompactButton>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <Field key={field.key} label={field.label}>
+              <Input
+                mono
+                value={values[field.key]}
+                onChange={(event) => setValues((current) => ({ ...current, [field.key]: event.target.value }))}
+                maxLength={1000}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </Field>
+          ),
+        )}
         {failure ? <ErrorPanel title={failure.message} excerpt={failure.detail} untouched={failure.untouched ?? null} /> : null}
       </DialogContent>
     </Dialog>

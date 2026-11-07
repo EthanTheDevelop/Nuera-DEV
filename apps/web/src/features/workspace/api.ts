@@ -164,6 +164,8 @@ export interface RunListItem {
   /** Port detected in the output (dev server). */
   port: number | null;
   worktreeId: string | null;
+  /** Dev server name (« client ») of a `dev` run. */
+  name?: string | null;
   startedAt: string;
   finishedAt: string | null;
   tests: { passed: number; failed: number; skipped: number; total: number } | null;
@@ -196,8 +198,31 @@ export function startTestsRequest(projectId: string, worktreeId: string): Promis
   return call('/api/runs', post({ projectId, worktreeId, kind: 'test' }), "Les tests n'ont pas pu être lancés.");
 }
 
-export function startDevServerRequest(projectId: string, worktreeId: string): Promise<{ runId: string; run: { id: string; status: RunListItem['status']; port: number | null } }> {
-  return call('/api/runs', post({ projectId, worktreeId, kind: 'dev' }), "Le serveur de développement n'a pas pu être lancé.");
+/** Dev runs of a worktree (« Aperçu »: each named dev server's latest run). */
+export function fetchDevRuns(projectId: string, worktreeId: string, signal?: AbortSignal): Promise<{ runs: RunListItem[] }> {
+  return call(
+    `/api/runs?projectId=${enc(projectId)}&worktreeId=${enc(worktreeId)}&kind=dev&limit=30`,
+    get(signal),
+    'Les serveurs de développement sont indisponibles.',
+  );
+}
+
+export function startDevServerRequest(
+  projectId: string,
+  worktreeId: string,
+  name?: string,
+): Promise<{ runId: string; run: { id: string; status: RunListItem['status']; port: number | null; name?: string | null } }> {
+  return call('/api/runs', post({ projectId, worktreeId, kind: 'dev', ...(name ? { name } : {}) }), "Le serveur de développement n'a pas pu être lancé.");
+}
+
+/** « Le serveur ne démarre pas » → its output to Claude in the session (once per run). */
+export function previewAutodebugRequest(input: {
+  runId: string;
+  sessionId: string;
+  trigger: 'auto' | 'manual';
+  output?: string;
+}): Promise<{ delivered: boolean; queued: boolean; status: string; queuedInstructions: number }> {
+  return call('/api/previews/autodebug', post(input), "La sortie du serveur n'a pas pu être envoyée à Claude.");
 }
 
 export function stopRunRequest(runId: string): Promise<void> {

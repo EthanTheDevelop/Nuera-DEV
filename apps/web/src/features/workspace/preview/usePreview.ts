@@ -3,11 +3,13 @@
 import { terminalText } from '@/components/dev';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
 import { parseRunnerEvent } from '@nuera/shared/events';
-import { PREVIEW_POSITION_MESSAGE } from '@nuera/shared/runner';
+import { DEFAULT_DEV_SERVER_NAME, PREVIEW_POSITION_MESSAGE } from '@nuera/shared/runner';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { AUTODEBUG_STALL_MS, devServerFailure } from '@/lib/preview-autodebug';
 import {
+  fetchDevRuns,
   fetchRun,
-  fetchRuns,
+  previewAutodebugRequest,
   previewHandoffRequest,
   startDevServerRequest,
   stopRunRequest,
@@ -17,11 +19,12 @@ import {
 import { useWorkspace } from '../WorkspaceContext';
 
 /**
- * « Aperçu » state of the session's worktree: its latest dev server run (live through
- * `/api/stream/runs/<id>` — `run.status`, `run.output` — and the global `run.status` events: a dev
- * server started elsewhere shows up), the handoff to the preview origin once a port is detected,
- * the path shown in the frame (posted by the preview page itself) and the viewer's options.
- * Never polled.
+ * « Aperçu » state of the session's worktree: its dev servers (one per name the project declares —
+ * « client », « admin » —, each its latest run, kept live by the global `run.status` events), the
+ * selected one followed through `/api/stream/runs/<id>` (`run.status`, `run.output`), the handoff
+ * to the preview origin once its port is detected, the path shown in the frame (posted by the
+ * preview page itself), the viewer's options and the hand-over to Claude of a server started here
+ * that does not start. Never polled.
  */
 
 export type ServerState = 'loading' | 'unavailable' | 'stopped' | 'starting' | 'online' | 'error';
@@ -96,17 +99,40 @@ const lastPaths = new Map<string, string>();
 
 interface RunState {
   status: 'loading' | 'ready' | 'error';
-  run: RunListItem | null;
-  live: boolean;
+  /** Latest run per dev server name. */
+  runs: Record<string, { run: RunListItem; live: boolean }>;
+  /** Output of the selected server's latest run. */
   output: string;
+  outputRunId: string | null;
   message: string | null;
+}
+
+/** What happened to « Demander à Claude » for a run (shown under the error). */
+export type AutodebugState =
+  | { kind: 'sending' }
+  | { kind: 'sent'; queued: boolean }
+  | { kind: 'waiting_permission' }
+  | { kind: 'error'; message: string };
+
+export interface DevServerTab {
+  name: string;
+  command: string;
+  state: ServerState;
+  port: number | null;
+  runId: string | null;
 }
 
 export interface PreviewController {
   enabled: boolean;
   disabledReason: string | null;
   origin: string | null;
+  /** Command of the selected dev server (null: the project has none). */
   devCommand: string | null;
+  /** Every dev server of the project, default first (tabs when there are several). */
+  servers: DevServerTab[];
+  /** Name of the dev server shown. */
+  selected: string | null;
+  select: (name: string) => void;
   worktreePresent: boolean;
   projectId: string;
   state: ServerState;
@@ -125,7 +151,8 @@ export interface PreviewController {
   stalled: boolean;
   starting: boolean;
   stopping: boolean;
-  start: () => Promise<void>;
+  /** Starts the selected dev server, or the one named (then selected). */
+  start: (name?: string) => Promise<void>;
   stop: () => Promise<void>;
   reload: () => void;
   /** New handoff (the previous one failed). */
@@ -139,99 +166,204 @@ export interface PreviewController {
   setViewport: (value: PreviewViewport) => void;
   autoReload: boolean;
   setAutoReload: (value: boolean) => void;
+  /** « Demander à Claude de corriger automatiquement » (default on). */
+  autoFix: boolean;
+  setAutoFix: (value: boolean) => void;
+  /** « Relancer après correction » (default off): starts the server again once Claude's turn ends. */
+  relaunchAfterFix: boolean;
+  setRelaunchAfterFix: (value: boolean) => void;
+  /** Hand-over of the selected run to Claude (null: never asked). */
+  autodebug: AutodebugState | null;
+  /** « Demander à Claude » (the selected server does not start). */
+  askClaude: () => void;
+  /** The selected server does not start (ended in error, or no port with errors after a minute). */
+  failing: boolean;
   serverDisabledReason: string | null;
+}
+
+const lastSelected = new Map<string, string>();
+
+function stateOf(entry: { run: RunListItem; live: boolean } | undefined, loading: RunState['status']): ServerState {
+  if (loading === 'loading') return 'loading';
+  if (!entry) return loading === 'error' ? 'unavailable' : 'stopped';
+  const { run, live } = entry;
+  if (run.status === 'running' && live) return run.port ? 'online' : 'starting';
+  if (run.status === 'failed') return 'error';
+  return 'stopped';
 }
 
 export function usePreview(): PreviewController {
   const ws = useWorkspace();
   const live = useOptionalLiveEvents();
-  const { project, worktree, preview } = ws.data;
+  const { project, worktree, preview, session } = ws.data;
   const worktreeId = worktree?.present ? worktree.id : null;
-  const devCommand = project.commands.dev;
+  const configured = project.commands.devServers;
   const origin = preview.enabled ? preview.origin : null;
+  const sessionStatus = ws.ctl.state.session.status;
 
   const [viewport, setViewport] = usePref<PreviewViewport>('nuera.apercu.affichage', 'bureau', ['bureau', 'telephone']);
   const [autoPref, setAutoPref] = usePref<'oui' | 'non'>('nuera.apercu.rechargement', 'oui', ['oui', 'non']);
   const autoReload = autoPref === 'oui';
   const setAutoReload = useCallback((value: boolean) => setAutoPref(value ? 'oui' : 'non'), [setAutoPref]);
+  const [fixPref, setFixPref] = usePref<'oui' | 'non'>('nuera.apercu.correction', 'oui', ['oui', 'non']);
+  const autoFix = fixPref === 'oui';
+  const setAutoFix = useCallback((value: boolean) => setFixPref(value ? 'oui' : 'non'), [setFixPref]);
+  const [relaunchPref, setRelaunchPref] = usePref<'oui' | 'non'>('nuera.apercu.relance', 'non', ['oui', 'non']);
+  const relaunchAfterFix = relaunchPref === 'oui';
+  const setRelaunchAfterFix = useCallback((value: boolean) => setRelaunchPref(value ? 'oui' : 'non'), [setRelaunchPref]);
 
-  const [runState, setRunState] = useState<RunState>({ status: 'loading', run: null, live: false, output: '', message: null });
+  const [runState, setRunState] = useState<RunState>({ status: 'loading', runs: {}, output: '', outputRunId: null, message: null });
   const [actionError, setActionError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
+  const [starting, setStarting] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
 
-  // --- Latest dev server of the worktree ---------------------------------------------------------
+  // --- Selected dev server ---------------------------------------------------------------------------
+  const selectionKey = worktreeId ?? project.id;
+  const [chosen, setChosen] = useState<string | null>(() => lastSelected.get(selectionKey) ?? null);
+  const select = useCallback(
+    (name: string) => {
+      lastSelected.set(selectionKey, name);
+      setChosen(name);
+    },
+    [selectionKey],
+  );
+
+  /** Server names shown: the configured ones, then a live run of a name no longer configured. */
+  const names = useMemo(() => {
+    const list = configured.map((entry) => entry.name);
+    for (const [name, entry] of Object.entries(runState.runs)) if (!list.includes(name) && entry.live && entry.run.status === 'running') list.push(name);
+    return list;
+  }, [configured, runState.runs]);
+  const selected = chosen && names.includes(chosen) ? chosen : (names.find((name) => runState.runs[name]?.live) ?? names[0] ?? null);
+  const selectedEntry = selected ? runState.runs[selected] : undefined;
+
+  // --- Latest run of each dev server of the worktree ---------------------------------------------------
+  const defaultName = configured[0]?.name ?? DEFAULT_DEV_SERVER_NAME;
   const loadSeq = useRef(0);
   const load = useCallback(async () => {
     if (!worktreeId) return;
     const seq = (loadSeq.current += 1);
     try {
-      const { runs } = await fetchRuns(project.id, worktreeId);
-      const latest = runs.find((r) => r.kind === 'dev') ?? null;
-      const detail = latest ? await fetchRun(latest.id) : null;
+      const { runs } = await fetchDevRuns(project.id, worktreeId);
+      const latest = new Map<string, RunListItem>();
+      for (const run of runs) {
+        if (run.kind !== 'dev') continue;
+        const name = run.name ?? defaultName;
+        if (!latest.has(name)) latest.set(name, run);
+      }
+      const details = await Promise.all(
+        [...latest.entries()].map(async ([name, run]) => {
+          const detail = await fetchRun(run.id);
+          return [name, detail] as const;
+        }),
+      );
       if (seq !== loadSeq.current) return;
-      setRunState({
-        status: 'ready',
-        run: detail ? { ...latest!, ...detail.run, port: detail.run.port ?? null } : null,
-        live: detail?.live ?? false,
-        output: detail?.outputTail ?? '',
-        message: null,
+      setRunState((prev) => {
+        const next: RunState['runs'] = {};
+        for (const [name, detail] of details) {
+          const base = latest.get(name)!;
+          next[name] = { run: { ...base, ...detail.run, name, port: detail.run.port ?? null }, live: detail.live };
+        }
+        // The output stays: the selected run's one is read (and streamed) on its own.
+        return { ...prev, status: 'ready', runs: next, message: null };
       });
     } catch (error) {
       if (seq !== loadSeq.current) return;
       setRunState((prev) => ({ ...prev, status: 'error', message: (error as Error).message }));
     }
-  }, [project.id, worktreeId]);
+  }, [defaultName, project.id, worktreeId]);
 
   useEffect(() => {
     // eslint-disable-next-line react/set-state-in-effect -- reads external data (runs of the worktree)
     void load();
   }, [load]);
 
-  const run = runState.run;
+  const run = selectedEntry?.run ?? null;
   const runId = run?.id ?? null;
-  const running = run?.status === 'running' && runState.live;
+  const running = run?.status === 'running' && Boolean(selectedEntry?.live);
 
-  // Live run: status (port detected, end) and output (starting / error lines).
+  // The output shown belongs to the selected run: a new selection starts from its stored tail.
   useEffect(() => {
-    if (!runId || !running) return;
+    if (!runId || runState.outputRunId === runId) return;
+    let cancelled = false;
+    void fetchRun(runId)
+      .then((detail) => {
+        if (cancelled) return;
+        setRunState((prev) => (prev.outputRunId === runId ? prev : { ...prev, output: detail.outputTail ?? '', outputRunId: runId }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, runState.outputRunId]);
+
+  const patchRun = useCallback((name: string, id: string, patch: Partial<RunListItem>, liveFlag?: boolean) => {
+    setRunState((prev) => {
+      const entry = prev.runs[name];
+      if (entry?.run.id !== id) return prev;
+      return { ...prev, runs: { ...prev.runs, [name]: { run: { ...entry.run, ...patch }, live: liveFlag ?? entry.live } } };
+    });
+  }, []);
+
+  // Live selected run: status (port detected, end) and output (starting / error lines).
+  useEffect(() => {
+    if (!runId || !running || !selected) return;
+    const name = selected;
     const source = new EventSource(`/api/stream/runs/${encodeURIComponent(runId)}`, { withCredentials: true });
     source.addEventListener('message', (message) => {
       const event = parseRunnerEvent(message.data);
       if (event?.type === 'run.status' && event.data.run.id === runId) {
         const next = event.data.run;
-        setRunState((prev) =>
-          prev.run?.id !== runId
-            ? prev
-            : { ...prev, live: next.live, run: { ...prev.run, status: next.status, port: next.port, exitCode: next.exitCode, summary: next.summary, finishedAt: next.finishedAt } },
-        );
-        if (next.status !== 'running') void load();
+        patchRun(name, runId, { status: next.status, port: next.port, exitCode: next.exitCode, summary: next.summary, finishedAt: next.finishedAt }, next.live);
       } else if (event?.type === 'run.output' && event.data.runId === runId) {
         const { data, replay } = event.data;
-        setRunState((prev) => ({ ...prev, output: (replay ? data : prev.output + data).slice(-OUTPUT_KEEP) }));
+        setRunState((prev) => ({
+          ...prev,
+          output: (replay || prev.outputRunId !== runId ? data : prev.output + data).slice(-OUTPUT_KEEP),
+          outputRunId: runId,
+        }));
       }
     });
     return () => source.close();
-  }, [load, runId, running]);
+  }, [patchRun, runId, running, selected]);
 
-  // A dev server of this worktree started or stopped elsewhere (another tab, the project page).
+  // Every dev server of this worktree, wherever it was started (another tab, the project page).
   const subscribe = live?.subscribe;
+  const runsRef = useRef(runState.runs);
+  useEffect(() => {
+    runsRef.current = runState.runs;
+  }, [runState.runs]);
   useEffect(() => {
     if (!subscribe || !worktreeId) return;
     return subscribe('run.status', (event) => {
       const other = event.data.run;
-      if (other.kind === 'dev' && other.worktreeId === worktreeId && other.id !== runId) void load();
+      if (other.kind !== 'dev' || other.worktreeId !== worktreeId) return;
+      const name = other.name ?? defaultName;
+      const known = runsRef.current[name];
+      if (known?.run.id === other.id) {
+        patchRun(name, other.id, { status: other.status, port: other.port, exitCode: other.exitCode, summary: other.summary, finishedAt: other.finishedAt }, other.live);
+      } else {
+        void load();
+      }
     });
-  }, [load, runId, subscribe, worktreeId]);
+  }, [defaultName, load, patchRun, subscribe, worktreeId]);
 
-  const state: ServerState = useMemo(() => {
-    if (runState.status === 'loading') return 'loading';
-    if (runState.status === 'error' && !run) return 'unavailable';
-    if (!run) return 'stopped';
-    if (run.status === 'running' && runState.live) return run.port ? 'online' : 'starting';
-    if (run.status === 'failed') return 'error';
-    return 'stopped';
-  }, [run, runState.live, runState.status]);
+  const servers: DevServerTab[] = useMemo(
+    () =>
+      names.map((name) => {
+        const entry = runState.runs[name];
+        return {
+          name,
+          command: configured.find((c) => c.name === name)?.command ?? entry?.run.command ?? '',
+          state: stateOf(entry, runState.status),
+          port: entry?.live && entry.run.status === 'running' ? entry.run.port : null,
+          runId: entry?.run.id ?? null,
+        };
+      }),
+    [configured, names, runState.runs, runState.status],
+  );
+  const state: ServerState = stateOf(selectedEntry, runState.status);
+  const devCommand = selected ? (configured.find((c) => c.name === selected)?.command ?? run?.command ?? null) : null;
 
   // --- Handoff → frame -----------------------------------------------------------------------------
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -367,40 +499,55 @@ export function usePreview(): PreviewController {
   }, [autoReload, frame, reload, writes]);
 
   // --- Actions -------------------------------------------------------------------------------------
-  const start = useCallback(async () => {
-    if (!worktreeId) return;
-    setStarting(true);
-    setActionError(null);
-    try {
-      const { run: started } = await startDevServerRequest(project.id, worktreeId);
-      setRunState((prev) => ({
-        ...prev,
-        status: 'ready',
-        live: true,
-        output: '',
-        run: {
-          id: started.id,
-          kind: 'dev',
-          command: devCommand ?? '',
-          status: started.status,
-          exitCode: null,
-          summary: null,
-          port: started.port ?? null,
-          worktreeId,
-          startedAt: new Date().toISOString(),
-          finishedAt: null,
-          tests: null,
-        },
-      }));
-      void load();
-    } catch (error) {
-      setActionError((error as Error).message);
-      // Already running in this worktree (another tab): show that one.
-      void load();
-    } finally {
-      setStarting(false);
-    }
-  }, [devCommand, load, project.id, worktreeId]);
+  /** Runs started from this Aperçu (the owner clicked « Démarrer »): only those are handed to Claude by themselves. */
+  const startedHere = useRef(new Set<string>());
+  const start = useCallback(
+    async (name?: string) => {
+      const target = name ?? selected;
+      if (!worktreeId || !target) return;
+      if (name) select(name);
+      setStarting(target);
+      setActionError(null);
+      try {
+        const { run: started } = await startDevServerRequest(project.id, worktreeId, target);
+        startedHere.current.add(started.id);
+        setRunState((prev) => ({
+          ...prev,
+          status: 'ready',
+          output: prev.outputRunId === started.id ? prev.output : '',
+          outputRunId: started.id,
+          runs: {
+            ...prev.runs,
+            [target]: {
+              live: true,
+              run: {
+                id: started.id,
+                kind: 'dev',
+                name: target,
+                command: configured.find((c) => c.name === target)?.command ?? '',
+                status: started.status,
+                exitCode: null,
+                summary: null,
+                port: started.port ?? null,
+                worktreeId,
+                startedAt: new Date().toISOString(),
+                finishedAt: null,
+                tests: null,
+              },
+            },
+          },
+        }));
+        void load();
+      } catch (error) {
+        setActionError((error as Error).message);
+        // Already running in this worktree (another tab): show that one.
+        void load();
+      } finally {
+        setStarting(null);
+      }
+    },
+    [configured, load, project.id, select, selected, worktreeId],
+  );
 
   const stop = useCallback(async () => {
     if (!runId) return;
@@ -415,6 +562,97 @@ export function usePreview(): PreviewController {
       setStopping(false);
     }
   }, [load, runId]);
+
+  // --- « Demander à Claude » (a dev server that does not start) ---------------------------------------
+  const [autodebugByRun, setAutodebugByRun] = useState<Record<string, AutodebugState>>({});
+  const autodebugRef = useRef(autodebugByRun);
+  useEffect(() => {
+    autodebugRef.current = autodebugByRun;
+  }, [autodebugByRun]);
+  /** Server to start again once Claude's turn ends (« Relancer après correction »), and whether that turn began. */
+  const relaunch = useRef<{ name: string; sawWork: boolean } | null>(null);
+
+  const handOver = useCallback(
+    async (target: RunListItem, name: string, trigger: 'auto' | 'manual', output: string | null) => {
+      const current = autodebugRef.current[target.id];
+      if (current && current.kind !== 'error' && current.kind !== 'waiting_permission') return;
+      autodebugRef.current = { ...autodebugRef.current, [target.id]: { kind: 'sending' } };
+      setAutodebugByRun((prev) => ({ ...prev, [target.id]: { kind: 'sending' } }));
+      try {
+        const result = await previewAutodebugRequest({
+          runId: target.id,
+          sessionId: session.id,
+          trigger,
+          ...(output ? { output: output.slice(-60_000) } : {}),
+        });
+        // Claude was working: the CLI takes the instruction after its current step.
+        const queued = result.queued || sessionStatus === 'running';
+        setAutodebugByRun((prev) => ({ ...prev, [target.id]: { kind: 'sent', queued } }));
+        relaunch.current = { name, sawWork: false };
+      } catch (error) {
+        const reason = error instanceof WorkspaceApiError ? error.reason : null;
+        const next: AutodebugState =
+          reason === 'SESSION_BUSY_PERMISSION'
+            ? { kind: 'waiting_permission' }
+            : reason === 'AUTODEBUG_ALREADY_SENT'
+              ? { kind: 'sent', queued: false }
+              : { kind: 'error', message: (error as Error).message };
+        setAutodebugByRun((prev) => ({ ...prev, [target.id]: next }));
+      }
+    },
+    [session.id, sessionStatus],
+  );
+
+  // Automatic hand-over: a server started here that ended in error, or that has shown errors without
+  // a port for a minute — once per run; after the pending permission is answered when one waits.
+  const [stallTick, setStallTick] = useState(0);
+  useEffect(() => {
+    if (!autoFix) return;
+    let nextCheck: number | null = null;
+    for (const [name, entry] of Object.entries(runState.runs)) {
+      const target = entry.run;
+      if (!startedHere.current.has(target.id)) continue;
+      const done = autodebugByRun[target.id];
+      if (done && done.kind !== 'waiting_permission') continue;
+      if (done?.kind === 'waiting_permission' && sessionStatus === 'waiting_permission') continue;
+      const output = runState.outputRunId === target.id ? runState.output : '';
+      const failure = devServerFailure(target, output);
+      if (failure) {
+        // eslint-disable-next-line react/set-state-in-effect -- hands an external failure (the dev server's) to Claude
+        void handOver(target, name, 'auto', output || null);
+      } else if (target.status === 'running' && !target.port && runState.outputRunId === target.id) {
+        const due = Date.parse(target.startedAt) + AUTODEBUG_STALL_MS - Date.now();
+        nextCheck = Math.max(1_000, Math.min(nextCheck ?? Infinity, due + 500));
+      }
+    }
+    if (nextCheck === null) return;
+    const timer = setTimeout(() => setStallTick((n) => n + 1), Math.min(nextCheck, 15_000));
+    return () => clearTimeout(timer);
+    // stallTick: re-check a starting server once its minute is over.
+    // eslint-disable-next-line react/exhaustive-effect-dependencies -- see above
+  }, [autoFix, autodebugByRun, handOver, runState.output, runState.outputRunId, runState.runs, sessionStatus, stallTick]);
+
+  // « Relancer après correction »: once Claude worked and waits again, the server starts once more.
+  useEffect(() => {
+    const pending = relaunch.current;
+    if (!pending) return;
+    if (sessionStatus === 'running' || sessionStatus === 'waiting_permission') {
+      pending.sawWork = true;
+      return;
+    }
+    if (!pending.sawWork || sessionStatus !== 'waiting_input') return;
+    relaunch.current = null;
+    if (!relaunchAfterFix) return;
+    const entry = runsRef.current[pending.name];
+    if (entry?.live && entry.run.status === 'running') return;
+    void start(pending.name);
+  }, [relaunchAfterFix, sessionStatus, start]);
+
+  const failing = Boolean(run && devServerFailure(run, runState.outputRunId === run.id ? runState.output : ''));
+  const askClaude = useCallback(() => {
+    if (!run || !selected) return;
+    void handOver(run, selected, 'manual', runState.outputRunId === run.id ? runState.output : null);
+  }, [handOver, run, runState.output, runState.outputRunId, selected]);
 
   const openInNewTab = useCallback(async () => {
     if (!onlineRunId) return;
@@ -439,12 +677,15 @@ export function usePreview(): PreviewController {
     disabledReason: preview.enabled ? null : preview.reason,
     origin,
     devCommand,
+    servers,
+    selected,
+    select,
     worktreePresent: Boolean(worktreeId),
     projectId: project.id,
     state,
     run,
-    output: runState.output,
-    outputLines: lastLines(runState.output),
+    output: runState.outputRunId === runId ? runState.output : '',
+    outputLines: lastLines(runState.outputRunId === runId ? runState.output : ''),
     loadError: runState.status === 'error' ? runState.message : null,
     actionError,
     clearActionError: () => setActionError(null),
@@ -452,7 +693,7 @@ export function usePreview(): PreviewController {
     opening,
     path,
     stalled: frameShown && stalledAt === navigation,
-    starting,
+    starting: starting !== null && starting === selected,
     stopping,
     start,
     stop,
@@ -468,6 +709,13 @@ export function usePreview(): PreviewController {
     setViewport,
     autoReload,
     setAutoReload,
+    autoFix,
+    setAutoFix,
+    relaunchAfterFix,
+    setRelaunchAfterFix,
+    autodebug: runId ? (autodebugByRun[runId] ?? null) : null,
+    askClaude,
+    failing,
     serverDisabledReason: ws.serverDisabledReason,
   };
 }

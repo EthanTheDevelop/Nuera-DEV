@@ -82,6 +82,33 @@
   }
 }
 
+/*
+ * Touch screens (phone, tablet): iOS Safari zooms the page into any focused field whose text is smaller
+ * than 16 px, and the owner had to zoom out after each tap. Every text field renders at 16 px there (none
+ * is larger; outside the layers, so it wins over the `text-app-*` utilities; field heights are fixed, the
+ * design stays), xterm's hidden input included. Pinch-zoom stays available (no `maximum-scale` in the
+ * viewport: accessibility); `touch-action: manipulation` only removes the double-tap zoom.
+ */
+@media (pointer: coarse) {
+  input:where(:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file'], [type='hidden'], [type='button'], [type='submit'], [type='reset'], [type='image'])),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+html,
+a,
+button,
+input,
+textarea,
+select,
+label,
+[role='button'],
+[role='tab'] {
+  touch-action: manipulation;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

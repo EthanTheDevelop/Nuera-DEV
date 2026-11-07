@@ -31,7 +31,10 @@ export interface PhoneComposerProps {
   sending?: boolean;
   /** Attachment picker; omitted → no paperclip. */
   onAttach?: () => void;
-  /** Compact row of tools above the field (Joindre, model, mode, « / »), 44 px targets; replaces the paperclip. */
+  /**
+   * Tools (Joindre, model, effort, mode, « / »): one 44 px « Options » button left of the field opening a
+   * sheet with each of them and its current value; replaces the paperclip. Mic and Envoyer stay beside.
+   */
   tools?: ComposerTools;
   /**
    * Follow the on-screen keyboard (S1): the bottom safe-area spacer collapses while it is up.
@@ -39,7 +42,7 @@ export interface PhoneComposerProps {
    * `useKeyboardInset().inset` on iOS).
    */
   keyboardAware?: boolean;
-  /** Max height of the growing field (px). Default 120 (≈ 5 lines). */
+  /** Max height of the growing field (px). Default 144 (6 lines). */
   maxHeight?: number;
   textareaRef?: Ref<HTMLTextAreaElement>;
   label?: string;
@@ -47,8 +50,9 @@ export interface PhoneComposerProps {
 }
 
 /**
- * Phone `Saisie` (M05, S1, S2 — states-mobile-and-extensions.md §2.4): attach 44 · pill field 44 ·
- * send 44, then the home-indicator safe area. Enter sends (the keyboard shows « envoyer »).
+ * Phone `Saisie` (M05, S1, S2 — states-mobile-and-extensions.md §2.4): options (or attach) 44 · pill field
+ * 44 growing up to 6 lines · mic 44 · send 44, then the home-indicator safe area. Enter sends (the keyboard
+ * shows « envoyer »). At 360 px the field keeps ≈ 190 px.
  */
 export function PhoneComposer({
   state,
@@ -62,7 +66,7 @@ export function PhoneComposer({
   onAttach,
   tools,
   keyboardAware = true,
-  maxHeight = 120,
+  maxHeight = 144,
   textareaRef,
   label = 'Instruction pour Claude',
   className,
@@ -89,15 +93,11 @@ export function PhoneComposer({
       )}
     >
       {toolbar.panel}
-      {tools ? (
-        <div className="-mx-1 flex min-w-0 items-center gap-1 pb-1.5" data-composer-tools>
-          {toolbar.left}
-        </div>
-      ) : null}
       {toolbar.chips ? <div className="px-1 pb-2">{toolbar.chips}</div> : null}
       {toolbar.noteLine ? <div className="px-1 pb-2">{toolbar.noteLine}</div> : null}
       <DictationStatus dictation={dictation} className="px-1 pb-2" />
-      <div className="flex items-end gap-1.5">
+      <div className="-ml-1 flex min-w-0 items-end gap-1" data-composer-tools={tools ? '' : undefined}>
+        {toolbar.options}
         {!tools && onAttach ? (
           <IconButton
             icon="paperclip"
@@ -131,8 +131,9 @@ export function PhoneComposer({
             aria-label={label}
             enterKeyHint="send"
             className={cn(
-              // 11 + 20 + 11 inside the 1 px border: the pill is 44 px, like the send button (§2.4).
-              'block w-full resize-none border-0 bg-transparent py-[11px] font-sans text-app-14 leading-5 text-text outline-none',
+              // 16 px text (iOS zooms into a smaller field); 9 + 24 + 9 inside the 1 px border: the pill is
+              // 44 px, like the send button (§2.4). Grows to `maxHeight`, then scrolls inside itself.
+              'block w-full resize-none overscroll-contain border-0 bg-transparent py-[9px] font-sans text-app-16 leading-6 text-text outline-none',
               'placeholder:truncate placeholder:text-muted focus-visible:outline-none',
               blocked && 'cursor-not-allowed text-muted',
             )}

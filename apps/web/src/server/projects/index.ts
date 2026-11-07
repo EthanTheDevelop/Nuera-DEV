@@ -70,6 +70,7 @@ export { setProjectMcpTool, mcpServerHref } from './mcp';
 export {
   updateProject,
   patchProjectInputSchema,
+  projectCommandsInputSchema,
   markProjectOpened,
   getArchivePreview,
   archiveProject,

@@ -25,6 +25,58 @@ export const TestReportSchema = z.object({
 });
 export type TestReport = z.infer<typeof TestReportSchema>;
 
+// --- Dev servers (« Lancement ») ------------------------------------------------------------------
+
+/** Name of a dev server of a project (« client », « admin »): short, lower-case, no spaces. */
+export const DEV_SERVER_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,23}$/;
+export const DevServerNameSchema = z
+  .string()
+  .trim()
+  .regex(DEV_SERVER_NAME_RE, 'nom de serveur invalide (minuscules, chiffres, . _ -, 24 caractères au maximum)');
+/** Name of the project's default dev server (`projects.commands.dev`) when it has none (`devName`). */
+export const DEFAULT_DEV_SERVER_NAME = 'dev';
+/** Dev servers a project may declare (the default one included). */
+export const MAX_DEV_SERVERS = 6;
+
+/** The dev-server part of `projects.commands` (backward compatible: `dev` alone = one server). */
+export interface DevServerCommands {
+  /** Default dev server (the historic single « Lancement » command). */
+  dev?: string | null;
+  /** Its name (default {@link DEFAULT_DEV_SERVER_NAME}). */
+  devName?: string | null;
+  /** Further named dev servers of the same worktree (« admin » `pnpm --filter admin dev`). */
+  devServers?: ReadonlyArray<{ name?: unknown; command?: unknown }> | null;
+}
+
+export interface DevServerEntry {
+  name: string;
+  command: string;
+  /** The default one (`commands.dev`). */
+  isDefault: boolean;
+}
+
+/**
+ * Dev servers of a project, default first: `commands.dev` (named `devName`, else « dev »), then
+ * `commands.devServers` in their order. Empty commands, invalid or repeated names are skipped
+ * (a stored value is never trusted blindly), at most {@link MAX_DEV_SERVERS}.
+ */
+export function devServerEntries(commands: DevServerCommands | null | undefined): DevServerEntry[] {
+  const entries: DevServerEntry[] = [];
+  const seen = new Set<string>();
+  const add = (name: unknown, command: unknown, isDefault: boolean) => {
+    if (typeof command !== 'string' || !command.trim() || entries.length >= MAX_DEV_SERVERS) return;
+    const value = typeof name === 'string' ? name.trim() : '';
+    if (!DEV_SERVER_NAME_RE.test(value) || seen.has(value)) return;
+    seen.add(value);
+    entries.push({ name: value, command: command.trim(), isDefault });
+  };
+  if (commands) {
+    add(commands.devName || DEFAULT_DEV_SERVER_NAME, commands.dev, true);
+    for (const extra of commands.devServers ?? []) add(extra?.name, extra?.command, false);
+  }
+  return entries;
+}
+
 export const CreateRunRequestSchema = z.object({
   projectId: UuidSchema,
   /** Default: the project's primary worktree. */
@@ -43,6 +95,11 @@ export const CreateRunRequestSchema = z.object({
   actorUserId: z.string().nullish(),
   /** Author and committer of commits made by the command (GIT_AUTHOR_* / GIT_COMMITTER_*, injected by the runner). */
   gitIdentity: GitIdentitySchema.nullish(),
+  /**
+   * Dev server (`kind: 'dev'`): its name among the project's (`devServerEntries`). Several dev
+   * servers may run in one worktree, never two of the same name. Default: the project's default one.
+   */
+  name: DevServerNameSchema.optional(),
 });
 export type CreateRunRequest = z.input<typeof CreateRunRequestSchema>;
 
@@ -64,6 +121,8 @@ export const RunDtoSchema = z.object({
   finishedAt: IsoDateSchema.nullable(),
   /** Still attached to a live process in this runner. */
   live: z.boolean(),
+  /** Dev server name (« client »); null for other commands and runs of older runners. */
+  name: z.string().nullish(),
 });
 export type RunDto = z.infer<typeof RunDtoSchema>;
 

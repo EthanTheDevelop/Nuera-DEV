@@ -293,13 +293,22 @@ describe("barre d'outils du compositeur (rendu)", () => {
     expect(/<button[^>]*aria-label="Envoyer"[^>]*disabled/.test(html)).toBe(false);
   });
 
-  it('phone: the same tools in a row above the field, file inputs for the library and the camera', () => {
+  it('phone: one « Options » button left of the field (no row of chips), mic and Envoyer beside it', () => {
     const html = renderToStaticMarkup(
       createElement(PhoneComposer, { state: 'ready', onSubmit: () => undefined, tools }),
     );
     expect(html).toContain('data-composer-tools');
     expect(html).toContain('capture="environment"');
     expect(html).toContain('accept="image/*"');
-    expect(html.indexOf('data-composer-tools')).toBeLessThan(html.indexOf('<textarea'));
+    const options = html.indexOf('aria-label="Options de l&#x27;instruction"');
+    expect(options).toBeGreaterThan(-1);
+    expect(options).toBeLessThan(html.indexOf('<textarea'));
+    expect(html.indexOf('<textarea')).toBeLessThan(html.indexOf('aria-label="Dicter l&#x27;instruction"'));
+    expect(html.indexOf('<textarea')).toBeLessThan(html.indexOf('aria-label="Envoyer"'));
+    // The chips live in the sheet now: none is rendered over the field.
+    expect(html).not.toContain('aria-label="Modèle de la session : Fake Opus"');
+    expect(html).not.toContain('aria-label="Commandes, skills et fichiers"');
+    // 16 px text: iOS does not zoom into the field.
+    expect(html).toMatch(/<textarea[^>]*text-app-16/);
   });
 });

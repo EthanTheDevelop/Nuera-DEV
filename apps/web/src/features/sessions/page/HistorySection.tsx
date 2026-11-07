@@ -35,6 +35,7 @@ import {
   HISTORY_PERIOD_LABELS,
   PHONE_HISTORY_FILTERS,
   historySearch,
+  isActiveStatus,
   workspaceUrl,
   type HistoryFilter,
   type HistoryPeriod,
@@ -42,7 +43,8 @@ import {
   type SessionListItem,
   type SessionListPage,
 } from '../lib/contract';
-import { historyAction } from '../lib/view';
+import { useLiveEvent } from '@/hooks/useLiveEvents';
+import { historyAction, patchHistoryItems } from '../lib/view';
 import type { SessionActions } from '../useSessionActions';
 import { resumeBlockedText } from '../useSessionActions';
 import type { SectionLoad } from './SessionsView';
@@ -86,6 +88,10 @@ export function HistorySection({ filters, history, projects, actions }: HistoryS
       setMoreError(null);
     }
   }
+  // A running session listed under « Toutes » / « En cours » keeps its live badge (the page re-reads
+  // the server data when a session starts or ends).
+  useLiveEvent('session.status', (event) => setItems((current) => patchHistoryItems(current, event.data)));
+
   // The URL changed from elsewhere (back / forward): the field follows.
   const [urlQ, setUrlQ] = useState(filters.q);
   if (urlQ !== filters.q) {
@@ -340,7 +346,7 @@ function RowMenu({ item, actions }: { item: SessionListItem; actions: SessionAct
         <DropdownMenuItem icon="edit" onSelect={() => actions.requestRename(item)}>
           Renommer
         </DropdownMenuItem>
-        {item.status !== 'archived' ? (
+        {item.status !== 'archived' && !isActiveStatus(item.status) ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem icon="archive" onSelect={() => actions.requestArchive(item)}>
@@ -393,7 +399,7 @@ function RowSheet({ item, onClose, actions }: { item: SessionListItem | null; on
               <CompactButton variant="secondaire" size="lg" block icon="edit" onClick={() => run(() => actions.requestRename(item))}>
                 Renommer
               </CompactButton>
-              {item.status !== 'archived' ? (
+              {item.status !== 'archived' && !isActiveStatus(item.status) ? (
                 <CompactButton variant="secondaire" size="lg" block icon="archive" onClick={() => run(() => actions.requestArchive(item))}>
                   Archiver
                 </CompactButton>
@@ -435,8 +441,8 @@ function HistoryEmpty({ filtered, period, onReset, onAllTime }: { filtered: bool
       }
     >
       {period !== 'tout'
-        ? `Aucune session arrêtée, terminée ou archivée sur les ${HISTORY_PERIOD_LABELS[period].replace(' derniers jours', '')} derniers jours.`
-        : 'Les sessions arrêtées, terminées ou archivées apparaissent ici.'}
+        ? `Aucune session sur les ${HISTORY_PERIOD_LABELS[period].replace(' derniers jours', '')} derniers jours.`
+        : 'Les sessions, en cours ou terminées, apparaissent ici.'}
     </EmptyState>
   );
 }

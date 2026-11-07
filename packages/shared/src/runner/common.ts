@@ -178,6 +178,8 @@ export const RUNNER_ERROR_REASONS = [
   'PREVIEW_UNREACHABLE',
   /** Aperçu: request or response body over the limit. */
   'PREVIEW_TOO_LARGE',
+  /** A dev server of that name already runs in this worktree (another name may run beside it). */
+  'DEV_SERVER_RUNNING',
 ] as const;
 export type RunnerErrorReason = (typeof RUNNER_ERROR_REASONS)[number];
 

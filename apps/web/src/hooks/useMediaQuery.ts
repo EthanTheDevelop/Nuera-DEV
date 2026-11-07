@@ -25,3 +25,12 @@ export function useMediaQuery(query: string, serverDefault = false): boolean {
 export function useIsDesktopNav(): boolean {
   return useMediaQuery(NAV_QUERY, true);
 }
+
+/**
+ * History mode of an in-page tab change: `push` on desktop (back / forward step through the tabs), `replace`
+ * on the phone layout — there the tabs are one screen, and the back arrow / swipe must leave the page.
+ * Call it from an event handler (reads the media query at that moment).
+ */
+export function tabHistoryMode(): 'push' | 'replace' {
+  return typeof window !== 'undefined' && window.matchMedia(NAV_QUERY).matches ? 'push' : 'replace';
+}

@@ -4,6 +4,7 @@ import type { PermissionOption } from '@/components/dev';
 import { useOptionalShellData } from '@/components/shell';
 import { toast } from '@/components/ui';
 import { useOptionalLiveEvents } from '@/hooks/useLiveEvents';
+import { tabHistoryMode } from '@/hooks/useMediaQuery';
 import { usePathname, useSearchParams } from 'next/navigation';
 import {
   createContext,
@@ -49,6 +50,11 @@ export interface WorkspaceUrlState {
   review: boolean;
   file: string | null;
   layout: DiffLayoutParam;
+  /**
+   * Writes the URL state. Default mode: `push` on desktop (back / forward step through the panels), `replace`
+   * on the phone layout — the tabs Session · Fichiers · Diff · Git · Aperçu and the raw terminal are one
+   * screen there, so « Retour » and the swipe back leave the session instead of replaying the tabs.
+   */
   set: (patch: Record<string, string | null>, mode?: 'push' | 'replace') => void;
 }
 
@@ -166,7 +172,7 @@ export function WorkspaceProvider({ data, children }: { data: WorkspaceData; chi
       review: search.get('revue') === '1',
       file: search.get('fichier'),
       layout: pick(DIFF_LAYOUT_VALUES, search.get('affichage'), 'cote-a-cote'),
-      set: (patch, mode = 'push') => {
+      set: (patch, mode = tabHistoryMode()) => {
         const next = new URLSearchParams(search.toString());
         for (const [key, value] of Object.entries(patch)) {
           if (value === null || value === '') next.delete(key);

@@ -40,6 +40,7 @@ export function DictationButton({ dictation, size = 'sm', shortcut = false, clas
             variant={on ? 'tinted' : 'ghost'}
             iconClassName={on ? 'text-accent' : 'text-muted'}
             aria-pressed={on}
+            aria-busy={dictation.asking || undefined}
             aria-keyshortcuts={shortcut ? (apple ? 'Meta+Shift+Space' : 'Control+Shift+Space') : undefined}
             aria-disabled={dictation.unavailable ? true : undefined}
             disabled={!dictation.unavailable && dictation.disabled && !on}
@@ -65,7 +66,7 @@ export interface DictationStatusProps {
  */
 export function DictationStatus({ dictation, className }: DictationStatusProps) {
   const active = dictation.listening || dictation.stopping;
-  const lines = active || dictation.errorText || dictation.reasonShown || dictation.notice;
+  const lines = active || dictation.asking || dictation.errorText || dictation.reasonShown || dictation.notice;
   if (!lines) return null;
   return (
     <div className={cn('flex min-w-0 flex-col gap-1 font-sans text-app-12', className)} data-dictation-status>
@@ -76,10 +77,16 @@ export function DictationStatus({ dictation, className }: DictationStatusProps) 
             <span className="shrink-0 font-medium">{DICTATION_COPY.listening}</span>
           </p>
         ) : null}
+        {dictation.asking ? (
+          <p className="m-0 flex min-w-0 items-center gap-1.5 text-muted">
+            <StatusDot tone="neutral" />
+            <span className="shrink-0">{DICTATION_COPY.asking}</span>
+          </p>
+        ) : null}
         {dictation.errorText ? (
           <p className="m-0 flex min-w-0 flex-wrap items-center gap-x-2 text-danger" role="status">
             <span className="min-w-0">{dictation.errorText}</span>
-            {dictation.error !== 'language' ? (
+            {dictation.retryable ? (
               <CompactButton variant="discret" onClick={dictation.retry} className="text-danger">
                 {DICTATION_COPY.retry}
               </CompactButton>

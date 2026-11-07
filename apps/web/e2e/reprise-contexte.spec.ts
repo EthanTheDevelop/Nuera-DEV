@@ -113,12 +113,18 @@ test("Puce « Effort » : /effort tapé dans le CLI, l'effort affiché est celui
   await sendFromComposer(page, say);
   await expect(thread(page).getByText(`Reçu : ${say}`, { exact: true })).toBeVisible({ timeout: 60_000 });
 
+  // Phone: the chips live in the « Options de l'instruction » sheet (one button left of the field).
+  const openOptions = async () => {
+    if (isMobile()) await page.getByRole('button', { name: "Options de l'instruction" }).click();
+  };
   const chip = page.getByRole('button', { name: /^Niveau d'effort : / }).filter({ visible: true });
+  await openOptions();
   await expect(chip).toHaveAccessibleName("Niveau d'effort : Effort du CLI", { timeout: 30_000 });
   await chip.click();
   if (isMobile()) await page.getByRole('dialog', { name: "Niveau d'effort" }).getByRole('button', { name: /^Élevé/ }).click();
   else await page.getByRole('menuitem', { name: /^Élevé/ }).click();
   await expect(page.getByText('/effort high confirmé par le CLI.', { exact: true })).toBeVisible({ timeout: 30_000 });
+  await openOptions();
   await expect(chip).toHaveAccessibleName("Niveau d'effort : Effort élevé", { timeout: 30_000 });
   const [audit] = await database
     .select({ summary: auditLog.summary })

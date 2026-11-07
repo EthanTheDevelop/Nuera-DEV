@@ -50,6 +50,26 @@ function installFakeRecognition(page: Page) {
     }
     w.SpeechRecognition = FakeRecognition;
     w.webkitSpeechRecognition = FakeRecognition;
+    // The first dictation asks the microphone (getUserMedia): granted at once, unless `__micRefusal` names
+    // the refusal to play (« NotAllowedError » after 1 s = the owner tapped « Refuser »).
+    w.__micAsked = 0;
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          w.__micAsked = (w.__micAsked as number) + 1;
+          const refusal = w.__micRefusal as string | undefined;
+          if (refusal) {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            throw Object.assign(new Error(refusal), { name: refusal });
+          }
+          return { getTracks: () => [{ stop: () => undefined }] };
+        },
+      },
+    });
+    const query = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = ((descriptor: PermissionDescriptor) =>
+      descriptor.name === ('microphone' as PermissionName) ? Promise.resolve({ state: 'prompt' } as PermissionStatus) : query(descriptor)) as typeof query;
     w.__hear = (transcript: string, isFinal: boolean) => {
       const rec = w.__dictation as FakeRecognition | undefined;
       if (!rec) throw new Error('aucune dictée en cours');
@@ -122,4 +142,33 @@ test('Dictée : texte provisoire affiché, texte final inséré, rien envoyé', 
   await expect(field).toHaveValue('Regarde le fichier README');
   // Never sent by itself: the session has not started.
   expect((await runnerApi('getSession', { params: { sessionId: session.id } })).status).toBe('new');
+});
+
+test('Dictée : micro demandé au premier appui, refus expliqué', async ({ page, cli }) => {
+  await installFakeRecognition(page);
+  await page.addInitScript(() => {
+    (window as unknown as Record<string, unknown>).__micRefusal = 'NotAllowedError';
+  });
+  await openNewSession(page, cli);
+  const mic = page.getByRole('button', { name: "Dicter l'instruction" });
+  await mic.click();
+  await expect(page.getByText('Autorisation du micro…')).toBeVisible();
+  // Refused after the prompt (1 s): « Micro refusé », and on an iPhone the Safari setting to open.
+  const refused = page.getByText(/^Micro refusé : touchez à nouveau le micro et choisissez « Autoriser »/);
+  await expect(refused).toBeVisible();
+  if (test.info().project.name === 'mobile') await expect(refused).toContainText('Réglages › Safari › Micro');
+  // No recognition was started without the microphone.
+  expect(await page.evaluate(() => (window as unknown as { __dictation?: unknown }).__dictation ?? null)).toBeNull();
+
+  // Allowed the second time: the recognition starts, and the microphone is not asked again afterwards.
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__micRefusal = undefined;
+  });
+  await page.getByRole('button', { name: 'Réessayer' }).click();
+  await expect(page.getByRole('button', { name: 'Arrêter la dictée' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Arrêter la dictée' }).click();
+  await expect(mic).toHaveAttribute('aria-pressed', 'false');
+  await mic.click();
+  await expect(page.getByRole('button', { name: 'Arrêter la dictée' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => (window as unknown as { __micAsked: number }).__micAsked)).toBe(2);
 });

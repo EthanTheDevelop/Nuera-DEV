@@ -6,6 +6,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLinkItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
   ErrorPanel,
@@ -18,10 +20,11 @@ import {
   Switch,
   type StatusTone,
 } from '@/components/ui';
+import { Icon } from '@/components/icons';
 import { cn } from '@/lib/cn';
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import { useWorkspace } from '../WorkspaceContext';
-import { usePreview, type PreviewController, type PreviewViewport, type ServerState } from './usePreview';
+import { usePreview, type DevServerTab, type PreviewController, type PreviewViewport, type ServerState } from './usePreview';
 
 /**
  * « Aperçu » (not designed in Figma; built with the design-system primitives): live preview of the
@@ -86,7 +89,7 @@ function ServerButton({ preview, size = 'md' }: { preview: PreviewController; si
       title={blocker ?? undefined}
       onClick={() => void preview.start()}
     >
-      Démarrer le serveur
+      {preview.servers.length > 1 && preview.selected ? `Démarrer « ${preview.selected} »` : 'Démarrer le serveur'}
     </CompactButton>
   );
 }
@@ -96,6 +99,204 @@ function ServerStatus({ preview, className }: { preview: PreviewController; clas
     <p className={cn('m-0 flex min-w-0 items-center gap-2 font-sans text-app-13 font-medium text-text', className)} aria-live="polite">
       <StatusDot tone={STATE_TONE[preview.state]} />
       <span className="truncate">{stateLabel(preview)}</span>
+    </p>
+  );
+}
+
+/** « client · 3001 » — a dev server's tab label (its port once it answers). */
+function tabLabel(server: DevServerTab): string {
+  return server.port ? `${server.name} · ${server.port}` : server.name;
+}
+
+const environmentHref = (projectId: string) => `/projets/${encodeURIComponent(projectId)}?onglet=environnement`;
+
+/** « + Lancer… »: the dev servers of the project that do not run, and where to declare more. */
+function LaunchMenu({ preview, size = 'md' }: { preview: PreviewController; size?: 'md' | 'lg' }) {
+  const stopped = preview.servers.filter((server) => !isRunning(server.state));
+  const blocker = startBlocker(preview);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <CompactButton variant="discret" size={size} icon="plus" disabled={Boolean(blocker) && stopped.length > 0}>
+          Lancer…
+        </CompactButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent width={300}>
+        {stopped.map((server) => (
+          <DropdownMenuItem
+            key={server.name}
+            icon="play"
+            disabled={Boolean(blocker)}
+            onSelect={() => void preview.start(server.name)}
+            aside={<span className="max-w-[140px] truncate font-mono text-app-11 text-muted">{server.command}</span>}
+          >
+            {`Lancer « ${server.name} »`}
+          </DropdownMenuItem>
+        ))}
+        {stopped.length ? <DropdownMenuSeparator /> : null}
+        <DropdownMenuLinkItem href={environmentHref(preview.projectId)} icon="projets">
+          Ajouter un serveur de développement
+        </DropdownMenuLinkItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Desktop: one tab per dev server of the worktree (« client · 3001 », « admin · 3002 »), then « + Lancer… ». */
+function ServerTabs({ preview }: { preview: PreviewController }) {
+  if (preview.servers.length < 2) return null;
+  return (
+    <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Serveurs de développement">
+      {preview.servers.map((server) => {
+        const active = server.name === preview.selected;
+        return (
+          <button
+            key={server.name}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => preview.select(server.name)}
+            className={cn(
+              'flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border px-3 font-mono text-app-12 transition-colors duration-(--dur-fast)',
+              active ? 'border-border bg-surface-raised text-text' : 'border-transparent text-muted hover:bg-hover hover:text-text',
+            )}
+          >
+            <StatusDot tone={STATE_TONE[server.state]} />
+            {tabLabel(server)}
+          </button>
+        );
+      })}
+      <LaunchMenu preview={preview} />
+    </div>
+  );
+}
+
+/** Phone: the dev server shown, as a compact menu (switch, launch another one). */
+function ServerPicker({ preview }: { preview: PreviewController }) {
+  const current = preview.servers.find((server) => server.name === preview.selected);
+  if (preview.servers.length < 2 || !current) return null;
+  const blocker = startBlocker(preview);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Serveur affiché : ${tabLabel(current)}`}
+          className="flex h-11 min-w-0 max-w-[45%] shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 font-mono text-app-12 text-text hover:bg-hover"
+        >
+          <StatusDot tone={STATE_TONE[current.state]} />
+          <span className="truncate">{tabLabel(current)}</span>
+          <Icon name="chevron-down" size={14} className="shrink-0 text-muted" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent width={280}>
+        {preview.servers.map((server) => (
+          <DropdownMenuItem
+            key={server.name}
+            icon={server.name === preview.selected ? 'check' : 'eye'}
+            onSelect={() => preview.select(server.name)}
+            aside={<span className="font-sans text-app-12 text-muted">{stateLabelOf(server.state, server.port)}</span>}
+          >
+            {server.name}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        {preview.servers
+          .filter((server) => !isRunning(server.state))
+          .map((server) => (
+            <DropdownMenuItem key={`lancer-${server.name}`} icon="play" disabled={Boolean(blocker)} onSelect={() => void preview.start(server.name)}>
+              {`Lancer « ${server.name} »`}
+            </DropdownMenuItem>
+          ))}
+        <DropdownMenuLinkItem href={environmentHref(preview.projectId)} icon="projets">
+          Ajouter un serveur de développement
+        </DropdownMenuLinkItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function stateLabelOf(state: ServerState, port: number | null): string {
+  switch (state) {
+    case 'online':
+      return port ? `port ${port}` : 'en ligne';
+    case 'starting':
+      return 'démarrage…';
+    case 'error':
+      return 'erreur';
+    case 'loading':
+      return '…';
+    case 'unavailable':
+      return 'état inconnu';
+    default:
+      return 'arrêté';
+  }
+}
+
+/** Desktop options menu: « Demander à Claude de corriger automatiquement », « Relancer après correction ». */
+function FixOptions({ preview }: { preview: PreviewController }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <IconButton icon="sparkle" label="Correction par Claude" size="sm" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent width={340}>
+        <FixOptionItems preview={preview} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function FixOptionItems({ preview }: { preview: PreviewController }) {
+  return (
+    <>
+      <DropdownMenuItem
+        icon={preview.autoFix ? 'check' : 'sparkle'}
+        onSelect={() => preview.setAutoFix(!preview.autoFix)}
+        aside={<span className="font-sans text-app-12 text-muted">{preview.autoFix ? 'activé' : 'désactivé'}</span>}
+      >
+        Demander à Claude de corriger automatiquement
+      </DropdownMenuItem>
+      <DropdownMenuItem
+        icon={preview.relaunchAfterFix ? 'check' : 'refresh'}
+        onSelect={() => preview.setRelaunchAfterFix(!preview.relaunchAfterFix)}
+        aside={<span className="font-sans text-app-12 text-muted">{preview.relaunchAfterFix ? 'activé' : 'désactivé'}</span>}
+      >
+        Relancer après correction
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+/** Under a dev server that does not start: what was asked of Claude, or « Demander à Claude ». */
+function AutodebugNote({ preview, size }: { preview: PreviewController; size: 'md' | 'lg' }) {
+  const state = preview.autodebug;
+  if (!state || state.kind === 'error') {
+    return (
+      <div className="flex flex-col items-start gap-2">
+        {state?.kind === 'error' ? (
+          <p role="alert" className="m-0 font-sans text-app-13 text-danger">
+            {state.message}
+          </p>
+        ) : null}
+        <CompactButton variant="secondaire" size={size} icon="sparkle" onClick={preview.askClaude} disabled={Boolean(preview.serverDisabledReason)}>
+          Demander à Claude
+        </CompactButton>
+      </div>
+    );
+  }
+  const text =
+    state.kind === 'sending'
+      ? 'Envoi de la sortie du serveur à Claude…'
+      : state.kind === 'waiting_permission'
+        ? "Claude attend votre réponse à une demande d'autorisation : la sortie du serveur lui sera envoyée ensuite."
+        : state.queued
+          ? 'Claude travaille encore : la sortie du serveur lui est envoyée en file, il cherchera la cause ensuite.'
+          : 'Sortie du serveur envoyée à Claude dans cette session : il cherche la cause.';
+  return (
+    <p role="status" className="m-0 flex items-center gap-2 font-sans text-app-13 text-text">
+      {state.kind === 'sending' ? <Spinner size={14} label="Envoi" /> : <Icon name="sparkle" size={16} className="shrink-0 text-muted" />}
+      <span>{text}</span>
     </p>
   );
 }
@@ -168,9 +369,11 @@ function DesktopToolbar({ preview, variant }: { preview: PreviewController; vari
   const main = variant === 'main';
   return (
     <div className="flex shrink-0 flex-col gap-2 border-b border-border px-4 py-2.5">
+      <ServerTabs preview={preview} />
       <div className="flex min-w-0 items-center gap-2">
         <ServerStatus preview={preview} className="flex-1" />
         <ServerButton preview={preview} />
+        <FixOptions preview={preview} />
         {main ? (
           <CompactButton variant="secondaire" icon="panel-right" onClick={() => ws.url.set({ vue: null, panneau: 'apercu' })}>
             Inverser
@@ -213,6 +416,7 @@ function PhoneToolbar({ preview }: { preview: PreviewController }) {
   return (
     <div className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-bg px-3 py-2">
       <div className="flex min-w-0 items-center gap-1">
+        <ServerPicker preview={preview} />
         <ServerStatus preview={preview} className="flex-1 pl-1" />
         <IconButton icon="refresh" label="Recharger" onClick={() => preview.reload()} disabled={preview.state !== 'online'} />
         <IconButton icon="external" label="Ouvrir dans un nouvel onglet" onClick={() => void preview.openInNewTab()} disabled={preview.state !== 'online'} />
@@ -237,6 +441,8 @@ function PhoneToolbar({ preview }: { preview: PreviewController }) {
             >
               Recharger après chaque modification de Claude
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <FixOptionItems preview={preview} />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -306,7 +512,10 @@ function Body({ preview, variant }: { preview: PreviewController; variant: Previ
     case 'stopped':
       return (
         <Centered>
-          <EmptyState icon="eye" title="Serveur de développement arrêté" variant="plain" action={phone ? <ServerButton preview={preview} size="lg" /> : undefined}>
+          <EmptyState
+            icon="eye"
+            title={preview.servers.length > 1 && preview.selected ? `Serveur « ${preview.selected} » arrêté` : 'Serveur de développement arrêté'}
+            variant="plain" action={phone ? <ServerButton preview={preview} size="lg" /> : undefined}>
             {`Démarrez ${preview.devCommand} dans ce worktree : le site s'affiche ici dès que son port apparaît dans la sortie.`}
           </EmptyState>
         </Centered>
@@ -321,6 +530,7 @@ function Body({ preview, variant }: { preview: PreviewController; variant: Previ
             raw={preview.output || null}
             {...(phone ? { onRetry: () => void preview.start(), retryLabel: 'Redémarrer le serveur', retrying: preview.starting } : {})}
           />
+          <AutodebugNote preview={preview} size={phone ? 'lg' : 'md'} />
         </div>
       );
     case 'starting':
@@ -334,6 +544,7 @@ function Body({ preview, variant }: { preview: PreviewController; variant: Previ
               {preview.outputLines}
             </pre>
           ) : null}
+          {preview.failing || preview.autodebug ? <AutodebugNote preview={preview} size={phone ? 'lg' : 'md'} /> : null}
         </Centered>
       );
     case 'online':

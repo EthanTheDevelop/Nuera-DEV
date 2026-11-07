@@ -1,7 +1,7 @@
 import 'server-only';
 import { sessionConfigView } from '@/server/claude-config';
 import { permissionRequests, pullRequests, sessions, worktrees } from '@nuera/db/schema';
-import { CliStatusSchema, parseUsageLimit, type PermissionRequestDto, type SessionDto, type SessionEventItem } from '@nuera/shared/runner';
+import { CliStatusSchema, devServerEntries, parseUsageLimit, type PermissionRequestDto, type SessionDto, type SessionEventItem } from '@nuera/shared/runner';
 import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import type {
   SiblingSession,
@@ -242,6 +242,8 @@ export async function getWorkspaceData(ctx: Pick<RequestContext, 'space' | 'user
         build: project.commands.build ?? null,
         test: project.commands.test ?? null,
         lint: project.commands.lint ?? null,
+        // « Aperçu »: every named dev server of the project, default first.
+        devServers: devServerEntries(project.commands).map(({ name, command }) => ({ name, command })),
       },
       readClaudeMd: project.options.readClaudeMd !== false,
     },
