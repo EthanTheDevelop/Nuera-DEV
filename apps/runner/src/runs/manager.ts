@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import net from 'node:net';
 import { and, eq, inArray } from 'drizzle-orm';
 import { commandRuns, type Database } from '@nuera/db';
 import { formatTestCounts } from '@nuera/shared/events';
@@ -25,16 +26,56 @@ type CommandKind = RunDto['kind'];
 const OUTPUT_TAIL = 64 * 1024;
 const MAX_LIVE_RUNS = 8;
 
-/** « port 3000 » from a dev server banner (localhost:3000, http://127.0.0.1:5173/, "port 8080"). */
+/**
+ * Port of a dev server from its output (« Local: http://localhost:3001 », http://127.0.0.1:5173/, « port 8080 »).
+ * The LAST address announced wins, and a line saying a port is taken (« Port 3000 is in use…, using available
+ * port 3001 instead », « EADDRINUSE ») never designates it: two dev servers of the same framework start on the
+ * same default port, and the second one moves — reading its first number previewed the OTHER project.
+ */
 export function detectPort(text: string): number | null {
-  const clean = stripAnsi(text);
-  const url = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|[a-z0-9.-]+\.local):(\d{2,5})\b/i.exec(clean);
-  const word = /\bport\s*[:=]?\s*(\d{2,5})\b/i.exec(clean);
-  const value = url?.[1] ?? word?.[1];
-  if (!value) return null;
-  const port = Number(value);
-  return port >= 1 && port <= 65535 ? port : null;
+  const lines = stripAnsi(text).split(/\r?\n/);
+  const valid = (value: string | undefined) => {
+    const port = Number(value);
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+  };
+  let fromUrl: number | null = null;
+  let fromWord: number | null = null;
+  const url = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|[a-z0-9.-]+\.local):(\d{2,5})\b/gi;
+  for (const line of lines) {
+    if (/in use|already used|eaddrinuse|occupé/i.test(line)) {
+      // « …is in use, using available port 3001 instead »: only the port it moves to counts.
+      const moved = /(?:using|trying|switching to|instead)[^\d]{0,40}?(\d{2,5})/i.exec(line.replace(/^.*?in use/i, ''));
+      const port = valid(moved?.[1]);
+      if (port) fromWord = port;
+      continue;
+    }
+    for (const match of line.matchAll(url)) {
+      const port = valid(match[1]);
+      if (port) fromUrl = port;
+    }
+    const word = /\bport\s*[:=]?\s*(\d{2,5})\b/i.exec(line);
+    const port = valid(word?.[1]);
+    if (port) fromWord = port;
+  }
+  return fromUrl ?? fromWord;
 }
+
+/** A free TCP port on the loopback, offered to the dev server as PORT (frameworks that honour it never collide). */
+async function freeLoopbackPort(): Promise<number | null> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', () => resolve(null));
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : null;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/** How long after its start a dev server may still announce a different address (it moved to another port). */
+const PORT_SETTLE_MS = 60_000;
 
 interface LiveRun {
   id: string;
@@ -138,7 +179,10 @@ export class RunManager {
       })
       .returning();
     const shell = platformShellForPty(command);
+    // Dev server: a free port of its own (PORT, honoured by Next, Nuxt, Remix, Express…), unless the project sets one.
+    const devPort = input.kind === 'dev' && !(input.env && 'PORT' in input.env) ? await freeLoopbackPort() : null;
     const env = terminalEnv({
+      ...(devPort ? { PORT: String(devPort) } : {}),
       ...buildChildEnv(input.env, { policy: 'project', source: {} }),
       ...(input.kind === 'test' ? { CI: '1' } : {}),
       // Trusted, after the project variables (where the GIT_ prefix is refused anyway).
@@ -193,9 +237,11 @@ export class RunManager {
     live.output = tailText(live.output + data, OUTPUT_TAIL);
     this.deps.bus.publish('run.output', { runId: live.id, data }, { channels: [runChannel(live.id)], replay: false });
     let changed = false;
-    if (live.row.port === null && live.row.kind !== 'test') {
-      const port = detectPort(data) ?? detectPort(live.output.slice(-2000));
-      if (port) {
+    // Until the server settles (it may announce a first port, then move), the latest address announced wins.
+    const settling = live.row.port === null || Date.now() - new Date(live.row.startedAt ?? Date.now()).getTime() < PORT_SETTLE_MS;
+    if (live.row.kind !== 'test' && settling) {
+      const port = detectPort(live.output.slice(-8000));
+      if (port && port !== live.row.port && !this.portTakenByAnotherRun(live.id, port)) {
         live.row = { ...live.row, port };
         changed = true;
       }
@@ -269,6 +315,14 @@ export class RunManager {
    * (unknown or foreign id → the same 404 as `get`), of kind `dev`, alive in this runner process
    * (not being stopped) and with a port detected in its output. Nothing else is ever proxied.
    */
+  /** A port already announced by another live dev server is never adopted by a dev server (it is that one's). */
+  private portTakenByAnotherRun(runId: string, port: number): boolean {
+    const self = this.live.get(runId);
+    if (self?.row.kind !== 'dev') return false;
+    for (const [id, other] of this.live) if (id !== runId && other.row.kind === 'dev' && other.row.port === port && !other.stopping) return true;
+    return false;
+  }
+
   async previewTarget(runId: string): Promise<{ port: number; worktreeId: string | null }> {
     const live = this.live.get(runId);
     if (!live) {
