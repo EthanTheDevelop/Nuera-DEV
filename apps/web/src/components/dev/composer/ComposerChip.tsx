@@ -110,38 +110,15 @@ export function ComposerChip({
           {content}
         </button>
         <SheetContent title={title} description={note ?? undefined}>
-          <ul className="m-0 flex list-none flex-col gap-0.5 p-0 pb-3" aria-label={title}>
-            {options.map((option) => {
-              const current = option.value === value;
-              return (
-                <li key={option.value}>
-                  <button
-                    type="button"
-                    aria-current={current || undefined}
-                    onClick={() => {
-                      setSheetOpen(false);
-                      if (!current) onSelect(option.value);
-                    }}
-                    className="flex min-h-12 w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-hover active:bg-pressed"
-                  >
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate font-sans text-app-14 text-text">
-                        {option.label}
-                      </span>
-                      {option.description ? (
-                        <span className="font-sans text-app-12 text-muted">
-                          {option.description}
-                        </span>
-                      ) : null}
-                    </span>
-                    {current ? (
-                      <Icon name="check" size={18} className="shrink-0 text-accent" />
-                    ) : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <ComposerChoiceList
+            title={title}
+            options={options}
+            value={value}
+            onChoose={(choice) => {
+              setSheetOpen(false);
+              if (choice !== value) onSelect(choice);
+            }}
+          />
         </SheetContent>
       </Sheet>
     );
@@ -178,5 +155,42 @@ export function ComposerChip({
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** Phone list of a chip's choices (44 px+ rows, check mark on the current one), in a sheet. */
+export function ComposerChoiceList({
+  title,
+  options,
+  value,
+  onChoose,
+}: {
+  title: string;
+  options: readonly ComposerChoice[];
+  value: string | null;
+  onChoose: (value: string) => void;
+}) {
+  return (
+    <ul className="m-0 flex list-none flex-col gap-0.5 p-0 pb-3" aria-label={title}>
+      {options.map((option) => {
+        const current = option.value === value;
+        return (
+          <li key={option.value}>
+            <button
+              type="button"
+              aria-current={current || undefined}
+              onClick={() => onChoose(option.value)}
+              className="flex min-h-12 w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-hover active:bg-pressed"
+            >
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate font-sans text-app-14 text-text">{option.label}</span>
+                {option.description ? <span className="font-sans text-app-12 text-muted">{option.description}</span> : null}
+              </span>
+              {current ? <Icon name="check" size={18} className="shrink-0 text-accent" /> : null}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

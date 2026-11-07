@@ -152,27 +152,25 @@ export interface PaletteButtonProps {
   onOpen?: () => void;
 }
 
-/** « / » of the toolbar: searchable palette in a popover (desktop) or a sheet (phone). */
-export function PaletteButton({
-  source,
-  onInsert,
-  variant,
-  disabledReason,
-  onBlockedTap,
-  onOpen,
-}: PaletteButtonProps) {
-  const [open, setOpen] = useState(false);
+export interface PaletteSearchPanelProps {
+  source: PaletteSource;
+  /** Inserts the chosen item into the field (never sends). */
+  onInsert: (item: PaletteItem) => void;
+  /** An item was inserted: close what holds the panel. */
+  onDone: () => void;
+  variant: 'desktop' | 'phone';
+}
+
+/**
+ * Search field + grouped list of the palette (« / » of the toolbar, phone options sheet). Mounted only
+ * while shown: each opening starts from an empty search.
+ */
+export function PaletteSearchPanel({ source, onInsert, onDone, variant }: PaletteSearchPanelProps) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const listboxId = useId();
   const kind = query.startsWith('@') ? '@' : '/';
-  const results = usePaletteResults(source, open ? kind : null, query.replace(/^[@/]/, ''));
-  const openWith = (next: boolean) => {
-    if (next) onOpen?.();
-    setOpen(next);
-    setQuery('');
-    setActive(0);
-  };
+  const results = usePaletteResults(source, kind, query.replace(/^[@/]/, ''));
   const choose = (item: PaletteItem) => {
     if (item.folder) {
       setQuery(item.insert);
@@ -180,7 +178,7 @@ export function PaletteButton({
       return;
     }
     onInsert(item);
-    setOpen(false);
+    onDone();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     const count = results.items.length;
@@ -193,33 +191,11 @@ export function PaletteButton({
       choose(results.items[Math.min(active, count - 1)]!);
     }
   };
-  const blocked = Boolean(disabledReason);
-  const trigger = (
-    <button
-      type="button"
-      aria-label={blocked ? `${PALETTE_COPY.button} · ${disabledReason}` : PALETTE_COPY.button}
-      aria-disabled={blocked || undefined}
-      aria-haspopup="dialog"
-      title={variant === 'desktop' ? (disabledReason ?? PALETTE_COPY.button) : undefined}
-      onClick={
-        blocked
-          ? () => onBlockedTap?.(disabledReason!)
-          : variant === 'phone'
-            ? () => openWith(true)
-            : undefined
-      }
-      className={cn(
-        'nu-hit inline-flex shrink-0 items-center justify-center rounded-md font-mono text-muted transition-colors duration-(--dur-fast) hover:bg-hover hover:text-text aria-disabled:cursor-not-allowed aria-disabled:opacity-40',
-        variant === 'phone' ? 'size-11 text-app-18' : 'size-9 text-app-16',
-      )}
-    >
-      /
-    </button>
-  );
+  const phone = variant === 'phone';
   const search = (
     <Input
       autoFocus
-      size={variant === 'phone' ? 'lg' : 'md'}
+      size={phone ? 'lg' : 'md'}
       leadingIcon="search"
       value={query}
       onChange={(event) => {
@@ -246,22 +222,72 @@ export function PaletteButton({
       listboxId={listboxId}
       optionId={(i) => `${listboxId}-${i}`}
       notice={source.notice}
-      touch={variant === 'phone'}
+      touch={phone}
       className="min-h-0 flex-1"
     />
   );
+  if (phone) {
+    return (
+      <div className="flex min-h-0 flex-col gap-2 pb-3">
+        {search}
+        <div className="flex max-h-[55dvh] min-h-0 flex-col">{list}</div>
+      </div>
+    );
+  }
+  return (
+    <>
+      {search}
+      {list}
+      <p className="m-0 px-1 pt-1 font-sans text-app-11 text-muted">{PALETTE_COPY.hint}</p>
+    </>
+  );
+}
+
+/** « / » of the toolbar: searchable palette in a popover (desktop) or a sheet (phone). */
+export function PaletteButton({
+  source,
+  onInsert,
+  variant,
+  disabledReason,
+  onBlockedTap,
+  onOpen,
+}: PaletteButtonProps) {
+  const [open, setOpen] = useState(false);
+  const openWith = (next: boolean) => {
+    if (next) onOpen?.();
+    setOpen(next);
+  };
+  const blocked = Boolean(disabledReason);
+  const trigger = (
+    <button
+      type="button"
+      aria-label={blocked ? `${PALETTE_COPY.button} · ${disabledReason}` : PALETTE_COPY.button}
+      aria-disabled={blocked || undefined}
+      aria-haspopup="dialog"
+      title={variant === 'desktop' ? (disabledReason ?? PALETTE_COPY.button) : undefined}
+      onClick={
+        blocked
+          ? () => onBlockedTap?.(disabledReason!)
+          : variant === 'phone'
+            ? () => openWith(true)
+            : undefined
+      }
+      className={cn(
+        'nu-hit inline-flex shrink-0 items-center justify-center rounded-md font-mono text-muted transition-colors duration-(--dur-fast) hover:bg-hover hover:text-text aria-disabled:cursor-not-allowed aria-disabled:opacity-40',
+        variant === 'phone' ? 'size-11 text-app-18' : 'size-9 text-app-16',
+      )}
+    >
+      /
+    </button>
+  );
+  const panel = <PaletteSearchPanel source={source} onInsert={onInsert} onDone={() => setOpen(false)} variant={variant} />;
 
   if (blocked) return trigger;
   if (variant === 'phone') {
     return (
       <Sheet open={open} onOpenChange={openWith}>
         {trigger}
-        <SheetContent title={PALETTE_COPY.title}>
-          <div className="flex min-h-0 flex-col gap-2 pb-3">
-            {search}
-            <div className="flex max-h-[55dvh] min-h-0 flex-col">{list}</div>
-          </div>
-        </SheetContent>
+        <SheetContent title={PALETTE_COPY.title}>{panel}</SheetContent>
       </Sheet>
     );
   }
@@ -274,9 +300,7 @@ export function PaletteButton({
         width={420}
         className="flex max-h-[min(440px,70dvh)] flex-col gap-1 p-2"
       >
-        {search}
-        {list}
-        <p className="m-0 px-1 pt-1 font-sans text-app-11 text-muted">{PALETTE_COPY.hint}</p>
+        {panel}
       </PopoverContent>
     </Popover>
   );

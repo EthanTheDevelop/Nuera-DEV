@@ -11,15 +11,21 @@ import {
   type RefObject,
 } from 'react';
 import {
-  DICTATION_COPY,
   DictationController,
   IDLE_DICTATION,
+  WEB_PLATFORM,
   detectDictation,
+  dictationErrorCode,
+  dictationErrorText,
   dictationLanguages,
+  dictationPlatform,
+  dictationRetryable,
+  requestMicrophone,
   speechRecognitionOf,
   unavailableReason,
   type DictationAvailability,
   type DictationErrorCode,
+  type DictationPlatform,
   type DictationSnapshot,
 } from './dictation';
 import type { useComposer } from './use-composer';
@@ -46,6 +52,16 @@ function rememberNotice(): void {
 const noSubscription = () => () => undefined;
 const detectInBrowser = (): DictationAvailability => detectDictation(window as unknown as Parameters<typeof detectDictation>[0]);
 const pendingOnServer = (): DictationAvailability => 'pending';
+// Snapshot read by useSyncExternalStore: one stable object per page (the platform does not change).
+let browserPlatform: DictationPlatform | null = null;
+const platformInBrowser = (): DictationPlatform => (browserPlatform ??= dictationPlatform(window));
+const platformOnServer = (): DictationPlatform => WEB_PLATFORM;
+
+/**
+ * The page holds the microphone (asked once by `requestMicrophone`, granted): later dictations start the
+ * recognition directly. Per page load, like the browser's own grant on iOS.
+ */
+let microphoneGranted = false;
 
 /** `Ctrl/⌘ + Maj + Espace` toggles the dictation in a desktop composer. */
 export function isDictationShortcut(event: { key: string; code?: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
@@ -73,8 +89,12 @@ export interface Dictation {
   /** Stop asked, last words still arriving. */
   stopping: boolean;
   interim: string;
+  /** The microphone prompt is open (first dictation of the page). */
+  asking: boolean;
   error: DictationErrorCode | null;
   errorText: string | null;
+  /** « Réessayer » can help (false: a setting must change first, or the installed app cannot dictate). */
+  retryable: boolean;
   /** The unavailable reason was asked for (tap on the disabled button: phones have no tooltip). */
   reasonShown: boolean;
   /** One-time privacy notice. */
@@ -97,7 +117,11 @@ export interface Dictation {
  */
 export function useDictation({ fieldRef, value, setValue, disabled = false, focusOnStart = false }: UseDictationOptions): Dictation {
   const availability = useSyncExternalStore(noSubscription, detectInBrowser, pendingOnServer);
+  const platform = useSyncExternalStore(noSubscription, platformInBrowser, platformOnServer);
   const [snapshot, setSnapshot] = useState<DictationSnapshot>(IDLE_DICTATION);
+  const [asking, setAsking] = useState(false);
+  const askingRef = useRef(false);
+  const mounted = useRef(true);
   const [reasonShown, setReasonShown] = useState(false);
   const [notice, setNotice] = useState(false);
   const controllerRef = useRef<DictationController | null>(null);
@@ -115,6 +139,7 @@ export function useDictation({ fieldRef, value, setValue, disabled = false, focu
       create: () => new Ctor(),
       languages: dictationLanguages(navigator.language),
       onChange: setSnapshot,
+      classify: (error) => dictationErrorCode(error, platformInBrowser()),
       target: {
         read: () => {
           const field = fieldRef.current;
@@ -137,7 +162,7 @@ export function useDictation({ fieldRef, value, setValue, disabled = false, focu
     return controllerRef.current;
   }, [fieldRef]);
 
-  const unavailable = unavailableReason(availability);
+  const unavailable = unavailableReason(availability, platform);
   const blocked = disabled || availability !== 'supported';
 
   const toggle = useCallback(() => {
@@ -145,22 +170,40 @@ export function useDictation({ fieldRef, value, setValue, disabled = false, focu
       setReasonShown(true);
       return;
     }
-    if (blocked) return;
+    if (blocked || askingRef.current) return;
     const ctl = controller();
     if (!ctl) return;
-    if (!ctl.active) {
-      if (!noticeSeen()) {
-        rememberNotice();
-        setNotice(true);
-      }
-      const field = fieldRef.current;
-      if (latest.current.focusOnStart && field && field !== document.activeElement) {
-        field.focus();
-        const end = field.value.length;
-        field.setSelectionRange(end, end);
-      }
+    if (ctl.active) {
+      ctl.toggle();
+      return;
     }
-    ctl.toggle();
+    if (!noticeSeen()) {
+      rememberNotice();
+      setNotice(true);
+    }
+    const field = fieldRef.current;
+    if (latest.current.focusOnStart && field && field !== document.activeElement) {
+      field.focus();
+      const end = field.value.length;
+      field.setSelectionRange(end, end);
+    }
+    if (microphoneGranted) {
+      ctl.start();
+      return;
+    }
+    // First dictation of the page: ask the microphone explicitly (the OS prompt shows now), release it,
+    // then start the recognition — or say precisely why it cannot (refused, blocked, busy…).
+    askingRef.current = true;
+    setAsking(true);
+    ctl.clearError();
+    void requestMicrophone(navigator as unknown as Parameters<typeof requestMicrophone>[0]).then((result) => {
+      askingRef.current = false;
+      if (!mounted.current) return;
+      setAsking(false);
+      if (result === 'granted') microphoneGranted = true;
+      if (result === 'granted' || result === 'unknown') ctl.start();
+      else ctl.fail(result);
+    });
   }, [blocked, controller, fieldRef, unavailable]);
 
   const stop = useCallback(() => controllerRef.current?.stop(), []);
@@ -182,8 +225,10 @@ export function useDictation({ fieldRef, value, setValue, disabled = false, focu
     const onHidden = () => {
       if (document.visibilityState === 'hidden') controllerRef.current?.stop();
     };
+    mounted.current = true;
     document.addEventListener('visibilitychange', onHidden);
     return () => {
+      mounted.current = false;
       document.removeEventListener('visibilitychange', onHidden);
       controllerRef.current?.dispose();
     };
@@ -236,8 +281,10 @@ export function useDictation({ fieldRef, value, setValue, disabled = false, focu
     listening: snapshot.status === 'listening',
     stopping: snapshot.status === 'stopping',
     interim: snapshot.interim,
+    asking,
     error: snapshot.error,
-    errorText: snapshot.error ? DICTATION_COPY.errors[snapshot.error] : null,
+    errorText: snapshot.error ? dictationErrorText(snapshot.error, platform) : null,
+    retryable: snapshot.error ? dictationRetryable(snapshot.error) : false,
     reasonShown: reasonShown && Boolean(unavailable),
     notice,
     toggle,
