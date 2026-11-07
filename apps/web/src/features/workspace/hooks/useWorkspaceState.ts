@@ -153,7 +153,7 @@ export function useWorkspaceState(data: WorkspaceData): WorkspaceController {
     dispatch({ type: 'changes', changes: data.changes, branch: data.branch });
     if (data.pullRequest) dispatch({ type: 'pullRequest', pullRequest: data.pullRequest });
     if (data.permission) dispatch({ type: 'permission', permission: data.permission });
-    dispatch({ type: 'session', patch: { title: data.session.title, resumable: data.session.resumable } });
+    dispatch({ type: 'session', patch: { title: data.session.title, resumable: data.session.resumable, resumeMode: data.session.resumeMode } });
   }, [data]);
 
   const changesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

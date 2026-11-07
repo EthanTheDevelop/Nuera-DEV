@@ -22,8 +22,12 @@ export const REASON_COPY: Readonly<Record<string, ReasonCopy>> = {
   },
   SESSION_NOT_LIVE: { untouched: "Rien n'a été envoyé au CLI." },
   SESSION_NOT_RESUMABLE: {
-    message: 'Cette session ne peut plus être reprise : son worktree ou sa conversation a disparu.',
+    message: 'Cette session ne peut plus être reprise : elle ou son projet est archivé.',
     untouched: "L'historique reste lisible.",
+  },
+  RESUME_CONTEXT_REQUIRED: {
+    message: 'La conversation enregistrée par Claude Code est introuvable : reprenez la session avec un nouveau contexte.',
+    untouched: "Rien n'a été modifié.",
   },
   CAPACITY_REACHED: { untouched: 'Aucune session démarrée.' },
   PERMISSION_NOT_PENDING: {

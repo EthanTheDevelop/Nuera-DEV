@@ -127,7 +127,12 @@ export class GitService {
 
   async worktreeCwd(row: WorktreeRow): Promise<string> {
     try {
-      return await this.deps.paths.confineProjectPath(row.path);
+      const cwd = await this.deps.paths.confineProjectPath(row.path);
+      // Back on disk (a volume mounted late, a folder restored): « missing » was only a moment.
+      if (row.status === 'missing') {
+        await this.db.update(worktrees).set({ status: 'active' }).where(and(eq(worktrees.id, row.id), eq(worktrees.status, 'missing')));
+      }
+      return cwd;
     } catch (error) {
       if (error instanceof RunnerError && error.code === 'NOT_FOUND') {
         if (row.status === 'active') {
@@ -769,6 +774,61 @@ export class GitService {
       (row) => ({ worktreeId: row.id, name: row.name, branch: row.branch, path: row.path }),
     );
     return value;
+  }
+
+  /**
+   * Worktree for a session whose own was removed (« Reprendre », never a dead end): the previous row
+   * is closed (`removed`, its stale Git entry pruned), then a worktree already open on the branch is
+   * reused (no live session in it), else one is created on the branch — local, else the remote one
+   * (`origin/<branch>`), else a new branch from the project's default branch (`origin: 'default'`).
+   */
+  async restoreWorktree(
+    projectId: string,
+    input: { branch: string; name?: string; previousId: string | null; actorUserId?: string | null; sessionId?: string | null },
+  ): Promise<{ worktree: WorktreeRow; cwd: string; origin: 'existing' | 'local' | 'remote' | 'default'; base: string }> {
+    const project = await getReadyProject(this.db, this.envId, projectId);
+    const primaryCwd = await this.projectCwd(project);
+    const base = project.defaultBranch;
+    if (input.previousId) {
+      await this.db
+        .update(worktrees)
+        .set({ status: 'removed', removedAt: new Date() })
+        .where(and(eq(worktrees.id, input.previousId), eq(worktrees.environmentId, this.envId), isNull(worktrees.removedAt)));
+    }
+    await this.git.run(['worktree', 'prune'], { cwd: primaryCwd, allowFailure: true });
+    if (!isValidBranchName(input.branch)) throw new RunnerError('VALIDATION', 'Nom de branche invalide.');
+    for (const row of await listActiveWorktrees(this.db, project)) {
+      if (row.branch !== input.branch) continue;
+      if (row.isPrimary || existsSync(row.path)) {
+        if (this.deps.liveSessionForWorktree(row.id)) {
+          throw new RunnerError('CONFLICT', `Une session tourne déjà sur la branche ${input.branch} : arrêtez-la avant de reprendre celle-ci.`, { reason: 'WORKTREE_IN_USE' });
+        }
+        const cwd = await this.worktreeCwd(row);
+        return { worktree: row, cwd, origin: 'existing', base };
+      }
+      // A row whose folder is gone: closed, its branch can be checked out again.
+      await this.db.update(worktrees).set({ status: 'removed', removedAt: new Date() }).where(eq(worktrees.id, row.id));
+    }
+    // The primary clone checked out on that branch (no row yet for it).
+    if ((await this.currentBranch(primaryCwd)) === input.branch) {
+      const resolved = await this.resolveProjectWorktree(project.id);
+      if (this.deps.liveSessionForWorktree(resolved.worktree.id)) {
+        throw new RunnerError('CONFLICT', `Une session tourne déjà sur la branche ${input.branch} : arrêtez-la avant de reprendre celle-ci.`, { reason: 'WORKTREE_IN_USE' });
+      }
+      return { worktree: resolved.worktree, cwd: resolved.cwd, origin: 'existing', base };
+    }
+    const origin = (await this.refExists(primaryCwd, `refs/heads/${input.branch}`))
+      ? 'local'
+      : (await this.refExists(primaryCwd, `refs/remotes/origin/${input.branch}`))
+        ? 'remote'
+        : 'default';
+    const worktree = await this.createWorktree(
+      project.id,
+      { ...(input.name ? { name: input.name } : {}), branch: input.branch, base, actorUserId: input.actorUserId ?? null },
+      { sessionId: input.sessionId ?? null },
+    );
+    const cwd = await this.worktreeCwd(worktree);
+    return { worktree, cwd, origin, base };
   }
 
   async worktreeDto(row: WorktreeRow): Promise<WorktreeDto> {

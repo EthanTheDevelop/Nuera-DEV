@@ -52,6 +52,8 @@ export const SessionStatusEventSchema = z.object({
   permissionMode: PermissionModeSchema.optional(),
   /** `--model` of the next launch (`/model` typed from the composer updates it); absent from older runners. */
   model: z.string().nullable().optional(),
+  /** `--effort` of the next launch (the effort chip updates it); absent from older runners. */
+  effort: z.string().nullable().optional(),
 });
 export type SessionStatusEvent = z.infer<typeof SessionStatusEventSchema>;
 

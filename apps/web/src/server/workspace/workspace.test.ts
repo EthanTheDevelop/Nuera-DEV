@@ -44,7 +44,7 @@ const githubMock = vi.hoisted(() => ({
   listProtectedBranches: vi.fn<(project: ProjectRef, defaultBranch: string, options?: unknown) => Promise<string[]>>(),
 }));
 vi.mock('@/server/github', () => githubMock);
-const resumeMock = vi.hoisted(() => vi.fn<(ctx: unknown, sessionId: string) => Promise<unknown>>());
+const resumeMock = vi.hoisted(() => vi.fn<(ctx: unknown, sessionId: string, options?: { context?: boolean }) => Promise<unknown>>());
 const startMock = vi.hoisted(() => vi.fn<(ctx: unknown, sessionId: string) => Promise<unknown>>());
 vi.mock('@/server/sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/server/sessions')>()),
@@ -218,7 +218,7 @@ describe('sendInstruction', () => {
     runnerMock.getSession.mockResolvedValue(dto({ status: 'finished', live: false }));
     runnerMock.sendInstruction.mockResolvedValue({ delivered: false, queued: true, started: false, resumed: false, session: dto({ status: 'running', queuedInstructions: 1 }) });
     const result = await (await ws()).sendInstruction(ctx, SESSION_ID, 'Continue');
-    expect(resumeMock).toHaveBeenCalledWith(ctx, SESSION_ID);
+    expect(resumeMock).toHaveBeenCalledWith(ctx, SESSION_ID, { context: false });
     expect(startMock).not.toHaveBeenCalled();
     expect(result).toMatchObject({ queued: true, resumed: true, started: false, queuedInstructions: 1 });
   });

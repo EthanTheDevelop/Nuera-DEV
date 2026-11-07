@@ -22,8 +22,10 @@ export class SessionApiError extends Error {
   readonly detail?: string;
   readonly raw?: string;
   readonly untouched?: string;
+  /** Machine reason of the refusal (`RESUME_CONTEXT_REQUIRED`, `CAPACITY_REACHED`…). */
+  readonly reason?: string;
 
-  constructor(status: number, code: string | null, message: string, extra: { detail?: string; raw?: string; untouched?: string } = {}) {
+  constructor(status: number, code: string | null, message: string, extra: { detail?: string; raw?: string; untouched?: string; reason?: string } = {}) {
     super(message);
     this.name = 'SessionApiError';
     this.status = status;
@@ -31,13 +33,14 @@ export class SessionApiError extends Error {
     if (extra.detail) this.detail = extra.detail;
     if (extra.raw) this.raw = extra.raw;
     if (extra.untouched) this.untouched = extra.untouched;
+    if (extra.reason) this.reason = extra.reason;
   }
 }
 
 export const NETWORK_MESSAGE = 'Le serveur web ne répond pas : vérifiez la connexion, puis réessayez.';
 
 interface ErrorBodyLike {
-  error?: { code?: unknown; message?: unknown; detail?: unknown; raw?: unknown; untouched?: unknown };
+  error?: { code?: unknown; message?: unknown; detail?: unknown; raw?: unknown; untouched?: unknown; reason?: unknown };
 }
 
 const str = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
@@ -66,6 +69,7 @@ async function call<T>(url: string, init: RequestInit, fallbackMessage: string):
       ...(str(error?.detail) ? { detail: str(error?.detail) } : {}),
       ...(str(error?.raw) ? { raw: str(error?.raw) } : {}),
       ...(str(error?.untouched) ? { untouched: str(error?.untouched) } : {}),
+      ...(str(error?.reason) ? { reason: str(error?.reason) } : {}),
     });
   }
   if (response.status === 204) return undefined as T;
@@ -83,8 +87,22 @@ export function createSessionRequest(input: CreateSessionInput): Promise<CreateS
   return call('/api/sessions', { method: 'POST', body: JSON.stringify(input) }, "La session n'a pas pu être créée.");
 }
 
-export function resumeSessionRequest(sessionId: string): Promise<SessionActionResponse> {
-  return call(`${sessionUrl(sessionId)}/resume`, { method: 'POST' }, "La session n'a pas pu être reprise.");
+/**
+ * « Reprendre ». `context`: the owner's answer to « Reprendre avec le contexte » when the
+ * conversation recorded by Claude Code is gone (absent: the server answers RESUME_CONTEXT_REQUIRED
+ * in that case, and the dialog is shown).
+ */
+export function resumeSessionRequest(sessionId: string, options: { context?: boolean } = {}): Promise<SessionActionResponse> {
+  return call(
+    `${sessionUrl(sessionId)}/resume`,
+    { method: 'POST', body: JSON.stringify(options.context === undefined ? {} : { context: options.context }) },
+    "La session n'a pas pu être reprise.",
+  );
+}
+
+/** The server refused a resumption until the owner chooses « Reprendre avec le contexte » or not. */
+export function needsContextChoice(error: unknown): boolean {
+  return error instanceof SessionApiError && error.reason === 'RESUME_CONTEXT_REQUIRED';
 }
 
 export function stopSessionRequest(sessionId: string, options: { force?: boolean } = {}): Promise<SessionActionResponse> {

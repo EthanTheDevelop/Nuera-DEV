@@ -13,8 +13,9 @@ import {
   Input,
   toast,
 } from '@/components/ui';
-import { archiveSessionRequest, renameSessionRequest, resumeSessionRequest, SessionApiError } from './api';
-import { DEFAULT_SESSION_TITLE, SESSION_TITLE_MAX, workspaceUrl, type ResumeBlockedReason } from './lib/contract';
+import { archiveSessionRequest, needsContextChoice, renameSessionRequest, resumeSessionRequest, SessionApiError } from './api';
+import { DEFAULT_SESSION_TITLE, SESSION_TITLE_MAX, workspaceUrl, type ResumeBlockedReason, type ResumeMode } from './lib/contract';
+import { ResumeContextDialog } from './ResumeContextDialog';
 import { StopSessionDialog } from './StopSessionDialog';
 
 /** What the actions need to know about a session (a `SessionListItem` fits). */
@@ -24,6 +25,8 @@ export interface SessionActionTarget {
   worktree?: { name: string; isPrimary: boolean } | null;
   project?: { name: string } | null;
   resumeBlockedReason?: ResumeBlockedReason | null;
+  /** What « Reprendre » will do (`context`: the dialog « Reprendre avec le contexte » asks first). */
+  resumeMode?: ResumeMode | null;
 }
 
 type Kind = 'resume' | 'archive' | 'rename' | 'stop';
@@ -38,7 +41,10 @@ interface ActionFailure {
 }
 
 export interface SessionActions {
-  /** « Reprendre »: `claude --resume`, then the Workspace opens. */
+  /**
+   * « Reprendre »: the conversation is reopened (`claude --resume`), or — when it is gone — the dialog
+   * « Reprendre avec le contexte » asks first; then the Workspace opens.
+   */
   resume: (target: SessionActionTarget) => Promise<void>;
   /** T8 confirmation, then « Arrêter la session ». */
   requestStop: (target: SessionActionTarget) => void;
@@ -69,18 +75,16 @@ const FAILED_TITLE: Record<Kind, (title: string) => string> = {
   stop: (t) => `« ${t} » n'a pas pu être arrêtée`,
 };
 
-/** Text of « Pourquoi ? » (D06: « Une reprise devient impossible quand ce worktree a été supprimé ; l'historique reste lisible. »). */
+/**
+ * Text of « Pourquoi ? ». Only an archived session or project blocks a resumption: a removed
+ * worktree is recreated from its branch, a lost conversation restarts with a new context.
+ */
 export function resumeBlockedText(target: SessionActionTarget): string {
-  const worktree = target.worktree?.name ? `Le worktree ${target.worktree.name}` : 'Le worktree de cette session';
   switch (target.resumeBlockedReason) {
-    case 'worktree_removed':
-      return `${worktree} a été supprimé : Claude Code ne peut plus rouvrir la conversation dans son dossier. L'historique reste lisible.`;
     case 'project_archived':
       return `Le projet ${target.project?.name ?? ''} est archivé : ses sessions ne peuvent plus être reprises. L'historique reste lisible.`.replace('  ', ' ');
-    case 'archived':
-      return "Cette session est archivée : elle ne peut plus être reprise. L'historique reste lisible.";
     default:
-      return "Claude Code n'a enregistré aucune conversation pour cette session : il n'y a rien à reprendre. L'historique reste lisible.";
+      return "Cette session est archivée : elle ne peut plus être reprise. L'historique reste lisible.";
   }
 }
 
@@ -112,6 +116,8 @@ export function useSessionActions(options: { onChanged?: () => void } = {}): Ses
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<SessionActionTarget | null>(null);
   const [whyTarget, setWhyTarget] = useState<SessionActionTarget | null>(null);
+  const [contextTarget, setContextTarget] = useState<SessionActionTarget | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   // The T4 panel is rendered near the list, sometimes above the row that failed (phone sheet, long
   // history): bring it into view when it appears.
   const panelRef = useRef<HTMLDivElement>(null);
@@ -126,18 +132,42 @@ export function useSessionActions(options: { onChanged?: () => void } = {}): Ses
 
   const resume = useCallback(
     async (target: SessionActionTarget) => {
-      setPending({ id: target.id, kind: 'resume' });
       setFailure(null);
+      if (target.resumeMode === 'context') {
+        setContextError(null);
+        setContextTarget(target);
+        return;
+      }
+      setPending({ id: target.id, kind: 'resume' });
       try {
         const result = await resumeSessionRequest(target.id);
         router.push(result.workspaceUrl);
       } catch (error) {
-        setFailure(toFailure('resume', target, error));
         setPending(null);
+        // The conversation turned out to be gone: the owner chooses « Reprendre avec le contexte ».
+        if (needsContextChoice(error)) {
+          setContextError(null);
+          setContextTarget(target);
+          return;
+        }
+        setFailure(toFailure('resume', target, error));
       }
     },
     [router],
   );
+
+  const resumeWithChoice = async (target: SessionActionTarget, withContext: boolean) => {
+    setContextError(null);
+    try {
+      const result = await resumeSessionRequest(target.id, { context: withContext });
+      setContextTarget(null);
+      toast({ message: `Session reprise avec un nouveau contexte : ${target.title}`, icon: 'play' });
+      router.push(result.workspaceUrl);
+    } catch (error) {
+      setContextError(error instanceof Error && error.message ? error.message : "La session n'a pas pu être reprise.");
+      throw error;
+    }
+  };
 
   const archive = async (target: SessionActionTarget) => {
     setArchiveError(null);
@@ -164,6 +194,15 @@ export function useSessionActions(options: { onChanged?: () => void } = {}): Ses
 
   const dialogs = (
     <>
+      <ResumeContextDialog
+        target={contextTarget}
+        error={contextError}
+        onClose={() => {
+          setContextTarget(null);
+          setContextError(null);
+        }}
+        onConfirm={(withContext) => (contextTarget ? resumeWithChoice(contextTarget, withContext) : Promise.resolve())}
+      />
       {stopTarget ? (
         <StopSessionDialog
           open
@@ -228,7 +267,7 @@ export function useSessionActions(options: { onChanged?: () => void } = {}): Ses
           >
             <p className="m-0 font-sans text-app-14 leading-5 text-text">{resumeBlockedText(whyTarget)}</p>
             <p className="m-0 font-sans text-app-13 leading-[18px] text-muted">
-              Reprendre rouvre la conversation enregistrée par Claude Code (claude --resume) dans son worktree.
+              Sinon, Reprendre rouvre la conversation enregistrée par Claude Code (claude --resume) dans son worktree, recréé depuis sa branche s'il a été supprimé.
             </p>
           </DialogContent>
         ) : null}

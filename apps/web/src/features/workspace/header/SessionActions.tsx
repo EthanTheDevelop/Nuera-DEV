@@ -2,7 +2,7 @@
 
 import { CompactButton, Field, Input, toast } from '@/components/ui';
 import { Dialog, DialogContent } from '@/components/ui';
-import { StopSessionDialog, renameSessionRequest, resumeSessionRequest, SessionApiError } from '@/features/sessions';
+import { ResumeContextDialog, StopSessionDialog, needsContextChoice, renameSessionRequest, resumeSessionRequest, SessionApiError } from '@/features/sessions';
 import { useRouter } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { useWorkspace } from '../WorkspaceContext';
@@ -10,7 +10,8 @@ import { isLiveStatus } from '../lib/contract';
 
 /**
  * Session actions shared by the desktop « … » menu and the phone « Actions de session » sheet:
- * rename (SESSIONS lot PATCH), resume (SESSIONS lot resume route), stop (T8, SESSIONS lot).
+ * rename (SESSIONS lot PATCH), resume (SESSIONS lot resume route — « Reprendre avec le contexte »
+ * asked first when the conversation is gone), stop (T8, SESSIONS lot).
  */
 export function useSessionMenu() {
   const ws = useWorkspace();
@@ -19,25 +20,57 @@ export function useSessionMenu() {
   const [stopOpen, setStopOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
   const live = isLiveStatus(session.status);
   const canResume = !live && session.status !== 'new' && session.resumable && !ws.reconnecting;
   const canStop = live && !ws.reconnecting;
+  /** « Reprendre la conversation » or « Reprendre avec un nouveau contexte » (what the runner said it will do). */
+  const resumeLabel = session.resumeMode === 'context' ? 'Reprendre avec un nouveau contexte' : 'Reprendre la session';
+
+  const fail = (error: unknown) =>
+    ws.setActionError({
+      title: "La session n'a pas pu être reprise",
+      message: (error as Error).message,
+      ...(error instanceof SessionApiError && error.untouched ? { untouched: error.untouched } : {}),
+      ...(error instanceof SessionApiError && error.raw ? { raw: error.raw } : {}),
+    });
 
   const resume = async () => {
+    if (session.resumeMode === 'context') {
+      setContextError(null);
+      setContextOpen(true);
+      return;
+    }
     setResuming(true);
     try {
       await resumeSessionRequest(session.id);
       toast({ message: 'Session reprise : Claude Code rouvre la conversation dans son worktree.' });
       router.refresh();
     } catch (error) {
-      ws.setActionError({
-        title: "La session n'a pas pu être reprise",
-        message: (error as Error).message,
-        ...(error instanceof SessionApiError && error.untouched ? { untouched: error.untouched } : {}),
-        ...(error instanceof SessionApiError && error.raw ? { raw: error.raw } : {}),
-      });
+      if (needsContextChoice(error)) {
+        setContextError(null);
+        setContextOpen(true);
+      } else fail(error);
     } finally {
       setResuming(false);
+    }
+  };
+
+  const resumeWithChoice = async (withContext: boolean) => {
+    setContextError(null);
+    try {
+      await resumeSessionRequest(session.id, { context: withContext });
+      setContextOpen(false);
+      toast({
+        message: withContext
+          ? 'Session reprise avec un nouveau contexte : le résumé de l\'historique est envoyé à Claude.'
+          : 'Session reprise avec un nouveau contexte, sans résumé.',
+      });
+      router.refresh();
+    } catch (error) {
+      setContextError((error as Error).message);
+      throw error;
     }
   };
 
@@ -58,10 +91,16 @@ export function useSessionMenu() {
         }}
       />
       <RenameDialog open={renameOpen} onOpenChange={setRenameOpen} />
+      <ResumeContextDialog
+        target={contextOpen ? { title: session.title } : null}
+        error={contextError}
+        onClose={() => setContextOpen(false)}
+        onConfirm={resumeWithChoice}
+      />
     </>
   );
 
-  return { canResume, canStop, resuming, resume, openStop: () => setStopOpen(true), openRename: () => setRenameOpen(true), dialogs };
+  return { canResume, canStop, resuming, resume, resumeLabel, openStop: () => setStopOpen(true), openRename: () => setRenameOpen(true), dialogs };
 }
 
 /** Rename (not designed): one field, same language as the other dialogs. */
